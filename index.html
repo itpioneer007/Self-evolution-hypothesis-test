@@ -12,7 +12,7 @@
   <header class="topbar">
     <div class="brand">
       <div class="brand-title">Self-evolution hypothesis test</div>
-      <div class="brand-sub">最小出题测试工作台 · 1 学生 / 1 单元 / 5 题 / 2 轮</div>
+      <div class="brand-sub">手工出题实验记录表 · 题目全部由人写，不自动出题 · 1 学生 / 1 单元 / 5 题 / 2 轮</div>
     </div>
     <div class="controls">
       <div class="round-switch" id="roundSwitch">
@@ -27,36 +27,47 @@
   <nav class="tabbar" id="tabbar">
     <button type="button" data-tab="agents" class="tab is-active">
       <span class="tab-no">01</span>
-      <span class="tab-text"><strong>三个智能体</strong><small>规划 · 生成 · 质检</small></span>
+      <span class="tab-text"><strong>三个智能体</strong><small>出题那天：定计划 → 写题 → 挑错</small></span>
     </button>
     <button type="button" data-tab="wrongbook" class="tab">
       <span class="tab-no">02</span>
-      <span class="tab-text"><strong>错题记录</strong><small>作答 · 错因 · 薄弱画像</small></span>
+      <span class="tab-text"><strong>错题记录</strong><small>学生做完：错在哪 → 下次练什么</small></span>
     </button>
     <button type="button" data-tab="loop" class="tab">
       <span class="tab-no">03</span>
-      <span class="tab-text"><strong>记忆库与停止</strong><small>跨轮回边 · 停止决策</small></span>
+      <span class="tab-text"><strong>记忆库与停止</strong><small>下一轮前：别重复 → 要不要继续</small></span>
     </button>
   </nav>
 
   <main class="stage">
 
     <section class="stage-page is-active" id="page-agents">
+      <div class="page-lede">
+        <strong>出题那天用这一页</strong>
+        <p>下面三个角色现在都由你来做，不是 AI。按「先定计划 → 再写一道题 → 最后逐条挑错」走一遍，点卡片切换，一次只做一件事。</p>
+        <span>做完得到：5 道题的计划、5 道写好的题、每道题挂在哪一条。</span>
+      </div>
       <div class="role-row" id="roleRow"></div>
       <div class="role-desc" id="roleDesc"></div>
       <div class="work-panel" id="agentPanel"></div>
     </section>
 
     <section class="stage-page" id="page-wrongbook">
+      <div class="page-lede">
+        <strong>学生做完题之后用这一页</strong>
+        <p>记下他错在哪、后来有没有真会了。这里会把最该练的 3 个知识点排出来，点一下就能写回第 1 页的出题计划。</p>
+        <span>做完得到：下一轮该练什么，不用再猜。</span>
+      </div>
+
       <div class="section-head">
-        <h2>薄弱画像</h2>
-        <span>由错题投影算出，回写给课程智能体做规划</span>
+        <h2>最该练的三件事（薄弱画像）</h2>
+        <span>由错题算出来，按错的次数和用过的提示排序</span>
       </div>
       <div id="weaknessStrip" class="weakness-strip"></div>
 
       <div class="section-head">
-        <h2>错题案</h2>
-        <span>一条错题只存一次，后续作答追加到订正记录</span>
+        <h2>学生错过的题</h2>
+        <span>同一个知识点只记一条，之后每次重做都补在它下面</span>
       </div>
       <div id="wrongList" class="wrong-list"></div>
 
@@ -65,37 +76,43 @@
         <div id="addWrongForm" class="add-form"></div>
       </details>
 
-      <div class="note-line">数据形状借鉴主仓 WrongQuestion / ExerciseAttempt 与 projectWeaknesses()；补充了结构化错因分类与「错因 → 建议格子」，让错题能直接变成下一轮的配额。</div>
+      <div class="note-line">为什么一条错题只存一次：第一次错的时候，题面、答案、用了几次提示都固定下来，后面重做只是往这条下面追加，这样才分得清「真会了」和「看过提示才做对」。这部分照搬了现有项目的错题记录代码，另外补了「错在哪一类 → 下轮建议怎么出题」这一层。</div>
     </section>
 
     <section class="stage-page" id="page-loop">
+      <div class="page-lede">
+        <strong>开始第 2 轮之前用这一页</strong>
+        <p>先查上轮用过哪些出题角度（别重复），再决定还要不要继续练、为什么停。上面三个数，就是整场实验的结论。</p>
+        <span>做完得到：这套出题规范到底有没有用，看三个数就够。</span>
+      </div>
+
       <div class="section-head">
-        <h2>本轮结论</h2>
-        <span>三个可核对的数，样本只够看方向</span>
+        <h2>这一轮的三个数</h2>
+        <span>5 道题只够看方向，不能证明效果</span>
       </div>
       <div class="metrics" id="metrics"></div>
 
       <div class="loop-grid">
         <div class="loop-block">
-          <div class="loop-head"><span class="loop-no">环节 4</span><h3>记忆库</h3></div>
-          <p class="loop-note">存通过的题、退回的条款号、学生错因。下一轮规划前先查，不是质检后存档。</p>
+          <div class="loop-head"><span class="loop-no">环节 4</span><h3>上轮留下了什么（记忆库）</h3></div>
+          <p class="loop-note">记下上轮用了哪些出题角度、哪些题被退回、卡在第几条。开第 2 轮前先查这里，别等题出完才发现重复了。</p>
           <div id="memoryPanel"></div>
         </div>
         <div class="loop-block">
-          <div class="loop-head"><span class="loop-no">环节 5</span><h3>停止决策</h3></div>
-          <p class="loop-note">练到不需要练就收，不凑题量。停止必须写依据，否则不算判据落地。</p>
+          <div class="loop-head"><span class="loop-no">环节 5</span><h3>还要不要继续（停止决策）</h3></div>
+          <p class="loop-note">会做了就收，不用凑满 5 道。勾一个停下的理由，再写清楚依据；两个都填了才算数。</p>
           <div id="stopPanel"></div>
         </div>
       </div>
 
-      <div class="note-line">论文里的停止信号是 SATURATED（够了）与 STALLED（卡住）。这里只做 human-on-the-loop：判据由人写死，模型不改。</div>
+      <div class="note-line">「够了」＝同一个知识点连续三次全对；「卡住」＝连续两轮都挂在同一个问题上。这两个判据由人写死，模型不改，这个模板也还没接模型。</div>
     </section>
 
   </main>
 
   <footer class="footbar">
-    <span id="footStatus">数据仅存本机浏览器，不上传、不接模型</span>
-    <span class="foot-hint">题目内容由人按格子填写 · 界面只自动做三件事：分配格子、记录检查、算指标</span>
+    <span id="footStatus">数据只存在这台电脑的浏览器里，不上传、不接模型</span>
+    <span class="foot-hint">题目全部由人填写 · 电脑只帮三件事：排不重复的出题角度、记检查结果、算三个数</span>
   </footer>
 
 </div>
