@@ -72,7 +72,7 @@
         { en: "teacher's desk", zh: '讲台', p: 8 },
         { en: 'clean', zh: '打扫', p: 7 },
         { en: 'help', zh: '帮助', p: 7 },
-        { en: 'near', zh: '距离近', p: 4 },
+        { en: 'near', zh: '在…附近', p: 4 },
         { en: 'open', zh: '打开', p: 5 },
         { en: 'close', zh: '关闭', p: 5 },
         { en: 'turn on', zh: '打开（电器）', p: 5 },

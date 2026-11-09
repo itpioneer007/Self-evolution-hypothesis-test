@@ -279,7 +279,7 @@
     if (!list.length) {
       body = '<div class="hint-box">这一轮还没写计划。点右上「帮我排 5 个不重复的出题角度」开始；也可以切回第 1 轮。</div>';
     } else {
-      body = '<div class="plan-head"><span>第几题</span><span>考什么（写到错因）</span><span>题型</span><span>场景</span><span>考查层次</span><span>错项类型</span><span>挑错结果</span></div>' +
+      body = '<div class="plan-head"><span>题号</span><span>考什么（写到错因）</span><span>题型</span><span>场景</span><span>考查层次</span><span>错项类型</span><span>挑错结果</span></div>' +
         '<div class="plan-table">' + list.map(function (q, i) {
           const no = i + 1;
           const blocked = exclusion.isCellBlocked(q.cell);
@@ -452,7 +452,7 @@
     const idx = Math.min(p.cursor + 1, list.length);
     return '<div class="practice-head">' +
       '<span class="practice-progress">第 ' + idx + ' 个考点 / 共 ' + list.length + ' 个' +
-        (p.pending ? '<span class="chip-variant">变体 · 同考点换表面</span>' : '') + '</span>' +
+        (p.pending ? '<span class="chip-variant">变体 · 同考点换答案</span>' : '') + '</span>' +
       '<span class="hint">' + esc(q.cell ? q.cell.type + ' / ' + q.cell.level : '') + '</span>' +
     '</div>';
   }
@@ -483,7 +483,7 @@
     if (r.correct) {
       next = '<button type="button" class="btn btn-primary" data-action="next-step">换下一个考点</button>' +
         '<span class="verdict-note">' +
-          (isVariant ? '换掉表面还答对，这个考点算真会' : '这个考点算会用；换个表面还行才算真会') +
+          (isVariant ? '换了答案还答对，这个考点算真会' : '这个考点算会用；换道题再答对才算真会') +
         '</span>';
     } else if (!isVariant && p.nextVariant) {
       next = '<button type="button" class="btn btn-primary" data-action="next-step">换一道同考点的变体再考</button>' +
@@ -493,7 +493,7 @@
         '<span class="verdict-note">这种题型自动接不出变体，只能直接记错题</span>';
     } else {
       next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
-        '<span class="verdict-note">换掉表面还是错，这个考点不写 mastered</span>';
+        '<span class="verdict-note">换了答案还是错，这个考点不写 mastered</span>';
     }
     return '<div class="verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="verdict-top">' +
@@ -523,6 +523,8 @@
       practiceHeadHtml(q, p) +
       '<div class="q-card">' +
         '<div class="q-kp">' + esc(q.knowledgePoint || '（未填知识点）') +
+          (p.pending && p.pending.answerShift
+            ? '<span class="chip-shift">答案 ' + esc(p.pending.answerShift) + '</span>' : '') +
           (r ? '　·　这个考点：' + esc(SHT.judgePoint(attemptsOf(q.no)).label) : '') + '</div>' +
         '<div class="q-prompt">' + esc(q.prompt) + '</div>' +
         (q.audioText
@@ -673,7 +675,7 @@
     // 只在「原题错、且接得出变体」时留在原地换一道，其余都推进到下一个考点
     const goVariant = !r.correct && r.stage === 'first' && !!p.nextVariant;
     if (r.correct) {
-      toast(r.stage === 'variant' ? '换掉表面也答对，这个考点算真会' : '答对了，换下一个考点');
+      toast(r.stage === 'variant' ? '换了答案也答对，这个考点算真会' : '答对了，换下一个考点');
     } else if (goVariant) {
       p.pending = p.nextVariant;
       toast('换一道同考点的变体：' + p.nextVariant.basis);

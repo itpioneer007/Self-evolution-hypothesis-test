@@ -107,7 +107,7 @@ click('practiceCard', { action: 'pick-option', index: '1' });
 click('practiceCard', { action: 'submit-answer' });
 assert('答错给的是「换一道同考点的变体」', nodes.practiceCard.innerHTML.indexOf('换一道同考点的变体再考') >= 0);
 click('practiceCard', { action: 'next-step' });
-assert('变体题上屏且标注同考点换表面', nodes.practiceCard.innerHTML.indexOf('变体 · 同考点换表面') >= 0);
+assert('变体题上屏且标注同考点换答案', nodes.practiceCard.innerHTML.indexOf('变体 · 同考点换答案') >= 0);
 
 const variant1 = SHT.buildVariant(q1, q1.no);
 const wrongIdx = variant1.options.findIndex(o => SHT.normAnswer(o) !== SHT.normAnswer(variant1.answer));
@@ -236,6 +236,69 @@ assert('同参调用结果完全一致（确定性）',
 assert('变体确实换了表面：答案与原题不同、并写明换了什么',
   SHT.normAnswer(variants[0].answer) !== SHT.normAnswer(q.answer) && variants[0].basis.indexOf('换') === 0,
   variants[0].basis);
+
+// 铁律 2：答案必须换。五道题逐题查，不能只看第一道
+assert('五道变体的答案全部与原题不同（防答案惯性）',
+  variants.every((v, i) => SHT.normAnswer(v.answer) !== SHT.normAnswer(SHT.sampleQuestions[i].answer)),
+  variants.map((v, i) => v.answer + '≠' + SHT.sampleQuestions[i].answer).join(','));
+
+// 铁律 3：原答案留在选项里当诱饵，盲选上一次答案的学生才会被打中
+assert('原题答案全部留在变体选项里当诱饵',
+  variants.every((v, i) => v.options.some(o =>
+    SHT.normAnswer(o) === SHT.normAnswer(SHT.sampleQuestions[i].answer))),
+  variants.map(v => JSON.stringify(v.options)).join(' '));
+
+assert('变体选项不是原题选项的重排',
+  variants.every((v, i) => v.options.map(SHT.normAnswer).sort().join('|') !==
+    SHT.sampleQuestions[i].options.map(SHT.normAnswer).sort().join('|')));
+
+assert('变体题干里不出现答案原词（拼写题不许把答案写在题干上）',
+  variants.every(v => {
+    if (!/^[a-z]+$/i.test(String(v.answer))) return true;
+    return !new RegExp('(^|[^a-z])' + v.answer + '([^a-z]|$)', 'i').test(String(v.prompt));
+  }),
+  variants.map(v => v.prompt).join(' / '));
+
+// 辨音：原答案所在词对必须整组排除，否则换 seed 就撞回同一个答案
+const cakeQ = {
+  no: 3, cell: { type: '字母组合辨音' }, prompt: '听录音，选出你听到的单词。',
+  options: ['cake', 'cat', 'hat'], answer: 'cake'
+};
+const cakeVars = [1, 2, 3, 4, 5, 6, 7, 8].map(n => SHT.buildVariant(cakeQ, n)).filter(Boolean);
+assert('辨音变体不会撞回原答案（原答案所在词对整组排除）',
+  cakeVars.length > 0 && cakeVars.every(v => SHT.normAnswer(v.answer) !== 'cake'),
+  cakeVars.map(v => v.answer).join(','));
+
+// 答案没换的假变体由 auditVariant() 在出口拦掉，因此 buildVariant 的返回值
+// 必须永远满足「答案与原题不同」—— 这一条由上面「五道变体答案全部不同」与
+// 「六单元扫描」两处覆盖，不再单独构造不可能的负例。
+
+// 六个单元 × 七种可派生题型：凡接得出的，答案都得换、诱饵都得在
+let variantTried = 0;
+let variantBad = [];
+SHT_BOOK.units.forEach(function (u) {
+  SHT.setUnit(u.id);
+  ['听音选义', '中英匹配', '拼写补全', '字母组合辨音', '选词填空', '句子判断', '对话补全'].forEach(function (t) {
+    const base = {
+      no: 2, cell: { type: t }, prompt: SHT.curriculum.sentencePatterns[0] || '',
+      options: ['a', 'b', 'c'], answer: SHT.curriculum.words[0].en
+    };
+    const v = SHT.buildVariant(base, 2);
+    if (!v) return;
+    variantTried += 1;
+    const ansChanged = SHT.normAnswer(v.answer) !== SHT.normAnswer(base.answer);
+    const baitIn = v.options.some(function (o) { return SHT.normAnswer(o) === SHT.normAnswer(base.answer); });
+    if (!ansChanged || !baitIn) variantBad.push(u.id + '/' + t);
+  });
+});
+SHT.setUnit('U1');
+assert('六单元所有接得出的变体都换了答案且留着诱饵',
+  variantTried > 0 && variantBad.length === 0,
+  variantTried + ' 例，异常：' + (variantBad.join(',') || '无'));
+
+assert('看图说词接不出变体就走错题（口语要语音证据，不硬编）',
+  SHT.buildVariant({ no: 1, cell: { type: '看图说词' }, prompt: 'x', options: ['a', 'b', 'c'], answer: 'a' }, 1) === null);
+
 assert('变体沿用原题格子（同考点才叫探针）',
   variants.every((v, i) => JSON.stringify(v.cell) === JSON.stringify(SHT.sampleQuestions[i].cell)));
 

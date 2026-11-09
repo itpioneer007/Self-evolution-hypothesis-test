@@ -9,8 +9,16 @@
  *
  * 变体的判据和出题相反，这点必须说清楚：
  *   - 出题要求「落不同格子」（防 diversity collapse，5 道题全长一个样）
- *   - 变体要求「同格子、换表面」（防背题：换个词、换个空、换个应答，考点一模一样）
+ *   - 变体要求「同格子、换表面」（防背题），**并且答案必须换**（防答案惯性）
  * 所以变体不是新题，是探针。它不进去重台账，也不算出题产量。
+ *
+ * 变体四条铁律（接模型后同样适用，见 SHT.VARIANT_RULES）：
+ *   1. 考点与格子不动 —— 换了考点就不是探针，是第 6 道题。
+ *   2. 答案必须换个值 —— 答案不换，学生上一枪怎么选这一枪照选就赢，
+ *      探的是「记住了上次那个选项」，不是「懂了这个考点」。
+ *   3. 原题答案留在选项里当干扰项 —— 否则盲选的人只是「没得选」，
+ *      他会退回去重读题，答案惯性就测不出来。
+ *   4. 题干、载体、选项一起换 —— 只换选项顺序等于没换。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
@@ -50,6 +58,17 @@
   /* ---------- 确定性取材 ---------- */
   function words() { return (SHT.curriculum && SHT.curriculum.words) || []; }
 
+  /*
+   * 变体的验收规格：以后接模型出变体，提示词里必须原样带上这四条，
+   * 生成结果也要过 auditVariant() 这一关，不能靠模型自己声明合规。
+   */
+  SHT.VARIANT_RULES = [
+    '考点与格子不动：知识点、变化轴四维与原题完全一致，换掉就不是探针',
+    '答案必须换：新答案不能等于原题答案，否则答案惯性就能过关',
+    '原题答案留在选项里当干扰项：盲选上一次答案的学生要被判错',
+    '题干、载体、选项一起换：只调整选项顺序或措辞不算变体'
+  ];
+
   function plain(w) {
     return w && w.en && w.en.indexOf(' ') < 0 && w.en.indexOf("'") < 0;
   }
@@ -86,6 +105,10 @@
     if (!n) return list;
     const k = ((seed % n) + n) % n;
     return list.slice(k).concat(list.slice(0, k));
+  }
+
+  function escapeReg(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   // 错拼：漏元音 / 交换相邻字母 / 双写字母减一。三种都确定性生成，取前两个。
@@ -148,31 +171,39 @@
       v.options = rotate([target.zh, others[0].zh, others[1].zh], seed);
       v.answer = target.zh;
       v.analysis = target.en + ' 是' + target.zh + '。';
-      v.basis = '换词：' + target.en + '（原题考 ' + (question.audioText || question.answer) + '）';
+      v.basis = '换词：' + target.en;
     } else if (type === '中英匹配') {
       v.prompt = '选出「' + target.zh + '」的英文。';
       v.options = rotate([target.en, others[0].en, others[1].en], seed);
       v.answer = target.en;
       v.analysis = '「' + target.zh + '」是 ' + target.en + '。';
-      v.basis = '换词：' + target.zh + '（原题考 ' + question.answer + '）';
+      v.basis = '换词：' + target.zh;
     } else {
       const bad = misspell(target.en);
       if (bad.length < 2) return null;
-      v.prompt = '选出 ' + target.en + ' 的正确拼写。';
+      // 题干只给中文，不给英文原词 —— 否则答案是「照抄题干」
+      v.prompt = '选出「' + target.zh + '」的正确拼写。';
       v.options = rotate([target.en, bad[0], bad[1]], seed);
       v.answer = target.en;
-      v.analysis = target.en + ' 是' + target.zh + '，中间字母别漏。';
-      v.basis = '换词：' + target.en + '（原题考 ' + question.answer + '）';
+      v.analysis = '「' + target.zh + '」拼作 ' + target.en + '，中间字母别漏。';
+      v.basis = '换词：' + target.en;
     }
     return v;
   }
 
   function phonicsVariant(question, seed) {
     const ph = (SHT.curriculum && SHT.curriculum.phonics) || {};
-    const pairs = (ph.pairs || []).filter(function (p) { return p && p.length === 2; });
+    const oldAns = SHT.normAnswer(question.answer);
+    // 原答案所在的词对整组排除：换个 seed 就撞回同一个答案，等于没换
+    const pairs = (ph.pairs || []).filter(function (p) {
+      return p && p.length === 2 &&
+        SHT.normAnswer(p[0]) !== oldAns && SHT.normAnswer(p[1]) !== oldAns;
+    });
     if (!pairs.length) return null;
     const pair = pairs[seed % pairs.length];
-    const extras = ph.extras || [];
+    const extras = (ph.extras || []).filter(function (x) {
+      return SHT.normAnswer(x) !== oldAns && SHT.normAnswer(x) !== SHT.normAnswer(pair[0]);
+    });
     const third = extras.length ? extras[seed % extras.length] : pairs[(seed + 1) % pairs.length][0];
     const opts = [pair[0], pair[1], third].filter(function (x, i, arr) {
       return x && arr.indexOf(x) === i;
@@ -209,17 +240,21 @@
     });
     if (!pool.length) return null;
     const hit = pool[seed % pool.length];
+    // 干扰项优先取同族介词；原题答案由 withBait() 统一补进来当诱饵
     const others = SWAP_WORDS.filter(function (w) { return w !== hit.word; }).slice(0, 2);
-    const parts = hit.line.split('—');
+    // 先在整句上挖空，再拆成问答两行。
+    // 只对后半句 replace 是个真 bug：介词在前半句时挖不到，题干里还留着答案，变体被判废。
+    const blanked = hit.line.replace(new RegExp('\\b' + hit.word + '\\b', 'i'), '___');
+    const parts = blanked.split('—');
 
     const v = baseVariant(question);
     v.prompt = parts.length === 2
-      ? '— ' + parts[0].trim() + '\n— ' + parts[1].trim().replace(new RegExp('\\b' + hit.word + '\\b', 'i'), '___')
-      : hit.line.replace(new RegExp('\\b' + hit.word + '\\b', 'i'), '___');
+      ? '— ' + parts[0].trim() + '\n— ' + parts[1].trim()
+      : blanked;
     v.options = rotate([hit.word, others[0], others[1]], seed);
     v.answer = hit.word;
-    v.analysis = '原句是 ' + hit.line + '，这里的 ' + hit.word + ' 不能换成别的介词。';
-    v.basis = '换空：把句型表里的 ' + hit.word + ' 挖空（原题考 ' + question.answer + '）';
+    v.analysis = '原句是 ' + hit.line + '　这里的 ' + hit.word + ' 不能换成别的介词。';
+    v.basis = '换空：' + hit.line;
     return v;
   }
 
@@ -250,6 +285,50 @@
     return v;
   }
 
+  /*
+   * 原题答案降级为干扰项。这一步决定探针有没有牙：
+   * 选项里没有旧答案，盲选的学生只是「找不到」，他会退回去重读题，
+   * 答案惯性就测不出来。旧答案留在选项里，他才可能一头撞上去。
+   */
+  function withBait(question, v) {
+    const oldRaw = String(question.answer || '').trim();
+    const oldAns = SHT.normAnswer(oldRaw);
+    const newAns = SHT.normAnswer(v.answer);
+    if (!oldAns || !newAns || oldAns === newAns) return v;
+    const opts = (v.options || []).slice();
+    if (opts.some(function (o) { return SHT.normAnswer(o) === oldAns; })) return v;
+    for (let i = opts.length - 1; i >= 0; i -= 1) {
+      if (!String(opts[i] || '').trim()) continue;
+      if (SHT.normAnswer(opts[i]) === newAns) continue;
+      opts[i] = oldRaw;
+      v.options = opts;
+      return v;
+    }
+    return v;
+  }
+
+  /*
+   * 硬校验：任何分支出的变体都要过这一关，过不了就当「接不出变体」，不硬编。
+   * 这一层不能由生成方自己声明合规 —— 自查只能当线索。
+   */
+  function auditVariant(question, v) {
+    if (!v) return null;
+    const oldAns = SHT.normAnswer(question.answer);
+    const newAns = SHT.normAnswer(v.answer);
+    if (!newAns) return null;
+    if (oldAns && newAns === oldAns) return null;   // 铁律 2：答案没换，等于复读
+    const opts = (v.options || []).map(SHT.normAnswer).filter(Boolean);
+    if (opts.length < 2) return null;
+    if (opts.indexOf(newAns) < 0) return null;      // 答案必须落在自己的选项里
+    // 题干里不许出现答案原词：拼写题最容易把答案当题干给出来
+    const prompt = String(v.prompt || '');
+    if (/^[a-z]+$/i.test(String(v.answer)) &&
+        new RegExp('(^|[^a-z])' + escapeReg(v.answer) + '([^a-z]|$)', 'i').test(prompt)) {
+      return null;
+    }
+    return v;
+  }
+
   SHT.buildVariant = function (question, seedNo) {
     if (!question) return null;
     const type = question.cell ? question.cell.type : '';
@@ -265,11 +344,10 @@
       v = dialogueVariant(question, seed);
     }
     if (!v) return null;
-    // 变体的答案必须落在自己的选项里，否则这题不能答
-    const inside = v.options.some(function (o) {
-      return SHT.normAnswer(o) === SHT.normAnswer(v.answer);
-    });
-    if (!inside) return null;
+    v = withBait(question, v);
+    if (!auditVariant(question, v)) return null;
+    // 答案变化单独成字段，不塞进 basis 的长句里：界面把它当标签显示
+    v.answerShift = String(question.answer || '').trim() + ' → ' + v.answer;
     return v;
   };
 
@@ -284,7 +362,7 @@
   };
 
   /*
-   * 判据只有一条：换掉表面还答对，才算会。
+   * 判据只有一条：换掉题面、换掉答案还答对，才算会。
    *   原题对 + 变体对            → mastered（真会）
    *   原题对 + 变体错            → fragile（只记住这道题）
    *   原题错 + 变体对            → passed（换个角度才会，还没稳）

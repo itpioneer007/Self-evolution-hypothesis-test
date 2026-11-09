@@ -69,7 +69,7 @@
       knowledgePoint: 'spelling · blackboard · oa + ar 双字母组合',
       ability: 'spelling',
       cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
-      prompt: '选出 blackboard 的正确拼写。',
+      prompt: '选出「黑板」的正确拼写。',
       audioText: '',
       options: ['blackboard', 'blackbord', 'blakboard'],
       answer: 'blackboard',
