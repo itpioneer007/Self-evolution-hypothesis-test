@@ -7,6 +7,7 @@
 | 本仓库位置 | 主仓位置 | 取了什么 | 改动 |
 |---|---|---|---|
 | `src/data/curriculum.js` 的 `words` / `sentencePatterns` / `phonics` / `title` | `public/quiz/data.js` 的 `U1` 节点 | 25 个词、8 条句型、4 个 phonics 词、话题域 Our School | 原样抄录，仅转成 JS 对象 |
+| `src/data/knowledgePoints.js` 的 `source` / `example` | 同上 U1 节点 + `src/data/wrongCases.js` 三条错因 | 候选知识点的教材依据与示例问法 | 只由教材与错因推导，不引入单元外词句；示例问法只展示，不自动写进题干 |
 | `src/data/curriculum.js` 的 `hostUnitId` | `src/data/quizAssessment.ts:10` | `G4-上-U1` 的 id 格式（`^G4-上-U(1..10)$`） | 无 |
 | `src/core/enums.js` 的 `SKILL_CATEGORIES` | `src/engine/personalization.ts:133` | 七类 `SkillCategory`：vocab / spelling / sentence / listening / speaking / phonics / grammar | 无 |
 | `src/core/enums.js` 的 `QUESTION_TYPES` | `src/data/quizAssessment.ts:336-342` | 题型与 ability 的对应关系（听音选义/中英匹配/拼写/句子/课文填空等） | 按变化轴补齐到 9 类，新增字母组合辨音、对话补全、看图说词、听写 |
@@ -46,6 +47,12 @@
 | 五道题 × 两轮、三个指标 | `出题手册.md` 第 5 节 / `最小测试记录表.md` | 最小测试规程 |
 | 导出的 JSON 字段 | `最小测试记录表.md` 逐题表与轮次汇总 | round / questions / indicators |
 | 浅蓝 + 蓝主题、自解释标注、少按钮 | 用户 2026-11-09 明确要求（覆盖此前绿色偏好） | 无 emoji、无渐变、字体与卡片放大、一屏内呈现；每块面板自带说明 |
+| `src/data/knowledgePoints.js` 的 `label` | `单题出题检查表.md` 第三节 | 知识点颗粒度到错因，不写「词汇」「语法」这种空标签 |
+| `src/data/knowledgePoints.js` 的 `cell` | `出题手册.md` 3.2 / `单题出题检查表.md` 第七节 | 每条候选自带建议格子；12 条格子互不相同，第 2 轮不会开局撞车 |
+| `src/data/knowledgePoints.js` 的 `nextIfWrong` | `出题手册.md` 3.1 第 9 字段（闭环层 L4） | 答不上来「他错了下一轮出什么」的候选不允许进清单 |
+| 界面候选下拉与「用这个」 | 用户 2026-11-09 反馈「不知道填什么内容」 | 补的是**输入层**：静态教材数据确定性带出 4 项，不接模型、不自动生成题目 |
+
+候选清单同时是**以后自动生成器的输出规格**：接模型时让它按 `label / ability / cause / why / source / example / cell / nextIfWrong` 产出候选，人只守 23 条判据。它不是答案库，不参与判分。
 
 九个字段在界面里的落点（避免把「输入框数量」误当成「字段数量」）：「位置」由顶栏轮次 + Tab 1 执行智能体的题号导航全局承载，不逐题重复填；「格子标记」在课程智能体的配额表指定，生成面板只展示不可改；「知识点」在生成面板拆成「知识点」与「七类能力」两个输入框；「选项」是 3 个输入框同属一个字段；「质检结论」为只读展示，不计入字段。
 

@@ -44,7 +44,7 @@
     <section class="stage-page is-active" id="page-agents">
       <div class="page-lede">
         <strong>出题那天用这一页</strong>
-        <p>下面三个角色现在都由你来做，不是 AI。按「先定计划 → 再写一道题 → 最后逐条挑错」走一遍，点卡片切换，一次只做一件事。</p>
+        <p>下面三个角色现在都由你来做，不是 AI。按「先定计划 → 再写一道题 → 最后逐条挑错」走一遍，点卡片切换，一次只做一件事。不知道填什么，就展开计划里的候选清单，有 12 个现成的知识点。</p>
         <span>做完得到：5 道题的计划、5 道写好的题、每道题挂在哪一条。</span>
       </div>
       <div class="role-row" id="roleRow"></div>
@@ -112,12 +112,13 @@
 
   <footer class="footbar">
     <span id="footStatus">数据只存在这台电脑的浏览器里，不上传、不接模型</span>
-    <span class="foot-hint">题目全部由人填写 · 电脑只帮三件事：排不重复的出题角度、记检查结果、算三个数</span>
+    <span class="foot-hint">题目全部由人填写 · 电脑只帮四件事：排不重复的出题角度、从 12 条候选带出起点、记检查结果、算三个数</span>
   </footer>
 
 </div>
 
 <script src="src/data/curriculum.js"></script>
+<script src="src/data/knowledgePoints.js"></script>
 <script src="src/data/wrongCases.js"></script>
 <script src="src/core/enums.js"></script>
 <script src="src/core/fingerprint.js"></script>

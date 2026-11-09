@@ -38,6 +38,8 @@ global.localStorage = {
 };
 global.navigator = { clipboard: { writeText() {} } };
 global.confirm = () => true;
+global.setTimeout = function () { return 0; };
+global.clearTimeout = function () {};
 global.Blob = class Blob {};
 global.URL = class extends NativeURL {
   static createObjectURL() { return 'blob:stub'; }
@@ -45,6 +47,7 @@ global.URL = class extends NativeURL {
 };
 
 require('../src/data/curriculum.js');
+require('../src/data/knowledgePoints.js');
 require('../src/data/wrongCases.js');
 require('../src/core/enums.js');
 require('../src/core/fingerprint.js');
@@ -75,12 +78,29 @@ assert('记忆库有统计行', count('memoryPanel', 'class="mem-row"') >= 4, co
 assert('停止决策两个信号', count('stopPanel', 'data-stop="') === 2, count('stopPanel', 'data-stop="'));
 assert('新增错题表单已渲染', count('addWrongForm', 'data-new="') === 8, count('addWrongForm', 'data-new="'));
 
+console.log('--- 候选知识点（输入层） ---');
+const KPS = SHT.KNOWLEDGE_POINTS;
+const typeIds = SHT.QUESTION_TYPES.map(t => t.id);
+const causeIds = SHT.ERROR_CAUSES.map(c => c.id);
+assert('候选知识点 12 条 / 分 3 组', KPS.length === 12 && SHT.KP_GROUPS.length === 3, KPS.length);
+assert('12 个出题角度互不重复', new Set(KPS.map(k => SHT.cellFingerprint(k.cell))).size === 12);
+assert('格子四维全部落在枚举内', KPS.every(k => typeIds.includes(k.cell.type) && SHT.SCENES.includes(k.cell.scene) && SHT.LEVELS.includes(k.cell.level) && SHT.DISTRACTORS.includes(k.cell.distractor)));
+assert('情境全部锁在 U1 话题域', KPS.every(k => k.cell.scene === SHT.curriculum.topicDomain));
+assert('每条都有错因 / 教材依据 / 示例问法 / 下一轮建议', KPS.every(k => causeIds.includes(k.cause) && k.source && k.example && k.nextIfWrong && k.why));
+assert('计划面板有候选折叠区且默认收起', count('agentPanel', 'class="kp-fold"') === 1 && count('agentPanel', 'data-action="pick-kp"') === 12);
+
 console.log('--- tab / 角色切换 ---');
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'wrongbook' } }) });
 assert('切到错题记录 tab 不抛错', true);
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'agents' } }) });
+fire('agentPanel', 'click', {
+  closest(sel) { return sel === '[data-action]' ? { dataset: { action: 'pick-kp', id: 'kp-01' } } : null; },
+  matches() { return false; }
+});
+assert('点「用这个」把候选写进第 1 题', nodes.agentPanel.innerHTML.indexOf('value="vocab · 校园场所名词 · class / classroom 形近"') >= 0);
 fire('roleRow', 'click', { closest: () => ({ dataset: { role: 'execute' } }) });
 assert('执行智能体渲染单题表单', count('agentPanel', 'class="field-grid"') === 1 && count('agentPanel', 'data-field="prompt"') === 1);
+assert('单题卡有候选下拉且列出 12 条', count('agentPanel', 'data-kp-pick') === 1 && count('agentPanel', '<option value="kp-') === 12);
 fire('roleRow', 'click', { closest: () => ({ dataset: { role: 'verify' } }) });
 assert('验证智能体渲染层切换', count('agentPanel', 'class="layer-switch"') === 1 && count('agentPanel', 'data-action="layer"') === SHT.CHECK_LAYERS.length);
 fire('agentPanel', 'click', {

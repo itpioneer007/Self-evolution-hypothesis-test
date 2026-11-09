@@ -2,7 +2,7 @@
  * 最小出题测试工作台 · 界面逻辑
  *
  * 定位：给人手工出题用的模板，不是自动出题器，后面才「注入灵魂」。
- * 界面只自动做三件事：分配不重复格子、记录检查结果、算三个指标。
+ * 界面只自动做四件事：排不重复的出题角度、从静态候选清单确定性带出 4 项、记录检查结果、算三个指标。
  * 题目内容由人按格子填写 —— 对应出题手册「最小测试全手工」的口径。
  *
  * 三个 tab 按流程切分：
@@ -192,6 +192,52 @@
     }).join('');
   }
 
+  function kpById(id) {
+    return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.id === id; })[0] || null;
+  }
+
+  function kpSelectHtml() {
+    return '<option value="">从候选中挑一个…</option>' +
+      SHT.KP_GROUPS.map(function (g) {
+        return '<optgroup label="' + esc(g.name) + '">' +
+          SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.group === g.id; }).map(function (k) {
+            return '<option value="' + esc(k.id) + '">' + esc(k.label) + '</option>';
+          }).join('') + '</optgroup>';
+      }).join('');
+  }
+
+  function kpFoldHtml() {
+    return '<details class="kp-fold"><summary>不知道填什么？从这 12 个候选知识点里挑（点「用这个」会一次带出 4 项）</summary>' +
+      '<div class="kp-current">当前是第 ' + state.activeNo + ' 题。带出来的内容都能改，这只是起点，不是自动出题。</div>' +
+      SHT.KP_GROUPS.map(function (g) {
+        return '<div class="kp-group"><div class="kp-group-head"><strong>' + esc(g.name) + '</strong>' +
+          '<span>' + esc(g.note) + '</span></div>' +
+          SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.group === g.id; }).map(function (k) {
+            return '<div class="kp-item">' +
+              '<div class="kp-main"><span class="kp-label">' + esc(k.label) + '</span>' +
+                '<button type="button" class="btn btn-mini" data-action="pick-kp" data-id="' + esc(k.id) + '">用这个</button></div>' +
+              '<div class="kp-why">' + esc(k.why) + '　<span>依据：' + esc(k.source) + '</span></div>' +
+              '<div class="kp-meta">建议出题角度：' + esc(k.cell.type) + ' / ' + esc(k.cell.level) + ' / ' + esc(k.cell.distractor) +
+                '　·　可以这样问：' + esc(k.example) + '</div>' +
+            '</div>';
+          }).join('') + '</div>';
+      }).join('') + '</details>';
+  }
+
+  function applyKnowledgePoint(id, no, withCell) {
+    const kp = kpById(id);
+    const q = currentRound().questions[no - 1];
+    if (!kp || !q) return;
+    q.knowledgePoint = kp.label;
+    q.ability = kp.ability;
+    q.nextIfWrong = kp.nextIfWrong;
+    if (withCell) q.cell = Object.assign({}, kp.cell);
+    save(); renderAll();
+    toast(withCell
+      ? '第 ' + no + ' 题带出了知识点 / 能力 / 出题角度 / 错了下轮出什么，都能改'
+      : '已填入候选知识点；出题角度请回第 1 个角色改');
+  }
+
   function renderPlanPanel() {
     const list = currentRound().questions;
     const exclusion = exclusionForCurrentRound();
@@ -224,6 +270,7 @@
       '<div class="panel-lede"><strong>现在：写出题计划</strong>' +
         '<p>一行就是一道题。后面四个下拉框（题型＋场景＋考查层次＋错项类型）合起来叫「格子」，也就是这道题的出题角度。只换说法或换选项顺序，不算新题。</p>' +
         '<span>做完得到：一张 5 行的计划表，下一步照着它出题。</span></div>' +
+      kpFoldHtml() +
       '<div class="panel-toolbar">' +
         '<span class="hint">「考什么」要细到他哪儿不会，别只写「词汇」。</span>' +
         '<div class="toolbar-actions">' +
@@ -257,7 +304,9 @@
       '<div class="field-grid">' +
         '<div class="field-row is-wide"><label>这道题的出题角度（在第 1 个角色里改）</label><span class="cell-badge">' +
           esc(c.type) + ' / ' + esc(c.scene) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span></div>' +
-        '<div class="field-row"><label>这题考什么（细到「他哪儿不会」）</label><input data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '"></div>' +
+        '<div class="field-row"><label>这题考什么（右边下拉可挑，也可以自己填）</label><div class="kp-inline">' +
+          '<input data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '" placeholder="细到「他哪儿不会」">' +
+          '<select data-kp-pick>' + kpSelectHtml() + '</select></div></div>' +
         '<div class="field-row"><label>属于哪类能力（词汇 / 拼写 / 句子 / 听力 / 口语 / 语音 / 语法）</label><input data-field="ability" value="' + esc(q.ability) + '"></div>' +
         '<div class="field-row is-wide"><label>题目（写给学生看的话）</label><textarea data-field="prompt" placeholder="只用本单元学过的词和句型">' + esc(q.prompt) + '</textarea></div>' +
         '<div class="field-row is-wide"><label>听力原文（不是听力题就留空；有则必须和题目问的是同一件事）</label><input data-field="audioText" value="' + esc(q.audioText) + '"></div>' +
@@ -725,6 +774,7 @@
         const action = b.dataset.action;
         if (action === 'auto-quota') { autoQuota(); return; }
         if (action === 'fill-weakness') { fillWeakness(); return; }
+        if (action === 'pick-kp') { applyKnowledgePoint(b.dataset.id, state.activeNo, true); return; }
         if (action === 'q-nav') { state.activeNo = Number(b.dataset.no); save(); renderAll(); return; }
         if (action === 'layer') { state.checkLayer = Number(b.dataset.index); save(); renderAll(); return; }
         if (action === 'check') {
@@ -749,6 +799,10 @@
 
     $('agentPanel').addEventListener('change', function (e) {
       const el = e.target;
+      if (el.dataset.kpPick !== undefined) {
+        if (el.value) applyKnowledgePoint(el.value, state.activeNo, false);
+        return;
+      }
       const field = el.dataset.field;
       if (!field) return;
       if (el.dataset.no) {
