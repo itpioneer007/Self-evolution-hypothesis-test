@@ -15,94 +15,97 @@
       <div class="brand-sub">最小出题测试工作台 · 1 学生 / 1 单元 / 5 题 / 2 轮</div>
     </div>
     <div class="controls">
-      <label class="field"><span>学生</span><select id="studentSelect"><option value="S-001">示例学生 S-001</option></select></label>
-      <label class="field"><span>单元</span><select id="unitSelect"><option value="G4-上-U1">G4-上-U1 · Our School</option></select></label>
       <div class="round-switch" id="roundSwitch">
         <button type="button" data-round="1" class="is-active">第 1 轮</button>
         <button type="button" data-round="2">第 2 轮</button>
       </div>
       <button type="button" id="resetBtn" class="btn btn-ghost">重置</button>
+      <button type="button" id="exportBtn" class="btn btn-ghost">导出记录</button>
     </div>
   </header>
 
-  <div class="stage-bar">
-    <span class="stage-label">流程</span>
-    <span class="stage-item is-active">1 规划</span>
-    <span class="stage-arrow">›</span>
-    <span class="stage-item">2 逐题生成</span>
-    <span class="stage-arrow">›</span>
-    <span class="stage-item">3 独立质检</span>
-    <span class="stage-arrow">›</span>
-    <span class="stage-item">4 记忆库</span>
-    <span class="stage-arrow">›</span>
-    <span class="stage-item">5 组卷与停止</span>
-    <span class="stage-note">每一环都有明确输出交给下一环；记忆库要在下一轮规划之前先查</span>
-  </div>
+  <nav class="tabbar" id="tabbar">
+    <button type="button" data-tab="agents" class="tab is-active">
+      <span class="tab-no">01</span>
+      <span class="tab-text"><strong>三个智能体</strong><small>规划 · 生成 · 质检</small></span>
+    </button>
+    <button type="button" data-tab="wrongbook" class="tab">
+      <span class="tab-no">02</span>
+      <span class="tab-text"><strong>错题记录</strong><small>作答 · 错因 · 薄弱画像</small></span>
+    </button>
+    <button type="button" data-tab="loop" class="tab">
+      <span class="tab-no">03</span>
+      <span class="tab-text"><strong>记忆库与停止</strong><small>跨轮回边 · 停止决策</small></span>
+    </button>
+  </nav>
 
-  <main class="workspace">
+  <main class="stage">
 
-    <section class="panel" id="panelPlan">
-      <div class="panel-head">
-        <h2>1 命题规划</h2>
-        <span class="tag">课程智能体</span>
-      </div>
-      <p class="panel-note">输出：5 行配额表，每行指定知识点与格子。<strong>格子不重复，题才不一样</strong>；换措辞不算新题。</p>
-      <div id="quotaList" class="quota-list"></div>
-      <div class="panel-actions">
-        <button type="button" id="autoQuotaBtn" class="btn btn-primary">按变化轴分配格子</button>
-        <button type="button" id="clearQuotaBtn" class="btn btn-ghost">清空配额</button>
-      </div>
-      <div id="exclusionHint" class="hint-box"></div>
+    <section class="stage-page is-active" id="page-agents">
+      <div class="role-row" id="roleRow"></div>
+      <div class="role-desc" id="roleDesc"></div>
+      <div class="work-panel" id="agentPanel"></div>
     </section>
 
-    <section class="panel" id="panelQuestion">
-      <div class="panel-head">
-        <h2>2 题目生成</h2>
-        <span class="tag">执行智能体</span>
+    <section class="stage-page" id="page-wrongbook">
+      <div class="section-head">
+        <h2>薄弱画像</h2>
+        <span>由错题投影算出，回写给课程智能体做规划</span>
       </div>
-      <p class="panel-note">输出：九个字段，一次只出一题。只从本单元词表与句型表取材，不自由发挥。</p>
-      <div id="qNav" class="q-nav"></div>
-      <div id="qForm" class="q-form"></div>
-      <div class="vocab-head">本单元可用词（点击复制；超纲判定以此表 + 通用功能词白名单为准）</div>
-      <div id="vocabStrip" class="vocab-strip"></div>
-    </section>
+      <div id="weaknessStrip" class="weakness-strip"></div>
 
-    <section class="panel" id="panelCheck">
-      <div class="panel-head">
-        <h2>3 独立质检</h2>
-        <span class="tag">验证智能体</span>
+      <div class="section-head">
+        <h2>错题案</h2>
+        <span>一条错题只存一次，后续作答追加到订正记录</span>
       </div>
-      <p class="panel-note">输出：通过 / 退回 + 条款号。质检只拿题目、词表、画像，<strong>不听生成方自述</strong>。</p>
-      <div id="checkSummary" class="check-summary"></div>
-      <div id="checkList" class="check-list"></div>
-      <details class="selfcheck">
-        <summary>出完一道题，照着念十句</summary>
-        <ol id="selfCheckList"></ol>
+      <div id="wrongList" class="wrong-list"></div>
+
+      <details class="fold" id="addWrongFold">
+        <summary>记一条新错题</summary>
+        <div id="addWrongForm" class="add-form"></div>
       </details>
+
+      <div class="note-line">数据形状借鉴主仓 WrongQuestion / ExerciseAttempt 与 projectWeaknesses()；补充了结构化错因分类与「错因 → 建议格子」，让错题能直接变成下一轮的配额。</div>
+    </section>
+
+    <section class="stage-page" id="page-loop">
+      <div class="section-head">
+        <h2>本轮结论</h2>
+        <span>三个可核对的数，样本只够看方向</span>
+      </div>
+      <div class="metrics" id="metrics"></div>
+
+      <div class="loop-grid">
+        <div class="loop-block">
+          <div class="loop-head"><span class="loop-no">环节 4</span><h3>记忆库</h3></div>
+          <p class="loop-note">存通过的题、退回的条款号、学生错因。下一轮规划前先查，不是质检后存档。</p>
+          <div id="memoryPanel"></div>
+        </div>
+        <div class="loop-block">
+          <div class="loop-head"><span class="loop-no">环节 5</span><h3>停止决策</h3></div>
+          <p class="loop-note">练到不需要练就收，不凑题量。停止必须写依据，否则不算判据落地。</p>
+          <div id="stopPanel"></div>
+        </div>
+      </div>
+
+      <div class="note-line">论文里的停止信号是 SATURATED（够了）与 STALLED（卡住）。这里只做 human-on-the-loop：判据由人写死，模型不改。</div>
     </section>
 
   </main>
 
-  <footer class="bottombar">
-    <div class="metrics" id="metrics"></div>
-    <div class="early-stop" title="对应环节 5：练到不需要练就收，不凑题量">
-      <input type="checkbox" id="earlyStopChk">
-      <span>本轮提前结束</span>
-      <input type="text" id="endReason" placeholder="依据：如某知识点连续三次全对">
-    </div>
-    <div class="bottom-actions">
-      <span class="storage-note">数据仅存本机浏览器，不上传</span>
-      <button type="button" id="exportBtn" class="btn btn-ghost">导出记录 JSON</button>
-      <button type="button" id="nextRoundBtn" class="btn btn-primary">结束本轮，进入第 2 轮</button>
-    </div>
+  <footer class="footbar">
+    <span id="footStatus">数据仅存本机浏览器，不上传、不接模型</span>
+    <span class="foot-hint">题目内容由人按格子填写 · 界面只自动做三件事：分配格子、记录检查、算指标</span>
   </footer>
 
 </div>
 
 <script src="src/data/curriculum.js"></script>
+<script src="src/data/wrongCases.js"></script>
 <script src="src/core/enums.js"></script>
 <script src="src/core/fingerprint.js"></script>
 <script src="src/core/checklist.js"></script>
+<script src="src/core/wrongBook.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

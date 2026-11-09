@@ -14,6 +14,11 @@
 | `src/core/fingerprint.js` 的 `cellFingerprint` | 无 | 新增 | 以变化轴四维为语义，防 diversity collapse |
 | 知识点 id 口径（体现在示例题 `knowledgePoint`） | `src/data/quizAssessment.ts:135-141` | `${hostUnitId}:quiz-assessment:${kind}:${target}` | 模板里改用中文可读粒度，便于人工归因；并回主仓时须映射回原格式 |
 | 单元词表 ≥ 8 词的约束 | `src/data/quizAssessment.ts:122-133` `choiceOptions()` | 干扰项池不足 4 会抛 `RangeError` | U1 有 25 词，满足 |
+| `src/data/wrongCases.js` 错题案结构 | `src/types/index.ts:310-351` `WrongQuestion` | 业务键 id、首次证据冻结、`variantAttempts[]` 追加、`masteryState` 状态机 | 精简掉媒体/语音/AI 讲解/内容版本；补 `category` 与 `errorCause` |
+| `src/core/wrongBook.js` 的 `isQualifiedEvidence` | `src/entities/attempt/evidencePolicy.ts:3-8` | 模拟 / 自述 / 未观测证据不算数 | 模板默认 `scoringMethod: 'exact'` |
+| `src/core/wrongBook.js` 的 `projectWeaknesses` | `src/entities/weakness-projection/projectWeaknesses.ts:194-295` | 按知识点分组、优先级打分、队列状态、`remediationLoopCount >= 2` 转人工 | 去掉 assessmentRecords 与证据分类，按中文知识点粒度分组 |
+| `src/core/wrongBook.js` 的 `certify` / `thresholdForLayer` | `src/entities/remediation-certification/completeRemediationCertification.ts:5-68` | 恰好 5 题、无提示无重试、A 90 / B 80 / C 70 | 模板固定 B 层；「已订正不等于已掌握」保留 |
+| Tab 2 错题卡展示列 | `src/pages/progress/WrongQuestionCard.tsx:104-251` | 知识点 / 原题 / 首次答案 vs 正确答案 / 用时·提示·重试 / 掌握状态 | 压成一张宽卡，去掉媒体与题解展开 |
 
 **必须注意**：主仓有三套能力维度，不可混用。
 
@@ -31,7 +36,8 @@
 | `src/core/enums.js` 的 `STAGES` | `单题出题检查表.md` 3.2 | 五阶段 → 层次 → 题型 |
 | `src/core/enums.js` 的 `ERROR_TO_CELL` | `单题出题检查表.md` 第七节 | 错因 → 格子三步 |
 | `src/core/checklist.js` 的 `CHECK_LAYERS` | `单题出题检查表.md` 第二至第五节 | 四层 23 条 |
-| `src/app.js` 的 `renderQuestionForm` / `sampleQuestions` 九字段 | `出题手册.md` 3.1 | 位置 / 知识点 / 题干 / 选项 / 听力文本 / 答案 / 一句解析 / 格子标记 / 闭环层 L4 |
+| `src/app.js` 的 `renderExecutePanel` / `sampleQuestions` 九字段 | `出题手册.md` 3.1 | 位置 / 知识点 / 题干 / 选项 / 听力文本 / 答案 / 一句解析 / 格子标记 / 闭环层 L4 |
+| Tab 3 停止信号 SATURATED / STALLED | `演示项目档案_RSIAgent论文精华.md`、v5 演讲稿 P14 | 论文停止决策的两个信号 | 必须同时写依据才计入「是否提前结束」指标 |
 | `src/core/checklist.js` 的 `QUALITY_GATE` | `出题手册.md` 3.3 | 八条清单 |
 | `src/core/checklist.js` 的 `SELF_CHECK_TEN` | `单题出题检查表.md` 第十节 | 自检十问 |
 | `src/data/curriculum.js` 的 `allowedFunctionWords` | `出题手册.md` 6 节第 7 条 | 通用功能词白名单，防按字面判超纲把每题都判死 |
@@ -39,18 +45,18 @@
 | 「同一考点同类题最多 2 次」 | `出题手册.md` 1 节第 6 条（源自 CSDN 实测） | `fingerprint.js` 的 `isPointTypeFull` |
 | 五道题 × 两轮、三个指标 | `出题手册.md` 第 5 节 / `最小测试记录表.md` | 最小测试规程 |
 | 导出的 JSON 字段 | `最小测试记录表.md` 逐题表与轮次汇总 | round / questions / indicators |
-| 界面绿色主题、自解释标注、少按钮 | 项目长期记忆中的视觉偏好 | 无 emoji、无渐变、每块面板自带说明 |
+| 浅蓝 + 蓝主题、自解释标注、少按钮 | 用户 2026-11-09 明确要求（覆盖此前绿色偏好） | 无 emoji、无渐变、字体与卡片放大、一屏内呈现；每块面板自带说明 |
 
-九个字段在界面里的落点（避免把「输入框数量」误当成「字段数量」）：「位置」由顶栏单元选择 + 中列题号导航全局承载，不逐题重复填；「格子标记」在左侧配额表指定，中列只展示不可改；「知识点」在中列拆成「知识点」与「七类能力」两个输入框；「选项」是 3 个输入框同属一个字段；「质检结论」为只读展示，不计入字段。
+九个字段在界面里的落点（避免把「输入框数量」误当成「字段数量」）：「位置」由顶栏轮次 + Tab 1 执行智能体的题号导航全局承载，不逐题重复填；「格子标记」在课程智能体的配额表指定，生成面板只展示不可改；「知识点」在生成面板拆成「知识点」与「七类能力」两个输入框；「选项」是 3 个输入框同属一个字段；「质检结论」为只读展示，不计入字段。
 
 ## 三、来自两篇外部材料
 
 | 判断 | 来源 | 落点 |
 |---|---|---|
-| 先规划后生成、一次只生成一题 | CSDN《Agent自出题教学实践》2.2 | 左列配额表强制先于中列题目卡；中列一次只显示一题 |
+| 先规划后生成、一次只生成一题 | CSDN《Agent自出题教学实践》2.2 | Tab 1 角色按流程顺序排列；执行智能体一次只显示一题 |
 | 同一考点同类题最多两次，第三次必须换角度 | 同上 4.1 避坑表 | `isPointTypeFull` |
-| 退回要写明违反哪一条（过程级信号） | 知乎 RSI 综述解读 5.5 | 右列每条挂了都留条款号 |
-| 验证器硬度决定改进上限 | 同上 5.2 / 总结 | 右列 23 条二元判定，不设「基本可以」 |
+| 退回要写明违反哪一条（过程级信号） | 知乎 RSI 综述解读 5.5 | 验证智能体每条挂了都留条款号，Tab 3 自动汇总分布 |
+| 验证器硬度决定改进上限 | 同上 5.2 / 总结 | 验证智能体 23 条二元判定，不设「基本可以」 |
 | diversity collapse 源于收敛到易过关题带 | 同上 5.3 | 变化轴 + 格子指纹 + 第 2 轮撞格子高亮 |
 | 生成方自查只能当线索不能当通过依据 | 两篇交叉 | 界面没有「让模型自查」入口，检查全部由人独立点 |
 
@@ -59,4 +65,21 @@
 - 按「变化轴四维」而非题干文本算格子指纹
 - 确定性 `generateCells()`：按固定步长遍历组合，跳过历史已用格子，保证可复现
 - 第 2 轮保留知识点、换格子、清空题目内容的初始化方式
-- 把「提前结束」做成底栏可勾选项并要求填依据
+- 三个 tab 的信息分层：tab → 角色 → 检查层，单屏只呈现一个主面板
+- `ERROR_CAUSES` 结构化错因分类与 `suggestCell()`：主仓错因是 AI 自由文本，这里补成可计算枚举并回写规划
+- `appendVariantAttempt()` 的简化：连续答错累加 loopCount，>= 2 转 `teacher-help`（主仓是「两轮补救未过」）
+- 把「提前结束」从单个勾选改成 Tab 3 的 SATURATED / STALLED 双信号 + 必填依据
+- `tools/smoke-test.js`：最小 DOM 模拟的零依赖自检脚本
+
+## 五、三个 tab 与原流程图的对应
+
+用户最初给的五环节流程图（`Solingo汇报_v5_五段版` P14，演讲稿同页）：学生画像 → 命题规划 → 题目生成 → 独立质检 → 记忆库 → 组卷与停止。论文角色对照见同页：
+
+| 原图环节 | 论文角色 | 本仓库落点 |
+|---|---|---|
+| 1 命题规划 | 课程智能体 | Tab 1 第一张角色卡 |
+| 2 题目生成 | 执行智能体 | Tab 1 第二张角色卡 |
+| 3 独立质检 | 验证智能体 | Tab 1 第三张角色卡 |
+| 学生画像 → 错因 | 学生侧回边 | Tab 2 错题记录 |
+| 4 记忆库 | 持久记忆 | Tab 3 左块 |
+| 5 组卷与停止 | 停止决策 | Tab 3 右块 + 顶部三个指标 |
