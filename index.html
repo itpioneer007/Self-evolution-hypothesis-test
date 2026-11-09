@@ -12,9 +12,10 @@
   <header class="topbar">
     <div class="brand">
       <div class="brand-title">出题工作台</div>
-      <div class="brand-sub" id="brandSub">S-001 · U1 Our School · 第 1 轮</div>
+      <div class="brand-sub" id="brandSub">S-001 · U1 My classroom · 第 1 轮</div>
     </div>
     <div class="controls">
+      <select id="unitSelect" class="unit-select" title="教材单元"></select>
       <div class="round-switch" id="roundSwitch">
         <button type="button" data-round="1" class="is-active">R1</button>
         <button type="button" data-round="2">R2</button>
@@ -80,6 +81,7 @@
 
 </div>
 
+<script src="src/data/textbook.js"></script>
 <script src="src/data/curriculum.js"></script>
 <script src="src/data/knowledgePoints.js"></script>
 <script src="src/data/wrongCases.js"></script>

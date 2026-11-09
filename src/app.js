@@ -24,18 +24,18 @@
     });
   }
 
-  function cloneSample() {
-    return SHT.sampleQuestions.map(function (q) {
+  function cloneSample(unitId) {
+    return SHT.sampleQuestionsFor(unitId || SHT.curriculum.id).map(function (q) {
       return Object.assign({}, q, {
         cell: Object.assign({}, q.cell),
-        options: q.options.slice(),
+        options: (q.options || []).slice(),
         checks: {}
       });
     });
   }
 
-  function cloneWrongCases() {
-    return SHT.sampleWrongCases.map(function (c) {
+  function cloneWrongCases(unitId) {
+    return SHT.buildWrongCases(unitId || SHT.curriculum.id).map(function (c) {
       return Object.assign({}, c, {
         firstAttemptEvidence: Object.assign({}, c.firstAttemptEvidence),
         variantAttempts: c.variantAttempts.map(function (a) { return Object.assign({}, a); })
@@ -50,6 +50,7 @@
   function defaultState() {
     return {
       version: 2,
+      unitId: SHT.curriculum.id,
       tab: 'agents',
       agent: 'course',
       checkLayer: 0,
@@ -62,7 +63,8 @@
   }
 
   function normalizeState(parsed) {
-    if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases();
+    if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
+    if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
     ['1', '2'].forEach(function (k) {
       const r = parsed.rounds[k] = Object.assign(blankRound(), parsed.rounds[k] || {});
@@ -104,7 +106,8 @@
   }
 
   let state = loadState();
-  if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample();
+  SHT.setUnit(state.unitId);
+  if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample(state.unitId);
 
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* 隐私模式下忽略 */ }
@@ -199,23 +202,32 @@
     return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.id === id; })[0] || null;
   }
 
+  // 候选知识点只给当前单元，换单元时下拉跟着换
+  function unitKps() { return SHT.kpsOf(SHT.curriculum.id); }
+
   function kpSelectHtml() {
+    const list = unitKps();
     return '<option value="">从候选中挑一个…</option>' +
       SHT.KP_GROUPS.map(function (g) {
+        const items = list.filter(function (k) { return k.group === g.id; });
+        if (!items.length) return '';
         return '<optgroup label="' + esc(g.name) + '">' +
-          SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.group === g.id; }).map(function (k) {
+          items.map(function (k) {
             return '<option value="' + esc(k.id) + '">' + esc(k.label) + '</option>';
           }).join('') + '</optgroup>';
       }).join('');
   }
 
   function kpFoldHtml() {
-    return '<details class="kp-fold"><summary>候选知识点 · ' + SHT.KNOWLEDGE_POINTS.length + '</summary>' +
+    const list = unitKps();
+    return '<details class="kp-fold"><summary>候选知识点 · ' + SHT.curriculum.id + ' · ' + list.length + '</summary>' +
       '<div class="kp-current">写入第 ' + state.activeNo + ' 题</div>' +
       SHT.KP_GROUPS.map(function (g) {
+        const items = list.filter(function (k) { return k.group === g.id; });
+        if (!items.length) return '';
         return '<div class="kp-group"><div class="kp-group-head"><strong>' + esc(g.name) + '</strong>' +
           '<span>' + esc(g.note) + '</span></div>' +
-          SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.group === g.id; }).map(function (k) {
+          items.map(function (k) {
             return '<div class="kp-item">' +
               '<div class="kp-main"><span class="kp-label">' + esc(k.label) + '</span>' +
                 '<button type="button" class="btn btn-mini" data-action="pick-kp" data-id="' + esc(k.id) + '">用这个</button></div>' +
@@ -320,7 +332,15 @@
       '<details class="vocab-fold"><summary>本单元词表 · ' + SHT.curriculum.words.length + '</summary>' +
         '<div class="vocab-strip">' + SHT.curriculum.words.map(function (w) {
           return '<button type="button" class="vocab-chip" data-action="copy-word" data-word="' + esc(w.en) + '" title="' + esc(w.zh) + '">' + esc(w.en) + '</button>';
-        }).join('') + '</div></details>';
+        }).join('') + '</div></details>' +
+      '<details class="vocab-fold"><summary>句型表 · ' + SHT.curriculum.sentencePatterns.length +
+        ' · 语音 ' + esc(SHT.curriculum.phonics.focus) + '</summary>' +
+        '<div class="pattern-list">' +
+          SHT.curriculum.sentencePatterns.map(function (p) { return '<div>' + esc(p) + '</div>'; }).join('') +
+          '<div class="pattern-note">' + esc(SHT.curriculum.phonics.note) + '　' +
+            (SHT.curriculum.phonics.pairs || []).map(function (pair) { return esc(pair[0] + ' / ' + pair[1]); }).join('　·　') +
+          '</div>' +
+        '</div></details>';
   }
 
   /* ---------- 01 验证智能体：四层，一次一层 ---------- */
@@ -585,6 +605,15 @@
   }
 
   /* ---------- 总渲染 ---------- */
+  function renderUnitSelect() {
+    const sel = $('unitSelect');
+    if (!sel) return;
+    sel.innerHTML = root.SHT_BOOK.units.map(function (u) {
+      return '<option value="' + esc(u.id) + '"' + (u.id === SHT.curriculum.id ? ' selected' : '') + '>' +
+        esc(u.id + ' ' + u.title) + '</option>';
+    }).join('');
+  }
+
   function renderAll() {
     document.querySelectorAll('#tabbar .tab').forEach(function (b) {
       b.classList.toggle('is-active', b.dataset.tab === state.tab);
@@ -595,6 +624,7 @@
     document.querySelectorAll('#roundSwitch button').forEach(function (b) {
       b.classList.toggle('is-active', Number(b.dataset.round) === state.round);
     });
+    renderUnitSelect();
     renderAgentRail();
     renderAgentPanel();
     renderWrongList();
@@ -604,9 +634,11 @@
     renderRejectChart();
     renderUsedCells();
     renderStop();
-    $('brandSub').textContent = SHT.sampleStudent.id + ' · ' + SHT.curriculum.hostUnitId + ' ' +
-      SHT.curriculum.title + ' · 第 ' + state.round + ' 轮';
-    $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.sampleStudent.id + ' · ' + SHT.curriculum.hostUnitId;
+    $('brandSub').textContent = SHT.sampleStudent.id + ' · ' + SHT.curriculum.bookName + ' · ' +
+      SHT.curriculum.id + ' ' + SHT.curriculum.title + ' · 第 ' + state.round + ' 轮';
+    $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.curriculum.hostUnitId +
+      ' · 词 ' + SHT.curriculum.words.length + ' / 句 ' + SHT.curriculum.sentencePatterns.length +
+      ' / 候选 ' + unitKps().length;
   }
 
   /* ---------- 动作 ---------- */
@@ -755,7 +787,14 @@
     const p = weaknessProjection();
     const payload = {
       exportedAt: new Date().toISOString(),
+      book: {
+        id: SHT.curriculum.bookId,
+        name: root.SHT_BOOK.meta.name,
+        publisher: root.SHT_BOOK.meta.publisher,
+        source: root.SHT_BOOK.meta.source
+      },
       unit: SHT.curriculum.hostUnitId,
+      unitTitle: SHT.curriculum.title,
       student: SHT.sampleStudent.id,
       learningLayer: state.learningLayer,
       indicators: {
@@ -794,8 +833,36 @@
     toastTimer = setTimeout(function () { node.remove(); }, 3400);
   }
 
+  /* ---------- 教材单元切换 ---------- */
+  function switchUnit(unitId) {
+    if (!unitId || unitId === SHT.curriculum.id) return;
+    const unit = root.SHT_BOOK.getUnit(unitId);
+    if (!unit) return;
+    if (!window.confirm('切到 ' + unitId + ' ' + unit.title + '？两轮题目、出题计划与错题记录会按新单元重建。')) {
+      renderAll();
+      return;
+    }
+    SHT.setUnit(unitId);
+    state.unitId = unitId;
+    state.round = 1;
+    state.activeNo = 1;
+    state.checkLayer = 0;
+    state.agent = 'course';
+    state.rounds = { 1: blankRound(), 2: blankRound() };
+    state.rounds[1].questions = cloneSample(unitId);
+    state.wrongCases = cloneWrongCases(unitId);
+    save();
+    renderAll();
+    toast('已切到 ' + unitId + ' ' + unit.title + '：词表 / 句型 / 候选知识点 / 错题都按这本教材重建');
+  }
+
   /* ---------- 事件（全部委托，重渲染不会重复绑定） ---------- */
   function bind() {
+    const unitSel = $('unitSelect');
+    if (unitSel) {
+      unitSel.addEventListener('change', function (e) { switchUnit(e.target.value); });
+    }
+
     $('tabbar').addEventListener('click', function (e) {
       const b = e.target.closest('button[data-tab]');
       if (!b) return;
@@ -932,10 +999,12 @@
     $('resetBtn').addEventListener('click', function () {
       if (!window.confirm('清空两轮题目、错题和停止记录？不能撤销。')) return;
       try { localStorage.removeItem(STORAGE_KEY); } catch (err) { /* ignore */ }
+      const keepUnit = state.unitId;
+      SHT.setUnit(keepUnit);
       state = defaultState();
-      state.rounds[1].questions = cloneSample();
+      state.rounds[1].questions = cloneSample(keepUnit);
       save(); renderAll();
-      toast('已恢复成初始示例');
+      toast('已恢复成 ' + keepUnit + ' 的初始示例');
     });
   }
 

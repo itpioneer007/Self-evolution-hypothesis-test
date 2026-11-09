@@ -2,19 +2,37 @@
 
 本仓库每一块逻辑的知识来源。改动前先查这张表，避免和规范文件或主仓事实脱节。
 
+## 零、教材数据（`src/data/textbook.js`）
+
+2026-11-09 抓取，整册入库，按单元切片。
+
+| 环节 | 值 |
+|---|---|
+| 目录页 | `https://englishanchor.online/downloads/textbooks/` |
+| 教材索引 | `https://media.englishanchor.online/ChinaTextbook-hf/search.json`（`books[]`，2027 本，含 `stage / subject / edition / grade / path / parts[]`） |
+| 下载源 | Hugging Face 数据集 `RainPPR/china-textbook-2021-hf`，经 `hf-mirror.com` 取回（直连 huggingface.co 本机被拦） |
+| 文件 | `小学/英语/人教版（PEP）（三年级起点）（主编：吴欣）/义务教育教科书·英语（PEP）（三年级起点）四年级上册.pdf`，8.9 MB / 82 页 |
+| 抽取 | PyMuPDF 逐页 `get_text()`，28,248 字；再按附录 1「Words in each unit」与各页 Let's learn / Let's talk / Let's spell 校对 |
+| 入库字段 | 单元 id、标题、页码、情境域、词表（词 / 义 / 书上页码）、句型表、语音点（焦点 / 对比词对）、功能话题 |
+| 未入库 | 课文原文、插图、音频、音标（PDF 里是嵌入字体，抽取为乱码） |
+
+选了「人教版（PEP）三年级起点 四年级上册」的三条理由：① 站点索引里这是小学英语 26 个版本之一、本册 6 个单元结构完整；② 单元主题（教室 / 书包 / 朋友 / 家 / 晚餐 / 家庭）正好覆盖界面 `SCENES` 枚举里的学校、家庭、食物饮料三个域；③ 模板原先手抄的「G4-上-U1」在这个版本里能对上真实单元 `My classroom`。
+
+`src/data/curriculum.js` 不再持有教材数据，只做派生：`SHT.setUnit(unitId)` 把该书某个单元切片成 `SHT.curriculum`（词表 / 句型 / 语音 / 情境域 / 功能词白名单）。换单元时四样同时换，否则超纲判定会拿错单元的边界。
+
 ## 一、来自主仓 `D:/vscode/Solingo-main`
 
 | 本仓库位置 | 主仓位置 | 取了什么 | 改动 |
 |---|---|---|---|
-| `src/data/curriculum.js` 的 `words` / `sentencePatterns` / `phonics` / `title` | `public/quiz/data.js` 的 `U1` 节点 | 25 个词、8 条句型、4 个 phonics 词、话题域 Our School | 原样抄录，仅转成 JS 对象 |
-| `src/data/knowledgePoints.js` 的 `source` / `example` | 同上 U1 节点 + `src/data/wrongCases.js` 三条错因 | 候选知识点的教材依据与示例问法 | 只由教材与错因推导，不引入单元外词句；示例问法只展示，不自动写进题干 |
+| `src/data/textbook.js` 的单元结构 | `public/quiz/data.js` 的 U1 节点 | 「单元 → 词表 / 句型表 / 语音点 / 话题域」这套形状 | 数据改取自官方教材 PDF；形状对齐主仓，便于并回 |
+| `src/data/knowledgePoints.js` 的 `source` / `example` | 同上 + `src/data/wrongCases.js` 三条错因 | 候选知识点的教材依据与示例问法 | 按单元生成，只由该书词句与错因推导，不引入单元外词句；示例问法只展示，不自动写进题干 |
 | `src/data/curriculum.js` 的 `hostUnitId` | `src/data/quizAssessment.ts:10` | `G4-上-U1` 的 id 格式（`^G4-上-U(1..10)$`） | 无 |
 | `src/core/enums.js` 的 `SKILL_CATEGORIES` | `src/engine/personalization.ts:133` | 七类 `SkillCategory`：vocab / spelling / sentence / listening / speaking / phonics / grammar | 无 |
 | `src/core/enums.js` 的 `QUESTION_TYPES` | `src/data/quizAssessment.ts:336-342` | 题型与 ability 的对应关系（听音选义/中英匹配/拼写/句子/课文填空等） | 按变化轴补齐到 9 类，新增字母组合辨音、对话补全、看图说词、听写 |
 | `src/core/fingerprint.js` 的 `contentFingerprint` | `src/services/remediation/questionIdentity.ts` | FNV-1a 32 位 + base36、NFKC 归一化、选项排序无关 | 语义串改为 prompt/audioText/options/answer 四段（原实现为五段并含题号前缀清理） |
 | `src/core/fingerprint.js` 的 `cellFingerprint` | 无 | 新增 | 以变化轴四维为语义，防 diversity collapse |
 | 知识点 id 口径（体现在示例题 `knowledgePoint`） | `src/data/quizAssessment.ts:135-141` | `${hostUnitId}:quiz-assessment:${kind}:${target}` | 模板里改用中文可读粒度，便于人工归因；并回主仓时须映射回原格式 |
-| 单元词表 ≥ 8 词的约束 | `src/data/quizAssessment.ts:122-133` `choiceOptions()` | 干扰项池不足 4 会抛 `RangeError` | U1 有 25 词，满足 |
+| 单元词表 ≥ 8 词的约束 | `src/data/quizAssessment.ts:122-133` `choiceOptions()` | 干扰项池不足 4 会抛 `RangeError` | 该书 6 个单元最少 14 词（U4），全部满足 |
 | `src/data/wrongCases.js` 错题案结构 | `src/types/index.ts:310-351` `WrongQuestion` | 业务键 id、首次证据冻结、`variantAttempts[]` 追加、`masteryState` 状态机 | 精简掉媒体/语音/AI 讲解/内容版本；补 `category` 与 `errorCause` |
 | `src/core/wrongBook.js` 的 `isQualifiedEvidence` | `src/entities/attempt/evidencePolicy.ts:3-8` | 模拟 / 自述 / 未观测证据不算数 | 模板默认 `scoringMethod: 'exact'` |
 | `src/core/wrongBook.js` 的 `projectWeaknesses` | `src/entities/weakness-projection/projectWeaknesses.ts:194-295` | 按知识点分组、优先级打分、队列状态、`remediationLoopCount >= 2` 转人工 | 去掉 assessmentRecords 与证据分类，按中文知识点粒度分组 |
@@ -41,16 +59,17 @@
 | 03 日志 停止信号 SATURATED / STALLED | `演示项目档案_RSIAgent论文精华.md`、v5 演讲稿 P14 | 论文停止决策的两个信号 | 必须同时写依据才计入「是否提前结束」指标 |
 | `src/core/checklist.js` 的 `QUALITY_GATE` | `出题手册.md` 3.3 | 八条清单 |
 | `src/core/checklist.js` 的 `SELF_CHECK_TEN` | `单题出题检查表.md` 第十节 | 自检十问 |
-| `src/data/curriculum.js` 的 `allowedFunctionWords` | `出题手册.md` 6 节第 7 条 | 通用功能词白名单，防按字面判超纲把每题都判死 |
+| `src/data/textbook.js` 的 `meta.allowedFunctionWords` | `出题手册.md` 6 节第 7 条 | 全册通用功能词白名单，防按字面判超纲把每题都判死；切片时复制进 `SHT.curriculum` |
 | `src/app.js` 的 `buildExclusionList` 调用 | `出题手册.md` 4 节补充、5.2 第 6 步 | 记忆库必须在下一轮规划之前查，事前排除 |
 | 「同一考点同类题最多 2 次」 | `出题手册.md` 1 节第 6 条（源自 CSDN 实测） | `fingerprint.js` 的 `isPointTypeFull` |
 | 五道题 × 两轮、三个指标 | `出题手册.md` 第 5 节 / `最小测试记录表.md` | 最小测试规程 |
 | 导出的 JSON 字段 | `最小测试记录表.md` 逐题表与轮次汇总 | round / questions / indicators |
 | 浅蓝 + 蓝主题、少按钮、不写解释性长句 | 用户 2026-11-09 明确要求（覆盖此前绿色偏好） | 无 emoji、无渐变、字体与卡片放大；页面只写数据与动作，设计理由留在 Markdown |
 | `src/data/knowledgePoints.js` 的 `label` | `单题出题检查表.md` 第三节 | 知识点颗粒度到错因，不写「词汇」「语法」这种空标签 |
-| `src/data/knowledgePoints.js` 的 `cell` | `出题手册.md` 3.2 / `单题出题检查表.md` 第七节 | 每条候选自带建议格子；12 条格子互不相同，第 2 轮不会开局撞车 |
+| `src/data/knowledgePoints.js` 的 `cell` | `出题手册.md` 3.2 / `单题出题检查表.md` 第七节 | 每条候选自带建议格子；同一单元内格子互不相同（U1 8 条、U2–U6 各 5 条），第 2 轮不会开局撞车 |
 | `src/data/knowledgePoints.js` 的 `nextIfWrong` | `出题手册.md` 3.1 第 9 字段（闭环层 L4） | 答不上来「他错了下一轮出什么」的候选不允许进清单 |
 | 界面候选下拉与「用这个」 | 用户 2026-11-09 反馈「不知道填什么内容」 | 补的是**输入层**：静态教材数据确定性带出 4 项，不接模型、不自动生成题目 |
+| 顶栏单元下拉 | 用户 2026-11-09「爬一本教材当知识库，以后都围绕这本书出题」 | 切单元时词表 / 句型 / 语音 / 情境 / 候选 / 示例错题一起重建；只换词表会让超纲判定失效 |
 
 候选清单同时是**以后自动生成器的输出规格**：接模型时让它按 `label / ability / cause / why / source / example / cell / nextIfWrong` 产出候选，人只守 23 条判据。它不是答案库，不参与判分。
 

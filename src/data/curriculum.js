@@ -1,135 +1,145 @@
 /*
- * 教材切片：湘少版四年级上册 U1 "Our School"
- * 来源：D:/vscode/Solingo-main/public/quiz/data.js (U1 节点，原样抄录)
- * 说明：只取 U1，用于最小测试「1 个学生 / 1 个单元 / 5 道题 / 2 轮」。
- * 不要手改本文件；教材变更请回主仓改 data.js 后重新抽取。
+ * 当前单元切片：从 src/data/textbook.js 的整册知识库派生。
+ *
+ * 以前这里是手抄的一个单元（湘少版 "Our School"），现在改成「整册入库 + 按单元切片」：
+ * 换单元时词表、句型表、语音点、情境域一起换，超纲判定才不会拿别的单元的词放行。
+ *
+ * 本文件只做派生，不改教材数据；教材变更请改 textbook.js。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
+  const BOOK = root.SHT_BOOK;
 
-  SHT.curriculum = {
-    hostUnitId: 'G4-上-U1',
-    quizUnitId: 'U1',
-    title: 'Our School',
-    topicDomain: '学校',
-    // 主仓 quizAssessment.ts 要求单元词表 >= 8 词才能凑够 4 个选项
-    words: [
-      { en: 'classroom', zh: '教室' },
-      { en: 'playground', zh: '操场' },
-      { en: 'library', zh: '图书馆' },
-      { en: 'music room', zh: '音乐教室' },
-      { en: 'art room', zh: '美术教室' },
-      { en: 'computer', zh: '电脑；计算机' },
-      { en: 'office', zh: '办公室' },
-      { en: 'story', zh: '故事' },
-      { en: 'a lot of', zh: '许多' },
-      { en: 'and', zh: '和；又；与' },
-      { en: 'canteen', zh: '餐厅；食堂' },
-      { en: 'class', zh: '（一节）课；上课时间' },
-      { en: 'colour', zh: '给……上色' },
-      { en: 'desk', zh: '书桌；办公桌' },
-      { en: 'eat', zh: '吃' },
-      { en: 'fun', zh: '乐趣' },
-      { en: 'garden', zh: '花园' },
-      { en: 'grade', zh: '年级' },
-      { en: 'lion', zh: '狮子' },
-      { en: 'lunch', zh: '午餐' },
-      { en: 'lunchtime', zh: '午餐时间' },
-      { en: 'of', zh: '……的' },
-      { en: 'on', zh: '在……上面' },
-      { en: 'read', zh: '阅读；读' },
-      { en: 'together', zh: '一起' }
-    ],
-    // U1 两个 lesson 的句型表；出题时句型不得越出此表
-    sentencePatterns: [
-      'This is our school / classroom / library / playground',
-      'This is (the) ...',
-      'That is (the) ...',
-      'There is ...',
-      'There are ...',
-      'There are many desks.',
-      'Is this the art room? — Yes, it is.',
-      "It's lunchtime. Let's go and eat."
-    ],
-    // U1 phonics 词表，是音近干扰项的真实素材
-    phonics: ['lion', 'letter', 'line', 'light'],
-    // 全册通用允许词表：这些功能词字面上不在 U1 词表，但不应判超纲
-    // 依据：出题手册第 6 节第 7 条
-    allowedFunctionWords: [
-      'a', 'an', 'the', 'is', 'are', 'am', 'be', 'this', 'that', 'these', 'those',
-      'it', 'its', 'our', 'we', 'i', 'you', 'my', 'your', 'in', 'on', 'at', 'to',
-      'of', 'and', 'many', 'some', 'do', 'does', 'don\'t', 'yes', 'no', 'please',
-      'now', 'look', 'let\'s', 'where', 'what', 'here', 'there', 'big', 'clean'
-    ]
+  function slice(unit) {
+    return {
+      id: unit.id,
+      no: unit.no,
+      hostUnitId: unit.hostUnitId,
+      quizUnitId: unit.id,
+      title: unit.title,
+      titleZh: unit.titleZh,
+      pages: unit.pages,
+      topicDomain: unit.topicDomain,
+      functions: unit.functions,
+      bookId: BOOK.meta.id,
+      bookName: BOOK.meta.shortName,
+      // 词表：>= 8 词才能凑够 4 个选项（主仓 quizAssessment.ts 的约束）
+      words: unit.words.map(function (w) { return { en: w.en, zh: w.zh, p: w.p }; }),
+      // 句型表：出题时句型不得越出此表
+      sentencePatterns: unit.sentencePatterns.slice(),
+      // 语音点：音近干扰项的真实素材
+      phonics: unit.phonics,
+      phonicsWords: [].concat(
+        (unit.phonics.pairs || []).reduce(function (acc, pair) { return acc.concat(pair); }, []),
+        unit.phonics.extras || []
+      ),
+      allowedFunctionWords: BOOK.meta.allowedFunctionWords.slice()
+    };
+  }
+
+  SHT.setUnit = function (unitId) {
+    const unit = BOOK.getUnit(unitId) || BOOK.units[0];
+    SHT.curriculum = slice(unit);
+    return SHT.curriculum;
   };
 
+  // 启动即切到第 1 单元；界面切单元时再调 SHT.setUnit
+  SHT.setUnit(BOOK.units[0].id);
+
   /*
-   * 5 道示例题：全部用 U1 真实词句，且刻意落在 5 个不同格子。
+   * 5 道示例题：U1 My classroom 的真实词句，刻意落在 5 个不同格子。
    * 这是「模板」，不是成品答案；正式测试时可整组清空自己出题。
-   * 字段与出题手册 3.1 的九个字段一一对应（no=位置，ability 并入知识点，cell=格子标记，nextIfWrong=闭环层 L4）。
+   * 九个字段：position(no) / 知识点 / 题干 / 选项 / 听力文本 / 答案 / 一句解析 / 格子 / 闭环层 L4。
    */
   SHT.sampleQuestions = [
     {
       no: 1,
-      knowledgePoint: 'vocab · 校园场所名词 · 音义联结',
+      knowledgePoint: 'vocab · 教室物品名词 · 音义联结（classroom）',
       ability: 'listening / vocab',
       cell: { type: '听音选义', scene: '学校', level: '认', distractor: '同类不同物' },
       prompt: '听录音，选出你听到的单词的中文意思。',
       audioText: 'classroom',
-      options: ['教室', '操场', '图书馆'],
+      options: ['教室', '窗户', '黑板'],
       answer: '教室',
-      analysis: 'classroom 是教室，playground 是操场。',
-      nextIfWrong: '换到「辨」层次，用 class / classroom 做形近辨别'
+      analysis: 'classroom 是教室，window 是窗户。',
+      nextIfWrong: '降到词形辨认，做 classroom / class 的形近辨别'
     },
     {
       no: 2,
-      knowledgePoint: 'spelling · library · rar 字母组合',
+      knowledgePoint: 'spelling · blackboard · oa+ar 双字母组合',
       ability: 'spelling',
       cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
-      prompt: '选出 library 的正确拼写。',
+      prompt: '选出 blackboard 的正确拼写。',
       audioText: '',
-      options: ['library', 'libary', 'librery'],
-      answer: 'library',
-      analysis: 'library 中间是 rar，不是 ra。',
-      nextIfWrong: '降到「认」层次，先做中英匹配再回拼写'
+      options: ['blackboard', 'blackbord', 'blakboard'],
+      answer: 'blackboard',
+      analysis: 'black+board，oa 和 ar 都不能省。',
+      nextIfWrong: '先做中英匹配确认词义，再回拼写'
     },
     {
       no: 3,
-      knowledgePoint: 'grammar · There is / are · 单复数一致',
-      ability: 'grammar / sentence',
-      cell: { type: '选词填空', scene: '学校', level: '用', distractor: '语法错形' },
-      prompt: 'There ___ many desks in the classroom.',
-      audioText: '',
-      options: ['are', 'is', 'am'],
-      answer: 'are',
-      analysis: 'many desks 是复数，要用 are。',
-      nextIfWrong: '同格换情境，出 There is a library.'
+      knowledgePoint: 'phonics · a / a-e · cake 与 cat 长短音',
+      ability: 'phonics',
+      cell: { type: '字母组合辨音', scene: '学校', level: '辨', distractor: '音近' },
+      prompt: '听录音，选出你听到的单词。',
+      audioText: 'cake',
+      options: ['cake', 'cat', 'hat'],
+      answer: 'cake',
+      analysis: 'a-e 读字母音 /eɪ/，cat 读短音 /æ/。',
+      nextIfWrong: '降到「认」层次，先看词形再听，别一上来就纯听辨'
     },
     {
       no: 4,
-      knowledgePoint: 'sentence · Is this ...? · 简答一致',
+      knowledgePoint: 'sentence · Where is it? · 介词 on / in 选择',
       ability: 'sentence',
-      cell: { type: '对话补全', scene: '学校', level: '用', distractor: '母语负迁移' },
-      prompt: '— Is this the art room?\n— ___',
+      cell: { type: '选词填空', scene: '学校', level: '用', distractor: '语义近' },
+      prompt: '— Where is the picture?\n— It\'s ___ the wall.',
       audioText: '',
-      options: ['Yes, it is.', 'Yes, I am.', 'Yes, this is.'],
-      answer: 'Yes, it is.',
-      analysis: 'Is this ...? 要用 Yes, it is. 回答。',
-      nextIfWrong: '换成 That is ... 的一般疑问句，练同句型迁移'
+      options: ['on', 'in', 'under'],
+      answer: 'on',
+      analysis: '挂在墙上用 on the wall。',
+      nextIfWrong: '换 near the window 再考一次，看是不是只会这一个搭配'
     },
     {
       no: 5,
-      knowledgePoint: 'phonics · line / lion · 音节数辨听',
-      ability: 'listening / phonics',
-      cell: { type: '字母组合辨音', scene: '学校', level: '辨', distractor: '音近' },
-      prompt: '听录音，选出你听到的单词。',
-      audioText: 'line',
-      options: ['line', 'lion', 'light'],
-      answer: 'line',
-      analysis: 'line 是一个音节，lion 是两个。',
-      nextIfWrong: '降到「认」层次，先看词形再听'
+      knowledgePoint: 'sentence · Let me help you. · 应答语',
+      ability: 'sentence',
+      cell: { type: '对话补全', scene: '学校', level: '用', distractor: '母语负迁移' },
+      prompt: '— Let me help you.\n— ___',
+      audioText: '',
+      options: ['Thank you.', "You're welcome.", 'Yes, I do.'],
+      answer: 'Thank you.',
+      analysis: '别人主动帮你，回答 Thank you.。',
+      nextIfWrong: '换成 Let\'s clean the classroom! 考 OK. 的应答'
     }
   ];
+
+  /*
+   * 其他单元没有现成示例题：返回 5 道「只有计划、没有内容」的空题，
+   * 知识点与格子从该单元的候选清单里确定性带出，人再往里填题干选项。
+   */
+  SHT.blankQuestionsFor = function (unitId) {
+    const kps = (SHT.KNOWLEDGE_POINTS || []).filter(function (k) { return k.unit === unitId; });
+    const out = [];
+    for (let i = 0; i < 5; i += 1) {
+      const kp = kps[i] || null;
+      out.push({
+        no: i + 1,
+        knowledgePoint: kp ? kp.label : '',
+        ability: kp ? kp.ability : '',
+        cell: kp ? Object.assign({}, kp.cell) : {
+          type: '听音选义', scene: SHT.curriculum.topicDomain, level: '认', distractor: '同类不同物'
+        },
+        prompt: '', audioText: '', options: ['', '', ''], answer: '', analysis: '',
+        nextIfWrong: kp ? kp.nextIfWrong : ''
+      });
+    }
+    return out;
+  };
+
+  SHT.sampleQuestionsFor = function (unitId) {
+    return unitId === 'U1' ? SHT.sampleQuestions : SHT.blankQuestionsFor(unitId);
+  };
 
   // 最小测试用的学生画像（mock，来自「最小测试记录表」第 0 节字段）
   SHT.sampleStudent = {
@@ -137,10 +147,10 @@
     label: '示例学生（可改）',
     stage: '正在操练',
     recentErrors: [
-      'class / classroom 形近混淆（2 次）',
-      'There is / are 单复数不一致（3 次）',
-      'line / lion 听辨混淆（2 次）'
+      'blackboard 双字母组合漏写（2 次）',
+      'a / a-e 长短音不分（2 次）',
+      'on / in 介词混用（3 次）'
     ],
-    interestCarriers: ['classroom', 'library', 'playground', 'art room']
+    interestCarriers: ['classroom', 'computer', 'picture', 'fan']
   };
 })(window);

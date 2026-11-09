@@ -46,6 +46,7 @@ global.URL = class extends NativeURL {
   static revokeObjectURL() {}
 };
 
+require('../src/data/textbook.js');
 require('../src/data/curriculum.js');
 require('../src/data/knowledgePoints.js');
 require('../src/data/wrongCases.js');
@@ -80,29 +81,51 @@ assert('已占用角度 5 个短码', count('usedCells', 'class="used-cell"') ==
 assert('停止决策两个信号', count('stopPanel', 'data-stop="') === 2, count('stopPanel', 'data-stop="'));
 assert('新增错题表单已渲染', count('addWrongForm', 'data-new="') === 8, count('addWrongForm', 'data-new="'));
 
+console.log('--- 教材知识库 ---');
+const BOOK = global.SHT_BOOK;
+assert('教材入库：6 个教学单元 + 2 个复习单元', BOOK.units.length === 6 && BOOK.reviews.length === 2,
+  BOOK.units.length + ' / ' + BOOK.reviews.length);
+assert('每单元词表 ≥ 8 词（够凑 4 个选项）', BOOK.units.every(u => u.words.length >= 8),
+  BOOK.units.map(u => u.words.length).join(','));
+assert('每单元都有句型表 / 语音点 / 情境域', BOOK.units.every(u => u.sentencePatterns.length >= 4 && u.phonics && u.phonics.focus && u.topicDomain));
+assert('情境域全部落在界面枚举内', BOOK.units.every(u => SHT.SCENES.includes(u.topicDomain)),
+  BOOK.units.map(u => u.topicDomain).join(','));
+assert('每个词都带书上页码', BOOK.units.every(u => u.words.every(w => typeof w.p === 'number')));
+assert('全册去重后词数 > 单册最大单元', BOOK.allWords().length > 40, BOOK.allWords().length);
+assert('超纲判定：本单元词通过、外单元词拦下',
+  BOOK.isInUnit('blackboard', 'U1') === true && BOOK.isInUnit('beef', 'U1') === false &&
+  BOOK.isInUnit('please', 'U1') === true);
+assert('当前切片 = U1 My classroom', SHT.curriculum.id === 'U1' && SHT.curriculum.title === 'My classroom' &&
+  SHT.curriculum.topicDomain === '学校');
+
 console.log('--- 候选知识点（输入层） ---');
-const KPS = SHT.KNOWLEDGE_POINTS;
+const KPS = SHT.kpsOf('U1');
 const typeIds = SHT.QUESTION_TYPES.map(t => t.id);
 const causeIds = SHT.ERROR_CAUSES.map(c => c.id);
-assert('候选知识点 12 条 / 分 3 组', KPS.length === 12 && SHT.KP_GROUPS.length === 3, KPS.length);
-assert('12 个出题角度互不重复', new Set(KPS.map(k => SHT.cellFingerprint(k.cell))).size === 12);
+assert('U1 候选 8 条 / 分 3 组', KPS.length === 8 && SHT.KP_GROUPS.length === 3, KPS.length);
+assert('八个出题角度互不重复', new Set(KPS.map(k => SHT.cellFingerprint(k.cell))).size === 8);
 assert('格子四维全部落在枚举内', KPS.every(k => typeIds.includes(k.cell.type) && SHT.SCENES.includes(k.cell.scene) && SHT.LEVELS.includes(k.cell.level) && SHT.DISTRACTORS.includes(k.cell.distractor)));
 assert('情境全部锁在 U1 话题域', KPS.every(k => k.cell.scene === SHT.curriculum.topicDomain));
 assert('每条都有错因 / 教材依据 / 示例问法 / 下一轮建议', KPS.every(k => causeIds.includes(k.cause) && k.source && k.example && k.nextIfWrong && k.why));
-assert('计划面板有候选折叠区且默认收起', count('agentPanel', 'class="kp-fold"') === 1 && count('agentPanel', 'data-action="pick-kp"') === 12);
+assert('每个单元的候选都只属于自己', BOOK.units.every(u => SHT.kpsOf(u.id).every(k => k.unit === u.id)));
+assert('每单元候选 ≥ 5 条，且至少 3 条带真实错例', BOOK.units.every(u => {
+  const list = SHT.kpsOf(u.id);
+  return list.length >= 5 && list.filter(k => k.missedCase).length >= 3;
+}), BOOK.units.map(u => SHT.kpsOf(u.id).length).join(','));
+assert('计划面板有候选折叠区且默认收起', count('agentPanel', 'class="kp-fold"') === 1 && count('agentPanel', 'data-action="pick-kp"') === 8);
 
 console.log('--- tab / 角色切换 ---');
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'wrongbook' } }) });
 assert('切到错题记录 tab 不抛错', true);
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'agents' } }) });
 fire('agentPanel', 'click', {
-  closest(sel) { return sel === '[data-action]' ? { dataset: { action: 'pick-kp', id: 'kp-01' } } : null; },
+  closest(sel) { return sel === '[data-action]' ? { dataset: { action: 'pick-kp', id: 'kp-U1-01' } } : null; },
   matches() { return false; }
 });
-assert('点「用这个」把候选写进第 1 题', nodes.agentPanel.innerHTML.indexOf('value="vocab · 校园场所名词 · class / classroom 形近"') >= 0);
+assert('点「用这个」把候选写进第 1 题', nodes.agentPanel.innerHTML.indexOf('value="spelling · blackboard · oa + ar 双字母组合"') >= 0);
 fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'execute' } }) });
 assert('执行智能体渲染单题表单', count('agentPanel', 'class="field-grid"') === 1 && count('agentPanel', 'data-field="prompt"') === 1);
-assert('单题卡有候选下拉且列出 12 条', count('agentPanel', 'data-kp-pick') === 1 && count('agentPanel', '<option value="kp-') === 12);
+assert('单题卡有候选下拉且列出 8 条', count('agentPanel', 'data-kp-pick') === 1 && count('agentPanel', '<option value="kp-') === 8);
 fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'verify' } }) });
 assert('验证智能体渲染层切换', count('agentPanel', 'class="layer-switch"') === 1 && count('agentPanel', 'data-action="layer"') === SHT.CHECK_LAYERS.length);
 fire('agentPanel', 'click', {
@@ -121,7 +144,7 @@ fire('wrongList', 'click', {
   },
   matches() { return false; }
 });
-assert('错题「写入计划」把知识点带回 01', count('agentPanel', 'value="vocab · 校园场所名词 · class / classroom 形近"') >= 1);
+assert('错题「写入计划」把知识点带回 01', count('agentPanel', 'value="spelling · blackboard · oa + ar 双字母组合"') >= 1);
 
 console.log('--- 核心纯函数 ---');
 const projection = SHT.projectWeaknesses(SHT.sampleWrongCases, '学校');
@@ -154,6 +177,20 @@ const ex = SHT.buildExclusionList([{ questions: SHT.sampleQuestions }]);
 assert('历史格子 5 个且全部可排除', ex.usedCells.size === 5 && SHT.sampleQuestions.every(x => ex.isCellBlocked(x.cell)));
 assert('四层检查共 23 条', SHT.ALL_CHECKS.length === 23, SHT.ALL_CHECKS.length);
 assert('自检十问 = 10', SHT.SELF_CHECK_TEN.length === 10);
+
+console.log('--- 单元切换 ---');
+fire('unitSelect', 'change', { value: 'U5' });
+assert("切到 U5：切片换成 Dinner's ready", SHT.curriculum.id === 'U5' && SHT.curriculum.title === "Dinner's ready",
+  SHT.curriculum.id + ' / ' + SHT.curriculum.title);
+assert('切到 U5：情境域跟着变食物饮料', SHT.curriculum.topicDomain === '食物饮料', SHT.curriculum.topicDomain);
+assert('切到 U5：词表换成本单元 22 词', SHT.curriculum.words.length === 22, SHT.curriculum.words.length);
+assert('切到 U5：候选只剩本单元 5 条', SHT.kpsOf('U5').length === 5 && count('agentPanel', 'data-action="pick-kp"') === 5,
+  SHT.kpsOf('U5').length + ' / ' + count('agentPanel', 'data-action="pick-kp"'));
+assert('错题跟着换成本单元 3 条', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', '"Fork"') === 0,
+  count('wrongList', 'class="wrong-card'));
+assert('切回来后仍是同一份教材', SHT_BOOK.units.every(u => u.hostUnitId.indexOf('G4-上-') === 0));
+fire('unitSelect', 'change', { value: 'U1' });
+assert('切回 U1：候选恢复 8 条', SHT.kpsOf('U1').length === 8 && SHT.curriculum.id === 'U1');
 
 console.log('--- v1 迁移 ---');
 store = {
