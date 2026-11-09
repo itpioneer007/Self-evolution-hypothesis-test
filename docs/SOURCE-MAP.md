@@ -31,6 +31,7 @@
 | `src/core/enums.js` 的 `STAGES` | `单题出题检查表.md` 3.2 | 五阶段 → 层次 → 题型 |
 | `src/core/enums.js` 的 `ERROR_TO_CELL` | `单题出题检查表.md` 第七节 | 错因 → 格子三步 |
 | `src/core/checklist.js` 的 `CHECK_LAYERS` | `单题出题检查表.md` 第二至第五节 | 四层 23 条 |
+| `src/app.js` 的 `renderQuestionForm` / `sampleQuestions` 九字段 | `出题手册.md` 3.1 | 位置 / 知识点 / 题干 / 选项 / 听力文本 / 答案 / 一句解析 / 格子标记 / 闭环层 L4 |
 | `src/core/checklist.js` 的 `QUALITY_GATE` | `出题手册.md` 3.3 | 八条清单 |
 | `src/core/checklist.js` 的 `SELF_CHECK_TEN` | `单题出题检查表.md` 第十节 | 自检十问 |
 | `src/data/curriculum.js` 的 `allowedFunctionWords` | `出题手册.md` 6 节第 7 条 | 通用功能词白名单，防按字面判超纲把每题都判死 |
@@ -39,6 +40,8 @@
 | 五道题 × 两轮、三个指标 | `出题手册.md` 第 5 节 / `最小测试记录表.md` | 最小测试规程 |
 | 导出的 JSON 字段 | `最小测试记录表.md` 逐题表与轮次汇总 | round / questions / indicators |
 | 界面绿色主题、自解释标注、少按钮 | 项目长期记忆中的视觉偏好 | 无 emoji、无渐变、每块面板自带说明 |
+
+九个字段在界面里的落点（避免把「输入框数量」误当成「字段数量」）：「位置」由顶栏单元选择 + 中列题号导航全局承载，不逐题重复填；「格子标记」在左侧配额表指定，中列只展示不可改；「知识点」在中列拆成「知识点」与「七类能力」两个输入框；「选项」是 3 个输入框同属一个字段；「质检结论」为只读展示，不计入字段。
 
 ## 三、来自两篇外部材料
 
