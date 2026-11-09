@@ -154,35 +154,38 @@
     return SHT.projectWeaknesses(state.wrongCases, SHT.curriculum.topicDomain);
   }
 
-  /* ---------- 角色定义 ---------- */
+  /* ---------- 角色定义：同一模型，三套提示词 / 记忆 / 技能 ---------- */
   const ROLES = [
     {
-      id: 'course', no: '环节 1', name: '课程智能体', tag: '写出题计划',
-      io: '定这 5 道题各考什么、出成什么样 → 得到一张计划表',
-      desc: '先把要练什么、每道题用什么题型和场景定下来。<strong>题会不会重复，在这一步就决定了</strong>，不是靠写题时换说法。'
+      id: 'course', no: '环节 1', name: '课程智能体', stage: '规划',
+      prompt: '命题规划 · 5 题配额',
+      memory: '上轮角度 · 薄弱画像',
+      skill: '变化轴 · 配额约束'
     },
     {
-      id: 'execute', no: '环节 2', name: '执行智能体', tag: '写出题目',
-      io: '照计划一次写一道 → 得到题干、选项、答案、讲解',
-      desc: '一次只写一道，只用本单元学过的词和句型。<strong>故意不看学生画像、不看上轮出了什么</strong>，防止写题的人自己偷懒照抄。'
+      id: 'execute', no: '环节 2', name: '执行智能体', stage: '生成',
+      prompt: '单题生成 · 九字段',
+      memory: '仅本单元词表',
+      skill: '词表取材 · 干扰项设计'
     },
     {
-      id: 'verify', no: '环节 3', name: '验证智能体', tag: '逐条挑错',
-      io: '拿 23 条清单逐条打「过 / 挂」 → 得到通过或退回',
-      desc: '<strong>不听写题的人自己说好不好</strong>。挂在哪一条要记下来，那是下一轮最有用的信息。'
+      id: 'verify', no: '环节 3', name: '验证智能体', stage: '质检',
+      prompt: '独立质检 · 23 条二元',
+      memory: '教材词表 · 学生画像',
+      skill: '四层判据 · 条款号'
     }
   ];
 
-  function renderRoleRow() {
-    $('roleRow').innerHTML = ROLES.map(function (r) {
-      return '<button type="button" class="role-card' + (state.agent === r.id ? ' is-active' : '') + '" data-role="' + r.id + '">' +
-        '<div class="role-card-top"><span class="role-name">' + esc(r.name) + '</span><span class="role-no">' + esc(r.no) + '</span></div>' +
-        '<div class="role-io">' + esc(r.io) + '</div>' +
-        '<span class="role-tag">' + esc(r.tag) + '</span>' +
-      '</button>';
+  function renderAgentRail() {
+    $('agentRail').innerHTML = ROLES.map(function (r) {
+      return '<button type="button" class="agent-card' + (state.agent === r.id ? ' is-active' : '') + '" data-role="' + r.id + '">' +
+        '<div class="agent-top"><span class="agent-name">' + esc(r.name) + '</span><span class="agent-stage">' + esc(r.no) + ' · ' + esc(r.stage) + '</span></div>' +
+        '<div class="agent-meta">' +
+          '<div class="agent-meta-row"><span>提示词</span><span>' + esc(r.prompt) + '</span></div>' +
+          '<div class="agent-meta-row"><span>记忆</span><span>' + esc(r.memory) + '</span></div>' +
+          '<div class="agent-meta-row"><span>技能</span><span>' + esc(r.skill) + '</span></div>' +
+        '</div></button>';
     }).join('');
-    const role = ROLES.filter(function (r) { return r.id === state.agent; })[0];
-    $('roleDesc').innerHTML = role.desc;
   }
 
   /* ---------- 01 课程智能体：配额表 ---------- */
@@ -207,8 +210,8 @@
   }
 
   function kpFoldHtml() {
-    return '<details class="kp-fold"><summary>不知道填什么？从这 12 个候选知识点里挑（点「用这个」会一次带出 4 项）</summary>' +
-      '<div class="kp-current">当前是第 ' + state.activeNo + ' 题。带出来的内容都能改，这只是起点，不是自动出题。</div>' +
+    return '<details class="kp-fold"><summary>候选知识点 · ' + SHT.KNOWLEDGE_POINTS.length + '</summary>' +
+      '<div class="kp-current">写入第 ' + state.activeNo + ' 题</div>' +
       SHT.KP_GROUPS.map(function (g) {
         return '<div class="kp-group"><div class="kp-group-head"><strong>' + esc(g.name) + '</strong>' +
           '<span>' + esc(g.note) + '</span></div>' +
@@ -262,24 +265,20 @@
           '</div>';
         }).join('') + '</div>';
     }
+    const blockedCount = list.filter(function (q) { return exclusion.isCellBlocked(q.cell); }).length;
     const note = state.round === 1
-      ? '第 1 轮没有上轮记录可查。这轮结束后，用过的出题角度、被退回时挂在第几条，都会存进第 3 页。本单元讲的是 Our School，场景只能用「学校」。'
-      : '已查第 3 页的记录：上轮用过 ' + exclusion.usedCells.size + ' 个出题角度；这一轮有 ' + list.filter(function (q) { return exclusion.isCellBlocked(q.cell); }).length + ' 道撞了车（该换角度），' + list.filter(function (q) { return exclusion.isPointTypeFull(q); }).length + ' 道同一个考点出到上限（同类题最多 2 次）。';
+      ? '待练 ' + projection.remainingCount + ' 个知识点'
+      : '上轮占用 ' + exclusion.usedCells.size + ' 个角度 · 本轮撞车 ' + blockedCount + ' 道';
 
     $('agentPanel').innerHTML = '' +
-      '<div class="panel-lede"><strong>现在：写出题计划</strong>' +
-        '<p>一行就是一道题。后面四个下拉框（题型＋场景＋考查层次＋错项类型）合起来叫「格子」，也就是这道题的出题角度。只换说法或换选项顺序，不算新题。</p>' +
-        '<span>做完得到：一张 5 行的计划表，下一步照着它出题。</span></div>' +
-      kpFoldHtml() +
       '<div class="panel-toolbar">' +
-        '<span class="hint">「考什么」要细到他哪儿不会，别只写「词汇」。</span>' +
+        '<span class="hint">' + esc(note) + '</span>' +
         '<div class="toolbar-actions">' +
-          '<button type="button" class="btn btn-primary" data-action="auto-quota">帮我排 5 个不重复的出题角度</button>' +
-          '<button type="button" class="btn" data-action="fill-weakness">用最该练的 3 个知识点填计划</button>' +
+          '<button type="button" class="btn btn-primary" data-action="auto-quota">排 5 个角度</button>' +
+          '<button type="button" class="btn" data-action="fill-weakness">按薄弱点填</button>' +
         '</div>' +
-      '</div>' + body +
-      '<div class="hint-box' + (state.round === 2 ? ' is-warn' : '') + '" style="margin-top:14px">' + esc(note) +
-        ' 这个学生还有 ' + projection.remainingCount + ' 个知识点等着练。</div>';
+      '</div>' +
+      kpFoldHtml() + body;
   }
 
   /* ---------- 01 执行智能体：单题九字段 ---------- */
@@ -292,34 +291,33 @@
     }
     const c = q.cell;
     $('agentPanel').innerHTML = '' +
-      '<div class="panel-lede"><strong>现在：把第 ' + state.activeNo + ' 题写出来</strong>' +
-        '<p>照计划里指定的出题角度写，只用本单元学过的词和句型，一次只写一道。上面的数字可以换题，写好的内容会自动存下来。</p>' +
-        '<span>写完记得切到第 3 个角色「验证智能体」，逐条挑错。</span></div>' +
-      '<div class="panel-toolbar"><span class="hint">单元和题号已在顶部；下面的出题角度由计划决定，在这里不能改。</span></div>' +
-      '<div class="q-nav">' + list.map(function (_, i) {
-        const no = i + 1;
-        const cls = (no === state.activeNo ? ' is-active' : '') + (verdictOf(list[i]) === '退回' ? ' is-failed' : '');
-        return '<button type="button" data-action="q-nav" data-no="' + no + '" class="' + cls.trim() + '">' + no + '</button>';
-      }).join('') + '</div>' +
-      '<div class="field-grid">' +
-        '<div class="field-row is-wide"><label>这道题的出题角度（在第 1 个角色里改）</label><span class="cell-badge">' +
-          esc(c.type) + ' / ' + esc(c.scene) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span></div>' +
-        '<div class="field-row"><label>这题考什么（右边下拉可挑，也可以自己填）</label><div class="kp-inline">' +
-          '<input data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '" placeholder="细到「他哪儿不会」">' +
-          '<select data-kp-pick>' + kpSelectHtml() + '</select></div></div>' +
-        '<div class="field-row"><label>属于哪类能力（词汇 / 拼写 / 句子 / 听力 / 口语 / 语音 / 语法）</label><input data-field="ability" value="' + esc(q.ability) + '"></div>' +
-        '<div class="field-row is-wide"><label>题目（写给学生看的话）</label><textarea data-field="prompt" placeholder="只用本单元学过的词和句型">' + esc(q.prompt) + '</textarea></div>' +
-        '<div class="field-row is-wide"><label>听力原文（不是听力题就留空；有则必须和题目问的是同一件事）</label><input data-field="audioText" value="' + esc(q.audioText) + '"></div>' +
-        '<div class="field-row is-wide"><label>三个选项（三个错项要错在不同原因上）</label><div class="opt-row">' +
-          [0, 1, 2].map(function (i) {
-            return '<input data-field="option" data-index="' + i + '" value="' + esc(q.options[i] || '') + '" placeholder="选项 ' + String.fromCharCode(65 + i) + '">';
-          }).join('') + '</div></div>' +
-        '<div class="field-row"><label>正确答案（只能有一个）</label><input data-field="answer" value="' + esc(q.answer) + '"></div>' +
-        '<div class="field-row"><label>挑错结果（自动显示，不能改）</label><input value="' + esc(verdictOf(q)) + '" disabled></div>' +
-        '<div class="field-row is-wide"><label>一句话讲解（错在哪＋为什么＋正确的是什么，25 字内）</label><textarea data-field="analysis">' + esc(q.analysis) + '</textarea></div>' +
-        '<div class="field-row is-wide"><label>闭环层 L4 · 如果他做错了，下轮该出什么题？（答不上来，这题就别出）</label><textarea data-field="nextIfWrong" placeholder="答不上来就不要出这道题">' + esc(q.nextIfWrong) + '</textarea></div>' +
+      '<div class="panel-toolbar">' +
+        '<div class="q-nav">' + list.map(function (_, i) {
+          const no = i + 1;
+          const cls = (no === state.activeNo ? ' is-active' : '') + (verdictOf(list[i]) === '退回' ? ' is-failed' : '');
+          return '<button type="button" data-action="q-nav" data-no="' + no + '" class="' + cls.trim() + '">' + no + '</button>';
+        }).join('') + '</div>' +
+        '<span class="hint">第 ' + state.activeNo + ' / ' + list.length + ' 题 · ' + esc(c.type) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span>' +
       '</div>' +
-      '<details class="vocab-fold"><summary>本单元学过的词（点一下复制；题目里出现表外的词就算超纲，please / now / look 这类通用词除外）</summary>' +
+      '<div class="field-grid">' +
+        '<div class="field-row is-wide"><label>出题角度</label><span class="cell-badge">' +
+          esc(c.type) + ' / ' + esc(c.scene) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span></div>' +
+        '<div class="field-row"><label>知识点</label><div class="kp-inline">' +
+          '<input data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '" placeholder="细到错因">' +
+          '<select data-kp-pick>' + kpSelectHtml() + '</select></div></div>' +
+        '<div class="field-row"><label>能力</label><input data-field="ability" value="' + esc(q.ability) + '"></div>' +
+        '<div class="field-row is-wide"><label>题目</label><textarea data-field="prompt" placeholder="只用本单元词表与句型">' + esc(q.prompt) + '</textarea></div>' +
+        '<div class="field-row is-wide"><label>听力原文</label><input data-field="audioText" value="' + esc(q.audioText) + '" placeholder="非听力题留空"></div>' +
+        '<div class="field-row is-wide"><label>选项</label><div class="opt-row">' +
+          [0, 1, 2].map(function (i) {
+            return '<input data-field="option" data-index="' + i + '" value="' + esc(q.options[i] || '') + '" placeholder="' + String.fromCharCode(65 + i) + '">';
+          }).join('') + '</div></div>' +
+        '<div class="field-row"><label>答案</label><input data-field="answer" value="' + esc(q.answer) + '"></div>' +
+        '<div class="field-row"><label>质检</label><input value="' + esc(verdictOf(q)) + '" disabled></div>' +
+        '<div class="field-row is-wide"><label>解析 · ≤25 字</label><textarea data-field="analysis" placeholder="错在哪 + 为什么 + 正确是什么">' + esc(q.analysis) + '</textarea></div>' +
+        '<div class="field-row is-wide"><label>若再错 · 下一轮出什么</label><textarea data-field="nextIfWrong" placeholder="答不上来就不要出这道题">' + esc(q.nextIfWrong) + '</textarea></div>' +
+      '</div>' +
+      '<details class="vocab-fold"><summary>本单元词表 · ' + SHT.curriculum.words.length + '</summary>' +
         '<div class="vocab-strip">' + SHT.curriculum.words.map(function (w) {
           return '<button type="button" class="vocab-chip" data-action="copy-word" data-word="' + esc(w.en) + '" title="' + esc(w.zh) + '">' + esc(w.en) + '</button>';
         }).join('') + '</div></details>';
@@ -334,9 +332,6 @@
     const layer = SHT.CHECK_LAYERS[state.checkLayer] || SHT.CHECK_LAYERS[0];
 
     $('agentPanel').innerHTML = '' +
-      '<div class="panel-lede"><strong>现在：给第 ' + state.activeNo + ' 题挑错</strong>' +
-        '<p>四个层次一次看一层：题对不对 / 合不合这个学生 / 五题放一起像不像一套 / 他错了下轮出什么。每条只能选「过」或「挂」，不能写「基本可以」；挂＝这条不合格，题要重出，挂在第几条会被记下来。</p>' +
-        '<span>做完得到：每道题是「通过」还是「退回」，以及挂在第几条。</span></div>' +
       '<div class="layer-switch">' + SHT.CHECK_LAYERS.map(function (l, i) {
         const bad = l.items.filter(function (it) { return checks[it.id] === 'fail'; }).length;
         return '<button type="button" data-action="layer" data-index="' + i + '" class="' + (i === state.checkLayer ? 'is-active' : '') + '">' +
@@ -368,22 +363,13 @@
     else renderVerifyPanel();
   }
 
-  /* ---------- 02 薄弱画像 ---------- */
-  function renderWeakness() {
-    const p = weaknessProjection();
-    if (!p.items.length) {
-      $('weaknessStrip').innerHTML = '<div class="hint-box">还没记过错题，所以排不出该练什么。在下面记一条就有了。</div>';
-      return;
+  /* ---------- 02 错题 ---------- */
+  function kpForWrong(c) {
+    if (c.kpId) {
+      const byId = kpById(c.kpId);
+      if (byId) return byId;
     }
-    $('weaknessStrip').innerHTML = p.items.slice(0, 3).map(function (item, i) {
-      const cell = item.suggestedCell;
-      return '<div class="weak-card' + (i === 0 ? ' is-top' : '') + '">' +
-        '<div class="weak-label">' + esc(item.label) + '</div>' +
-        '<div class="weak-meta">错了 ' + item.errorCount + ' 次 · 用过提示/重试 ' + item.supportCount + ' 次 · 优先级 ' + item.priorityScore + ' 分 · ' + esc(SHT.MASTERY_LABELS[item.status] || item.status) + '</div>' +
-        '<div class="weak-cell">下一轮建议这么出：<strong>' + esc(cell.type) + ' / ' + esc(cell.level) + ' / ' + esc(cell.distractor) + '</strong>（因为他 ' + esc(item.topCause) + '）</div>' +
-        (i === 0 ? '<div class="weak-cell"><button type="button" class="btn btn-mini" data-action="apply-weak" data-key="' + esc(item.key) + '">写进第 1 页的计划</button></div>' : '') +
-      '</div>';
-    }).join('');
+    return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.label === c.knowledgePoint; })[0] || null;
   }
 
   /* ---------- 02 错题案 ---------- */
@@ -397,41 +383,58 @@
   ];
 
   function renderWrongList() {
-    if (!state.wrongCases.length) {
-      $('wrongList').innerHTML = '<div class="hint-box">还没有记过错题。展开下面「记一条新错题」开始。</div>';
+    const list = state.wrongCases || [];
+    const pending = list.filter(function (c) { return c.masteryState !== 'mastered'; }).length;
+    $('wrongSummary').textContent = list.length
+      ? '共 ' + list.length + ' 条 · 待掌握 ' + pending + ' 条'
+      : '';
+    if (!list.length) {
+      $('wrongList').innerHTML = '<div class="hint-box">暂无错题</div>';
       return;
     }
-    $('wrongList').innerHTML = state.wrongCases.map(function (c, idx) {
+    $('wrongList').innerHTML = list.map(function (c, idx) {
+      const kp = kpForWrong(c);
+      const cell = kp ? kp.cell : SHT.suggestCell(c.category, SHT.curriculum.topicDomain);
       const attempts = c.variantAttempts || [];
       const corrected = attempts.filter(function (a) { return a.correct; }).length;
       const statusLabel = SHT.MASTERY_LABELS[c.masteryState] || c.masteryState;
-      const statusCls = c.masteryState === 'mastered' ? 'is-mastered' : (c.masteryState === 'teacher-help' ? 'is-alert' : '');
-      return '<div class="wrong-card" data-index="' + idx + '">' +
-        '<div class="wrong-head"><span class="wrong-kp">' + esc(c.knowledgePoint) + '</span>' +
+      const statusCls = c.masteryState === 'mastered' ? ' is-mastered' : (c.masteryState === 'teacher-help' ? ' is-alert' : '');
+      const ev = c.firstAttemptEvidence || {};
+      return '<article class="wrong-card" data-index="' + idx + '">' +
+        '<div class="wrong-main">' +
+          '<div class="wrong-kp">' + esc(c.knowledgePoint) + '</div>' +
           '<div class="wrong-tags">' +
             '<span class="chip">' + esc(c.ability) + '</span>' +
             '<span class="chip">' + esc(c.category) + '</span>' +
-            '<span class="chip is-status ' + statusCls + '">' + esc(statusLabel) + '</span>' +
-          '</div></div>' +
-        '<div class="wrong-body">' +
+            '<span class="chip is-status' + statusCls + '">' + esc(statusLabel) + '</span>' +
+          '</div>' +
           '<div class="wrong-q">' + esc(c.questionSnapshot) + '</div>' +
-          '<div class="wrong-ans">第一次选了 <b>' + esc(c.studentAnswer) + '</b>，正确答案是 <b>' + esc(c.correctAnswer) + '</b>' +
-            '<br>花了 ' + Math.round((c.firstAttemptEvidence.durationMs || 0) / 1000) + ' 秒 · 看了 ' + (c.firstAttemptEvidence.hintCount || 0) +
-            ' 次提示 · 重做 ' + (c.firstAttemptEvidence.retryCount || 0) + ' 次' +
-            '<br>之后又做了 ' + attempts.length + ' 次，答对 ' + corrected + ' 次' +
-            (c.certificationScore != null ? ' · 独立验证 ' + c.certificationScore + ' 分' : '') + '</div>' +
+          '<div class="wrong-ans">' +
+            '<span>作答 <b>' + esc(c.studentAnswer) + '</b></span>' +
+            '<span>正确 <b class="ok">' + esc(c.correctAnswer) + '</b></span>' +
+            '<span>' + Math.round((ev.durationMs || 0) / 1000) + 's · 提示 ' + (ev.hintCount || 0) + ' · 重做 ' + (ev.retryCount || 0) + '</span>' +
+            (attempts.length ? '<span>后续 ' + attempts.length + ' 次 · 对 ' + corrected + '</span>' : '') +
+            (c.certificationScore != null ? '<span>认证 ' + c.certificationScore + '</span>' : '') +
+          '</div>' +
+          '<div class="wrong-cause"><em>错因</em>　' + esc(c.errorCause) + '</div>' +
         '</div>' +
-        '<div class="wrong-cause">他为什么错：' + esc(c.errorCause) + '</div>' +
-        '<div class="wrong-foot">' +
-          '<span class="wrong-meta">同一个知识点只记这一条，后面重做都补在下面</span>' +
-          '<div class="wrong-actions">' +
+        '<div class="brief">' +
+          '<div class="brief-title">出题要点</div>' +
+          '<div class="brief-row"><span>知识点</span><span>' + esc(c.knowledgePoint) + '</span></div>' +
+          '<div class="brief-row"><span>能力</span><span>' + esc(c.ability) + '</span></div>' +
+          '<div class="brief-row"><span>错因</span><span>' + esc(c.category) + '</span></div>' +
+          '<div class="brief-row"><span>建议角度</span><span><strong>' + esc(cell.type) + ' / ' + esc(cell.level) + ' / ' + esc(cell.distractor) + '</strong></span></div>' +
+          '<div class="brief-row"><span>再错则</span><span>' + esc(kp ? kp.nextIfWrong : '换角度重出') + '</span></div>' +
+          '<div class="brief-row"><span>教材依据</span><span>' + esc(kp ? kp.source : c.unitId) + '</span></div>' +
+          '<div class="brief-actions">' +
+            '<button type="button" class="btn btn-mini" data-action="apply-weak" data-key="' + esc(c.knowledgePoint) + '" data-index="' + idx + '">写入计划</button>' +
             '<select data-attempt-field="next" data-index="' + idx + '">' + NEXT_ACTIONS.map(function (a) {
               return '<option value="' + a.value + '">' + esc(a.label) + '</option>';
             }).join('') + '</select>' +
-            '<button type="button" class="btn btn-mini" data-action="record-attempt" data-index="' + idx + '">记下这次</button>' +
+            '<button type="button" class="btn btn-mini" data-action="record-attempt" data-index="' + idx + '">记录</button>' +
           '</div>' +
         '</div>' +
-      '</div>';
+      '</article>';
     }).join('');
   }
 
@@ -470,75 +473,114 @@
   }
 
   function renderMetrics() {
-    const r1 = countFailed(state.rounds[1]);
-    const r2 = countFailed(state.rounds[2]);
+    const round = currentRound();
+    const total = round.questions.length;
+    const passed = round.questions.filter(function (q) { return verdictOf(q) === '通过'; }).length;
+    const failedCount = countFailed(round);
     const overlap = overlapCount();
-    const early = endedEarly(currentRound());
-    $('metrics').innerHTML = '' +
-      '<div class="metric-card"><div class="metric-label">两轮出题角度重复了几道</div>' +
-        '<div class="metric-value ' + (overlap !== null && overlap > 1 ? 'is-bad' : '') + '">' + (overlap === null ? '—' : overlap + '/5') + '</div>' +
-        '<div class="metric-note">5 道里最多重 1 道算合格；重 3 道以上，说明「先查上轮再出」没做到</div></div>' +
-      '<div class="metric-card"><div class="metric-label">被退回的题有没有变少</div>' +
-        '<div class="metric-value ' + (r1 !== null && r2 !== null && r2 >= r1 ? 'is-warn' : '') + '">' +
-          (r1 === null || r2 === null ? '等第 2 轮' : r1 + ' → ' + r2) + '</div>' +
-        '<div class="metric-note">第 2 轮应该更少；没少，说明上轮「挂在哪一条」白记了</div></div>' +
-      '<div class="metric-card"><div class="metric-label">有没有该停就停</div>' +
-        '<div class="metric-value">' + (early ? '是' : '否') + '</div>' +
-        '<div class="metric-note">两轮都硬凑满 5 道，就是没真正判断过要不要停</div></div>';
+
+    function kpi(label, value, note, cls) {
+      return '<div class="kpi"><div class="kpi-label">' + esc(label) + '</div>' +
+        '<div class="kpi-value' + (cls ? ' ' + cls : '') + '">' + esc(value) + '</div>' +
+        '<div class="kpi-note">' + esc(note) + '</div></div>';
+    }
+
+    $('metrics').innerHTML =
+      kpi('本轮题数', total + ' / 5', '计划题量', '') +
+      kpi('通过', passed, '四层 23 条全过', passed ? 'is-good' : '') +
+      kpi('退回', failedCount === null ? 0 : failedCount, '条款见右栏', failedCount ? 'is-bad' : '') +
+      kpi('角度重复', overlap === null ? '—' : overlap + '/5', '合格线 ≤ 1/5', overlap !== null && overlap > 1 ? 'is-bad' : '');
   }
 
-  /* ---------- 03 记忆库 ---------- */
-  function renderMemory() {
-    const exclusion = exclusionForCurrentRound();
-    const rounds = [state.rounds[1], state.rounds[2]].filter(function (r) { return r.questions.length; });
-    const failCodes = {};
-    let passed = 0, rejected = 0;
-    rounds.forEach(function (r) {
-      r.questions.forEach(function (q) {
+  /* ---------- 03 出题日志 ---------- */
+  function checkText(id) {
+    const item = SHT.ALL_CHECKS.filter(function (c) { return c.id === id; })[0];
+    return item ? item.text : '';
+  }
+
+  function renderLog() {
+    const entries = [];
+    [1, 2].forEach(function (rn) {
+      const r = state.rounds[rn];
+      if (!r.questions.length) return;
+      const cells = new Set(r.questions.map(function (q) { return SHT.cellFingerprint(q.cell); })).size;
+      entries.push({ round: rn, kind: 'plan', title: '规划 ' + r.questions.length + ' 道', detail: cells + ' 个不重复角度' });
+      r.questions.forEach(function (q, i) {
         const v = verdictOf(q);
-        if (v === '通过') passed += 1;
-        if (v === '退回') rejected += 1;
+        const fails = Object.keys(q.checks || {}).filter(function (k) { return q.checks[k] === 'fail'; });
+        if (v === '待检') {
+          entries.push({ round: rn, kind: '', title: '#' + (i + 1) + ' 待检', detail: esc(q.knowledgePoint || '未填写知识点') });
+        } else if (v === '通过') {
+          entries.push({ round: rn, kind: 'pass', title: '#' + (i + 1) + ' 通过', detail: esc(q.knowledgePoint || '') });
+        } else {
+          entries.push({
+            round: rn, kind: 'reject', title: '#' + (i + 1) + ' 退回',
+            detail: fails.map(function (f) { return '<code>' + esc(f) + '</code>'; }).join('') + ' ' + esc(checkText(fails[0]))
+          });
+        }
+      });
+      if (r.closed) entries.push({ round: rn, kind: 'close', title: '第 ' + rn + ' 轮结束', detail: '' });
+    });
+    $('logCount').textContent = entries.length ? entries.length + ' 条' : '';
+    $('logFeed').innerHTML = entries.length ? entries.map(function (e) {
+      return '<div class="log-item">' +
+        '<span class="log-round">R' + e.round + '</span>' +
+        '<span class="log-dot' + (e.kind ? ' is-' + e.kind : '') + '"></span>' +
+        '<div><div class="log-title">' + esc(e.title) + '</div>' +
+          (e.detail ? '<div class="log-detail">' + e.detail + '</div>' : '') + '</div>' +
+      '</div>';
+    }).join('') : '<div class="chart-empty">暂无记录</div>';
+  }
+
+  function renderRejectChart() {
+    const counts = {};
+    [1, 2].forEach(function (rn) {
+      state.rounds[rn].questions.forEach(function (q) {
         Object.keys(q.checks || {}).forEach(function (id) {
-          if (q.checks[id] === 'fail') failCodes[id] = (failCodes[id] || 0) + 1;
+          if (q.checks[id] === 'fail') counts[id] = (counts[id] || 0) + 1;
         });
       });
     });
-    const codes = Object.keys(failCodes);
-    const allCells = new Set();
-    rounds.forEach(function (r) {
-      r.questions.forEach(function (q) { allCells.add(SHT.cellFingerprint(q.cell).slice(-6)); });
+    const ids = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+    const max = ids.length ? counts[ids[0]] : 1;
+    $('rejectChart').innerHTML = ids.length ? ids.map(function (id) {
+      return '<div class="chart-row" title="' + esc(checkText(id)) + '">' +
+        '<span class="chart-label">' + esc(id) + '</span>' +
+        '<div class="chart-track"><div class="chart-bar is-bad" style="width:' + Math.round(counts[id] / max * 100) + '%"></div></div>' +
+        '<span class="chart-count">' + counts[id] + '</span></div>';
+    }).join('') : '<div class="chart-empty">暂无退回</div>';
+  }
+
+  function renderUsedCells() {
+    const set = new Set();
+    [1, 2].forEach(function (rn) {
+      state.rounds[rn].questions.forEach(function (q) { set.add(SHT.cellFingerprint(q.cell)); });
     });
-    $('memoryPanel').innerHTML = '' +
-      '<div class="mem-row"><span>已记下：合格 / 要重出的题</span><span>' + passed + ' / ' + rejected + '</span></div>' +
-      '<div class="mem-row"><span>上轮用过的出题角度（第 2 轮要避开）</span><span>' + exclusion.usedCells.size + '</span></div>' +
-      '<div class="mem-row"><span>同一个考点出到上限（同类题最多 2 次）</span><span>' + (currentRound().questions || []).filter(function (q) { return exclusion.isPointTypeFull(q); }).length + '</span></div>' +
-      '<div class="mem-row"><span>这一轮和上轮撞了车</span><span>' + (currentRound().questions || []).filter(function (q) { return exclusion.isCellBlocked(q.cell); }).length + '</span></div>' +
-      '<div class="mem-list"><strong>被退回时挂在哪几条（次数）</strong><br>' +
-        (codes.length ? codes.map(function (c) { return '<code>' + esc(c) + ' ×' + failCodes[c] + '</code>'; }).join('') : '<span class="empty-note">还没有退回记录。只记「不合格」不够，要记下挂在第几条。</span>') + '</div>' +
-      '<div class="mem-list"><strong>第 2 轮要避开的组合编号（短码）</strong><br>' +
-        (allCells.size ? Array.from(allCells).map(function (c) { return '<code>' + esc(c) + '</code>'; }).join('') : '<span class="empty-note">还没有</span>') + '</div>';
+    $('usedCount').textContent = set.size ? set.size + ' 个' : '';
+    $('usedCells').innerHTML = set.size
+      ? Array.from(set).map(function (c) { return '<span class="used-cell">' + esc(c.slice(-6)) + '</span>'; }).join('')
+      : '<span class="chart-empty">暂无</span>';
   }
 
   /* ---------- 03 停止决策 ---------- */
   const STOP_SIGNALS = [
-    { id: 'SATURATED', label: '会了，不用再练（够了 / SATURATED）', note: '同一个知识点连续三次都做对' },
-    { id: 'STALLED', label: '一直卡住，换个办法（卡住 / STALLED）', note: '连续两轮都挂在同一个问题上，换出题角度或交给老师，别再凑题' }
+    { id: 'SATURATED', label: '会了，不用再练', note: '同一知识点连续三次全对' },
+    { id: 'STALLED', label: '一直卡住，换办法', note: '连续两轮挂在同一问题' }
   ];
 
   function renderStop() {
     const round = currentRound();
     $('stopPanel').innerHTML = '' +
       STOP_SIGNALS.map(function (s) {
-        return '<label class="stop-rule" style="cursor:pointer">' +
+        return '<label class="stop-rule">' +
           '<input type="checkbox" data-stop="' + s.id + '"' + (round.stopSignals.indexOf(s.id) >= 0 ? ' checked' : '') + '>' +
           '<span><strong>' + esc(s.label) + '</strong><small>' + esc(s.note) + '</small></span></label>';
       }).join('') +
-      '<div class="stop-field"><label>为什么可以停（必须写，光勾选不算）</label>' +
-        '<input data-stop-reason value="' + esc(round.endReason || '') + '" placeholder="如：classroom 连续三次全对，本轮只出 3 道就收"></div>' +
+      '<div class="stop-field"><label>依据</label>' +
+        '<input data-stop-reason value="' + esc(round.endReason || '') + '" placeholder="如 classroom 连续三次全对"></div>' +
       '<div class="stop-actions">' +
         '<button type="button" class="btn btn-primary" data-action="next-round">' +
-          (state.round === 1 ? '第 1 轮做完，开始第 2 轮' : '看看两轮的结果') + '</button>' +
-        '<span class="form-note">第 2 轮会先避开上轮用过的出题角度，知识点保留，题目内容要重写。</span>' +
+          (state.round === 1 ? '进入第 2 轮' : '查看结论') + '</button>' +
       '</div>';
   }
 
@@ -553,16 +595,18 @@
     document.querySelectorAll('#roundSwitch button').forEach(function (b) {
       b.classList.toggle('is-active', Number(b.dataset.round) === state.round);
     });
-    renderRoleRow();
+    renderAgentRail();
     renderAgentPanel();
-    renderWeakness();
     renderWrongList();
     renderAddWrongForm();
     renderMetrics();
-    renderMemory();
+    renderLog();
+    renderRejectChart();
+    renderUsedCells();
     renderStop();
-    $('footStatus').textContent = '第 ' + state.round + ' 轮 · 学生 ' + SHT.sampleStudent.id + ' · 单元 ' + SHT.curriculum.hostUnitId +
-      '（' + SHT.curriculum.title + '）· 数据只存在这台电脑的浏览器里';
+    $('brandSub').textContent = SHT.sampleStudent.id + ' · ' + SHT.curriculum.hostUnitId + ' ' +
+      SHT.curriculum.title + ' · 第 ' + state.round + ' 轮';
+    $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.sampleStudent.id + ' · ' + SHT.curriculum.hostUnitId;
   }
 
   /* ---------- 动作 ---------- */
@@ -605,14 +649,14 @@
       list.forEach(function (q, i) { if (cells[i]) q.cell = cells[i]; });
     }
     save(); renderAll();
-    toast('已排好 5 个不重复的出题角度；题目内容要照新角度检查或重写');
+    toast('已排好 5 个角度');
   }
 
   function fillWeakness() {
     const queue = weaknessProjection().queue.slice(0, 3);
-    if (!queue.length) { toast('还没有该练的知识点，先去第 2 页记一条错题'); return; }
+    if (!queue.length) { toast('没有待练知识点，先去 02 加一条错题'); return; }
     const list = currentRound().questions;
-    if (!list.length) { toast('先在第 1 页排好出题角度'); return; }
+    if (!list.length) { toast('先在 01 排好出题角度'); return; }
     queue.forEach(function (item, i) {
       if (!list[i]) return;
       list[i].knowledgePoint = item.label;
@@ -622,18 +666,22 @@
     toast('已把最该练的 ' + Math.min(queue.length, list.length) + ' 个知识点和建议的出题角度写进计划');
   }
 
-  function applyWeak(key) {
+  function applyWeak(key, idx) {
+    const c = typeof idx === 'number' ? state.wrongCases[idx] : null;
+    const kp = c ? kpForWrong(c) : null;
     const item = weaknessProjection().items.filter(function (i) { return i.key === key; })[0];
-    if (!item) return;
+    const cell = kp ? kp.cell : (item ? item.suggestedCell : null);
+    if (!cell) { toast('这条没有可用的出题角度'); return; }
     const list = currentRound().questions;
-    if (!list.length) { toast('先在第 1 页排好出题角度'); return; }
+    if (!list.length) { toast('先在 01 排好出题角度'); return; }
     const slot = list.filter(function (q) { return !q.knowledgePoint; })[0] || list[0];
-    slot.knowledgePoint = item.label;
-    slot.cell = item.suggestedCell;
+    slot.knowledgePoint = key;
+    slot.cell = Object.assign({}, cell);
+    if (kp) slot.ability = kp.ability;
     state.tab = 'agents';
     state.agent = 'course';
     save(); renderAll();
-    toast('已写进第 1 页的计划：' + item.label);
+    toast('已写入第 ' + (list.indexOf(slot) + 1) + ' 题：' + key);
   }
 
   function recordAttempt(index, action) {
@@ -762,7 +810,7 @@
       state.round = target; state.activeNo = 1; save(); renderAll();
     });
 
-    $('roleRow').addEventListener('click', function (e) {
+    $('agentRail').addEventListener('click', function (e) {
       const b = e.target.closest('button[data-role]');
       if (!b) return;
       state.agent = b.dataset.role; save(); renderAll();
@@ -830,12 +878,9 @@
       save();
     });
 
-    $('weaknessStrip').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-action="apply-weak"]');
-      if (b) applyWeak(b.dataset.key);
-    });
-
     $('wrongList').addEventListener('click', function (e) {
+      const applyBtn = e.target.closest('[data-action="apply-weak"]');
+      if (applyBtn) { applyWeak(applyBtn.dataset.key, Number(applyBtn.dataset.index)); return; }
       const b = e.target.closest('[data-action="record-attempt"]');
       if (!b) return;
       const idx = Number(b.dataset.index);

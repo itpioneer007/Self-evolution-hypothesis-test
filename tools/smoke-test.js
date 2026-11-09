@@ -69,12 +69,14 @@ function fire(id, type, target) {
   handlers[id][type]({ target: Object.assign({ closest() { return null; }, matches() { return false; }, dataset: {} }, target) });
 }
 console.log('--- 初始化渲染 ---');
-assert('三个智能体角色卡 = 3', count('roleRow', 'data-role="') === 3, count('roleRow', 'data-role="'));
+assert('三个智能体卡片 = 3', count('agentRail', 'data-role="') === 3, count('agentRail', 'data-role="'));
 assert('默认显示课程智能体的 5 行配额', count('agentPanel', 'class="plan-row') === 5, count('agentPanel', 'class="plan-row'));
-assert('薄弱画像 3 张卡', count('weaknessStrip', 'class="weak-card') === 3, count('weaknessStrip', 'class="weak-card'));
-assert('错题案 3 张卡', count('wrongList', 'class="wrong-card') === 3, count('wrongList', 'class="wrong-card'));
-assert('三个指标卡', count('metrics', 'class="metric-card') === 3, count('metrics', 'class="metric-card'));
-assert('记忆库有统计行', count('memoryPanel', 'class="mem-row"') >= 4, count('memoryPanel', 'class="mem-row"'));
+assert('错题卡 3 张，每题带 6 行出题要点', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', 'class="brief-row"') === 18,
+  count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="brief-row"'));
+assert('四个 KPI', count('metrics', 'class="kpi"') === 4, count('metrics', 'class="kpi"'));
+assert('出题日志有记录', count('logFeed', 'class="log-item"') >= 5, count('logFeed', 'class="log-item"'));
+assert('打回缘由有渲染结果', nodes.rejectChart.innerHTML.length > 0);
+assert('已占用角度 5 个短码', count('usedCells', 'class="used-cell"') === 5, count('usedCells', 'class="used-cell"'));
 assert('停止决策两个信号', count('stopPanel', 'data-stop="') === 2, count('stopPanel', 'data-stop="'));
 assert('新增错题表单已渲染', count('addWrongForm', 'data-new="') === 8, count('addWrongForm', 'data-new="'));
 
@@ -98,16 +100,28 @@ fire('agentPanel', 'click', {
   matches() { return false; }
 });
 assert('点「用这个」把候选写进第 1 题', nodes.agentPanel.innerHTML.indexOf('value="vocab · 校园场所名词 · class / classroom 形近"') >= 0);
-fire('roleRow', 'click', { closest: () => ({ dataset: { role: 'execute' } }) });
+fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'execute' } }) });
 assert('执行智能体渲染单题表单', count('agentPanel', 'class="field-grid"') === 1 && count('agentPanel', 'data-field="prompt"') === 1);
 assert('单题卡有候选下拉且列出 12 条', count('agentPanel', 'data-kp-pick') === 1 && count('agentPanel', '<option value="kp-') === 12);
-fire('roleRow', 'click', { closest: () => ({ dataset: { role: 'verify' } }) });
+fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'verify' } }) });
 assert('验证智能体渲染层切换', count('agentPanel', 'class="layer-switch"') === 1 && count('agentPanel', 'data-action="layer"') === SHT.CHECK_LAYERS.length);
 fire('agentPanel', 'click', {
   closest(sel) { return sel === '[data-action]' ? { dataset: { action: 'check', check: SHT.ALL_CHECKS[0].id, verdict: 'pass' } } : null; },
   matches() { return false; }
 });
 assert('勾选一条检查后面板重渲染且摘要仍在', count('agentPanel', 'stat-pill') === 2, count('agentPanel', 'stat-pill'));
+
+console.log('--- 错题回写计划 ---');
+fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'wrongbook' } }) });
+fire('wrongList', 'click', {
+  closest(sel) {
+    return sel === '[data-action="apply-weak"]'
+      ? { dataset: { action: 'apply-weak', key: SHT.sampleWrongCases[0].knowledgePoint, index: '0' } }
+      : null;
+  },
+  matches() { return false; }
+});
+assert('错题「写入计划」把知识点带回 01', count('agentPanel', 'value="vocab · 校园场所名词 · class / classroom 形近"') >= 1);
 
 console.log('--- 核心纯函数 ---');
 const projection = SHT.projectWeaknesses(SHT.sampleWrongCases, '学校');
