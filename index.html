@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Self-evolution hypothesis test · 最小出题测试工作台</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-title">Self-evolution hypothesis test</div>
+      <div class="brand-sub">最小出题测试工作台 · 1 学生 / 1 单元 / 5 题 / 2 轮</div>
+    </div>
+    <div class="controls">
+      <label class="field"><span>学生</span><select id="studentSelect"><option value="S-001">示例学生 S-001</option></select></label>
+      <label class="field"><span>单元</span><select id="unitSelect"><option value="G4-上-U1">G4-上-U1 · Our School</option></select></label>
+      <div class="round-switch" id="roundSwitch">
+        <button type="button" data-round="1" class="is-active">第 1 轮</button>
+        <button type="button" data-round="2">第 2 轮</button>
+      </div>
+      <button type="button" id="resetBtn" class="btn btn-ghost">重置</button>
+    </div>
+  </header>
+
+  <div class="stage-bar">
+    <span class="stage-label">流程</span>
+    <span class="stage-item is-active">1 规划</span>
+    <span class="stage-arrow">›</span>
+    <span class="stage-item">2 逐题生成</span>
+    <span class="stage-arrow">›</span>
+    <span class="stage-item">3 独立质检</span>
+    <span class="stage-arrow">›</span>
+    <span class="stage-item">4 记忆库</span>
+    <span class="stage-arrow">›</span>
+    <span class="stage-item">5 组卷与停止</span>
+    <span class="stage-note">每一环都有明确输出交给下一环；记忆库要在下一轮规划之前先查</span>
+  </div>
+
+  <main class="workspace">
+
+    <section class="panel" id="panelPlan">
+      <div class="panel-head">
+        <h2>1 命题规划</h2>
+        <span class="tag">课程智能体</span>
+      </div>
+      <p class="panel-note">输出：5 行配额表，每行指定知识点与格子。<strong>格子不重复，题才不一样</strong>；换措辞不算新题。</p>
+      <div id="quotaList" class="quota-list"></div>
+      <div class="panel-actions">
+        <button type="button" id="autoQuotaBtn" class="btn btn-primary">按变化轴分配格子</button>
+        <button type="button" id="clearQuotaBtn" class="btn btn-ghost">清空配额</button>
+      </div>
+      <div id="exclusionHint" class="hint-box"></div>
+    </section>
+
+    <section class="panel" id="panelQuestion">
+      <div class="panel-head">
+        <h2>2 题目生成</h2>
+        <span class="tag">执行智能体</span>
+      </div>
+      <p class="panel-note">输出：九个字段，一次只出一题。只从本单元词表与句型表取材，不自由发挥。</p>
+      <div id="qNav" class="q-nav"></div>
+      <div id="qForm" class="q-form"></div>
+      <div class="vocab-head">本单元可用词（点击复制；超纲判定以此表 + 通用功能词白名单为准）</div>
+      <div id="vocabStrip" class="vocab-strip"></div>
+    </section>
+
+    <section class="panel" id="panelCheck">
+      <div class="panel-head">
+        <h2>3 独立质检</h2>
+        <span class="tag">验证智能体</span>
+      </div>
+      <p class="panel-note">输出：通过 / 退回 + 条款号。质检只拿题目、词表、画像，<strong>不听生成方自述</strong>。</p>
+      <div id="checkSummary" class="check-summary"></div>
+      <div id="checkList" class="check-list"></div>
+      <details class="selfcheck">
+        <summary>出完一道题，照着念十句</summary>
+        <ol id="selfCheckList"></ol>
+      </details>
+    </section>
+
+  </main>
+
+  <footer class="bottombar">
+    <div class="metrics" id="metrics"></div>
+    <label class="early-stop" title="对应环节 5：练到不需要练就收，不凑题量">
+      <input type="checkbox" id="earlyStopChk">
+      <span>本轮提前结束</span>
+      <input type="text" id="endReason" placeholder="依据：如某知识点连续三次全对">
+    </label>
+    <div class="bottom-actions">
+      <span class="storage-note">数据仅存本机浏览器，不上传</span>
+      <button type="button" id="exportBtn" class="btn btn-ghost">导出记录 JSON</button>
+      <button type="button" id="nextRoundBtn" class="btn btn-primary">结束本轮，进入第 2 轮</button>
+    </div>
+  </footer>
+
+</div>
+
+<script src="src/data/curriculum.js"></script>
+<script src="src/core/enums.js"></script>
+<script src="src/core/fingerprint.js"></script>
+<script src="src/core/checklist.js"></script>
+<script src="src/app.js"></script>
+</body>
+</html>
