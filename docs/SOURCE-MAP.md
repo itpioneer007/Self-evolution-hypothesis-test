@@ -37,7 +37,8 @@
 | `src/core/wrongBook.js` 的 `isQualifiedEvidence` | `src/entities/attempt/evidencePolicy.ts:3-8` | 模拟 / 自述 / 未观测证据不算数 | 模板默认 `scoringMethod: 'exact'` |
 | `src/core/wrongBook.js` 的 `projectWeaknesses` | `src/entities/weakness-projection/projectWeaknesses.ts:194-295` | 按知识点分组、优先级打分、队列状态、`remediationLoopCount >= 2` 转人工 | 去掉 assessmentRecords 与证据分类，按中文知识点粒度分组 |
 | `src/core/wrongBook.js` 的 `certify` / `thresholdForLayer` | `src/entities/remediation-certification/completeRemediationCertification.ts:5-68` | 恰好 5 题、无提示无重试、A 90 / B 80 / C 70 | 模板固定 B 层；「已订正不等于已掌握」保留 |
-| 02 错题卡展示列 | `src/pages/progress/WrongQuestionCard.tsx:104-251` | 知识点 / 原题 / 首次答案 vs 正确答案 / 用时·提示·重试 / 掌握状态 | 压成一张卡：左半是题，右半是「出题要点」（知识点 · 能力 · 错因 · 建议角度 · 再错则 · 教材依据），去掉媒体与题解展开 |
+| `src/core/practice.js` 的判定与写回 | 无直接对应（主仓作答在答题页内完成，没有独立的「变体探针」） | 「答对一道 ≠ 会这个考点」这一问题意识 | 新增：判对错、同考点变体、四态判据、错题 upsert。证据字段仍走主仓 `WrongQuestion` / `ExerciseAttempt` 形状 |
+| 03 错题卡展示列 | `src/pages/progress/WrongQuestionCard.tsx:104-251` | 知识点 / 原题 / 首次答案 vs 正确答案 / 用时·提示·重试 / 掌握状态 | 压成一张卡：左半是题，右半是「出题要点」（知识点 · 能力 · 错因 · 建议角度 · 再错则 · 教材依据），去掉媒体与题解展开 |
 
 **必须注意**：主仓有三套能力维度，不可混用。
 
@@ -56,7 +57,7 @@
 | `src/core/enums.js` 的 `ERROR_TO_CELL` | `单题出题检查表.md` 第七节 | 错因 → 格子三步 |
 | `src/core/checklist.js` 的 `CHECK_LAYERS` | `单题出题检查表.md` 第二至第五节 | 四层 23 条 |
 | `src/app.js` 的 `renderExecutePanel` / `sampleQuestions` 九字段 | `出题手册.md` 3.1 | 位置 / 知识点 / 题干 / 选项 / 听力文本 / 答案 / 一句解析 / 格子标记 / 闭环层 L4 |
-| 03 日志 停止信号 SATURATED / STALLED | `演示项目档案_RSIAgent论文精华.md`、v5 演讲稿 P14 | 论文停止决策的两个信号 | 必须同时写依据才计入「是否提前结束」指标 |
+| 04 日志 停止信号 SATURATED / STALLED | `演示项目档案_RSIAgent论文精华.md`、v5 演讲稿 P14 | 论文停止决策的两个信号 | 必须同时写依据才计入「是否提前结束」指标 |
 | `src/core/checklist.js` 的 `QUALITY_GATE` | `出题手册.md` 3.3 | 八条清单 |
 | `src/core/checklist.js` 的 `SELF_CHECK_TEN` | `单题出题检查表.md` 第十节 | 自检十问 |
 | `src/data/textbook.js` 的 `meta.allowedFunctionWords` | `出题手册.md` 6 节第 7 条 | 全册通用功能词白名单，防按字面判超纲把每题都判死；切片时复制进 `SHT.curriculum` |
@@ -81,7 +82,7 @@
 |---|---|---|
 | 先规划后生成、一次只生成一题 | CSDN《Agent自出题教学实践》2.2 | 01 出题 角色按流程顺序排列；执行智能体一次只显示一题 |
 | 同一考点同类题最多两次，第三次必须换角度 | 同上 4.1 避坑表 | `isPointTypeFull` |
-| 退回要写明违反哪一条（过程级信号） | 知乎 RSI 综述解读 5.5 | 验证智能体每条挂了都留条款号，03 日志 自动汇总分布 |
+| 退回要写明违反哪一条（过程级信号） | 知乎 RSI 综述解读 5.5 | 验证智能体每条挂了都留条款号，04 日志 自动汇总分布 |
 | 验证器硬度决定改进上限 | 同上 5.2 / 总结 | 验证智能体 23 条二元判定，不设「基本可以」 |
 | diversity collapse 源于收敛到易过关题带 | 同上 5.3 | 变化轴 + 格子指纹 + 第 2 轮撞格子高亮 |
 | 生成方自查只能当线索不能当通过依据 | 两篇交叉 | 界面没有「让模型自查」入口，检查全部由人独立点 |
@@ -94,10 +95,13 @@
 - 三个 tab 的信息分层：tab → 角色 → 检查层，单屏只呈现一个主面板
 - `ERROR_CAUSES` 结构化错因分类与 `suggestCell()`：主仓错因是 AI 自由文本，这里补成可计算枚举并回写规划
 - `appendVariantAttempt()` 的简化：连续答错累加 loopCount，>= 2 转 `teacher-help`（主仓是「两轮补救未过」）
-- 把「提前结束」从单个勾选改成 03 日志 的 SATURATED / STALLED 双信号 + 必填依据
-- `tools/smoke-test.js`：最小 DOM 模拟的零依赖自检脚本
+- 把「提前结束」从单个勾选改成 04 日志 的 SATURATED / STALLED 双信号 + 必填依据
+- `src/core/practice.js` 的 `buildVariant()`：按题型从本单元教材数据确定性派生「同考点、同格子、换表面」的变体。出题要换格子，探针要同格子换表面——两条判据方向相反，这是本仓库的原创判断
+- `judgePoint()` 四态判据：真会 / 会用 / 只记住这道题 / 不会（外加用了提示一律降级）。「换掉表面还答对才算会」
+- `upsertWrongCase()`：作答侧写错题时按考点去重，首次证据不覆盖
+- `tools/smoke-test.js`：最小 DOM 模拟的零依赖自检脚本（含答题 → 判定 → 变体 → 错题的整条链路）
 
-## 五、三个 tab 与原流程图的对应
+## 五、四个 tab 与原流程图的对应
 
 用户最初给的五环节流程图（`Solingo汇报_v5_五段版` P14，演讲稿同页）：学生画像 → 命题规划 → 题目生成 → 独立质检 → 记忆库 → 组卷与停止。论文角色对照见同页：
 
@@ -106,8 +110,9 @@
 | 1 命题规划 | 课程智能体 | 01 出题 · 左侧第一张卡 |
 | 2 题目生成 | 执行智能体 | 01 出题 · 左侧第二张卡 |
 | 3 独立质检 | 验证智能体 | 01 出题 · 左侧第三张卡 |
-| 学生画像 → 错因 | 学生侧回边 | 02 错题（每题右侧「出题要点」） |
-| 4 记忆库 | 持久记忆 | 03 日志 · 已占用角度 + 打回缘由 |
-| 5 组卷与停止 | 停止决策 | 03 日志 · 底部停止条 + 顶部 4 个 KPI |
+| 学生画像 → 错因 | 学生侧回边 | 03 错题（每题右侧「出题要点」） |
+| 作答与判定（原图没有的一步） | 无 | 02 答题：一题两枪，对就换考点，错就换同考点的变体，还错写错题 |
+| 4 记忆库 | 持久记忆 | 04 日志 · 已占用角度 + 打回缘由 + 每题的作答 |
+| 5 组卷与停止 | 停止决策 | 04 日志 · 底部停止条 + 顶部 5 个 KPI |
 
 界面呈现上把三个角色画成「同一模型的三套配置」：卡片上直接标 提示词 / 记忆 / 技能，其中执行智能体的记忆只给本单元词表，与课程智能体的「上轮角度 + 薄弱画像」刻意不同。

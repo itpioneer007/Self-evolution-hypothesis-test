@@ -2,13 +2,15 @@
  * 最小出题测试工作台 · 界面逻辑
  *
  * 定位：给人手工出题用的模板，不是自动出题器，后面才「注入灵魂」。
- * 界面只自动做四件事：排不重复的出题角度、从静态候选清单确定性带出 4 项、记录检查结果、算三个指标。
+ * 界面只自动做五件事：排不重复的出题角度、从静态候选清单确定性带出 4 项、记录检查结果、
+ * 判学生的答案、按变化轴接一道同考点的变体；算指标也在这里。
  * 题目内容由人按格子填写 —— 对应出题手册「最小测试全手工」的口径。
  *
- * 三个 tab 按流程切分：
- *   01 三个智能体   = 环节 1/2/3（课程规划 / 执行生成 / 验证质检），一次只显示一个角色
- *   02 错题记录     = 学生侧回边：作答 → 错因 → 薄弱画像 → 规划
- *   03 记忆库与停止 = 环节 4/5，含跨轮事前排除与停止决策
+ * 四个 tab 按流程切分：
+ *   01 出题 = 环节 1/2/3（课程规划 / 执行生成 / 验证质检），一次只显示一个角色
+ *   02 答题 = 学生侧：作答 → 判对错 → 对就换考点 / 错就换一道同考点的变体 → 还错写错题
+ *   03 错题 = 出题侧回边：错因 → 出题要点 → 写入计划 → 回 01 出下一轮
+ *   04 日志 = 环节 4/5，含跨轮事前排除、作答记录与停止决策
  *
  * 数据只写 localStorage（实验数据，不涉及真实学生信息）。
  */
@@ -43,8 +45,21 @@
     });
   }
 
+  function blankPractice() {
+    return {
+      cursor: 0,
+      picked: null,
+      hintUsed: false,
+      hintGone: -1,
+      pending: null,
+      nextVariant: null,
+      revealed: null,
+      attempts: []
+    };
+  }
+
   function blankRound() {
-    return { questions: [], stopSignals: [], endReason: '', closed: false };
+    return { questions: [], stopSignals: [], endReason: '', closed: false, practice: blankPractice() };
   }
 
   function defaultState() {
@@ -72,6 +87,9 @@
       // v1 用单个 endedEarly 布尔，迁移成停止信号 + 依据
       if (r.endedEarly && !r.stopSignals.length) r.stopSignals.push('SATURATED');
       delete r.endedEarly;
+      // 早期版本没有作答记录，补一份空的，作答从第 1 题开始
+      r.practice = Object.assign(blankPractice(), r.practice || {});
+      if (!Array.isArray(r.practice.attempts)) r.practice.attempts = [];
     });
     if (!parsed.learningLayer) parsed.learningLayer = SHT.sampleLearningLayer || 'B';
     if (!parsed.tab) parsed.tab = 'agents';
@@ -383,6 +401,305 @@
     else renderVerifyPanel();
   }
 
+  /* ---------- 02 答题：学生侧，从出题结果接到错题回边 ---------- */
+  function practiceOf(round) {
+    const r = round || currentRound();
+    if (!r.practice) r.practice = blankPractice();
+    return r.practice;
+  }
+
+  // 能作答的题：有题干、有答案、至少两个选项，且答案在选项里
+  function practiceable(q) {
+    const filled = (q.options || []).filter(function (o) { return String(o || '').trim(); });
+    const answerInside = (q.options || []).some(function (o) {
+      return SHT.normAnswer(o) === SHT.normAnswer(q.answer);
+    });
+    return !!String(q.prompt || '').trim() && !!String(q.answer || '').trim() && filled.length >= 2 && answerInside;
+  }
+
+  function practiceQuestions(round) {
+    return (round || currentRound()).questions.filter(practiceable);
+  }
+
+  function activePracticeQuestion() {
+    const p = practiceOf();
+    if (p.pending) return p.pending;
+    return practiceQuestions()[p.cursor] || null;
+  }
+
+  function attemptsOf(no) {
+    return practiceOf().attempts.filter(function (a) { return a.no === no; });
+  }
+
+  function pointStateOf(q) { return SHT.judgePoint(attemptsOf(q.no)); }
+
+  function roundPracticeSummary(round) {
+    const p = (round && round.practice) || blankPractice();
+    const out = { total: 0, tested: 0, mastered: 0, passed: 0, assisted: 0, fragile: 0, wrong: 0, unseen: 0, attempts: (p.attempts || []).length };
+    practiceQuestions(round).forEach(function (q) {
+      const st = SHT.judgePoint((p.attempts || []).filter(function (a) { return a.no === q.no; }));
+      out[st.state] = (out[st.state] || 0) + 1;
+      if (st.state !== 'unseen') out.tested += 1;
+      out.total += 1;
+    });
+    return out;
+  }
+
+  function practiceStats() { return roundPracticeSummary(currentRound()); }
+
+  function practiceHeadHtml(q, p) {
+    const list = practiceQuestions();
+    const idx = Math.min(p.cursor + 1, list.length);
+    return '<div class="practice-head">' +
+      '<span class="practice-progress">第 ' + idx + ' 个考点 / 共 ' + list.length + ' 个' +
+        (p.pending ? '<span class="chip-variant">变体 · 同考点换表面</span>' : '') + '</span>' +
+      '<span class="hint">' + esc(q.cell ? q.cell.type + ' / ' + q.cell.level : '') + '</span>' +
+    '</div>';
+  }
+
+  function optionButtons(q, p) {
+    const r = p.revealed;
+    return '<div class="opt-list">' + (q.options || []).map(function (o, i) {
+      if (!String(o || '').trim()) return '';
+      let cls = 'opt-btn';
+      if (r) {
+        if (i === r.expectedIndex) cls += ' is-right';
+        else if (SHT.normAnswer(o) === SHT.normAnswer(r.picked)) cls += ' is-wrong';
+      } else if (p.picked === i) {
+        cls += ' is-picked';
+      } else if (p.hintGone === i) {
+        cls += ' is-gone';
+      }
+      return '<button type="button" class="' + cls + '" data-action="pick-option" data-index="' + i + '"' +
+        (r ? ' disabled' : '') + '>' +
+        '<span class="opt-key">' + String.fromCharCode(65 + i) + '</span><span>' + esc(o) + '</span></button>';
+    }).join('') + '</div>';
+  }
+
+  function verdictHtml(q, p) {
+    const r = p.revealed;
+    const isVariant = r.stage === 'variant';
+    let next = '';
+    if (r.correct) {
+      next = '<button type="button" class="btn btn-primary" data-action="next-step">换下一个考点</button>' +
+        '<span class="verdict-note">' +
+          (isVariant ? '换掉表面还答对，这个考点算真会' : '这个考点算会用；换个表面还行才算真会') +
+        '</span>';
+    } else if (!isVariant && p.nextVariant) {
+      next = '<button type="button" class="btn btn-primary" data-action="next-step">换一道同考点的变体再考</button>' +
+        '<span class="verdict-note">' + esc(p.nextVariant.basis) + '</span>';
+    } else if (!isVariant) {
+      next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
+        '<span class="verdict-note">这种题型自动接不出变体，只能直接记错题</span>';
+    } else {
+      next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
+        '<span class="verdict-note">换掉表面还是错，这个考点不写 mastered</span>';
+    }
+    return '<div class="verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
+      '<div class="verdict-top">' +
+        '<span class="verdict-badge">' + (r.correct ? '对了' : '错了') + '</span>' +
+        '<span class="verdict-ans">你选 <b>' + esc(r.picked) + '</b>' +
+          (r.correct ? '' : '　正确 <b>' + esc(r.expected) + '</b>') +
+          (r.hintCount ? '　用了提示' : '') + '</span>' +
+      '</div>' +
+      (q.analysis ? '<div class="verdict-analysis">' + esc(q.analysis) + '</div>' : '') +
+      '<div class="verdict-next">' + next + '</div>' +
+    '</div>';
+  }
+
+  function renderPracticeCard() {
+    const p = practiceOf();
+    const list = practiceQuestions();
+    if (!list.length) {
+      $('practiceCard').innerHTML = '<div class="hint-box">这一轮还没有能作答的题。去 01 把题干、选项、答案填上，这里会自动出现。</div>';
+      return;
+    }
+    const q = activePracticeQuestion();
+    if (!q) { renderPracticeDone(); return; }
+    const r = p.revealed;
+    const st = pointStateOf(list[p.cursor] || q);
+
+    $('practiceCard').innerHTML = '' +
+      practiceHeadHtml(q, p) +
+      '<div class="q-card">' +
+        '<div class="q-kp">' + esc(q.knowledgePoint || '（未填知识点）') +
+          (r ? '　·　这个考点：' + esc(SHT.judgePoint(attemptsOf(q.no)).label) : '') + '</div>' +
+        '<div class="q-prompt">' + esc(q.prompt) + '</div>' +
+        (q.audioText
+          ? '<div class="q-audio">' + (r ? '听力原文　' + esc(q.audioText) : '听力题 · 由测试者朗读，提交后显示原文') + '</div>'
+          : '') +
+        optionButtons(q, p) +
+        (r ? verdictHtml(q, p) :
+          '<div class="verdict-next">' +
+            '<button type="button" class="btn btn-primary" data-action="submit-answer">提交</button>' +
+            '<button type="button" class="btn" data-action="use-hint"' + (p.hintUsed ? ' disabled' : '') + '>提示：划掉一个错的</button>' +
+            (st.state === 'unseen' ? '' : '<span class="verdict-note">当前判断：' + st.label + '</span>') +
+          '</div>') +
+      '</div>';
+  }
+
+  function renderPracticeDone() {
+    const s = practiceStats();
+    const cell = function (label, value, tone) {
+      return '<div class="done-cell"><div class="k">' + esc(label) + '</div>' +
+        '<div class="v ' + (tone || '') + '">' + value + '</div></div>';
+    };
+    const title = s.unseen
+      ? '这一轮走到最后了，还有 ' + s.unseen + ' 个考点没测'
+      : '这一轮 ' + s.total + ' 个考点都测完了';
+    $('practiceCard').innerHTML = '<div class="done-card">' +
+      '<div class="done-title">' + esc(title) + '</div>' +
+      '<div class="done-grid">' +
+        cell('真会（原题 + 变体都对）', s.mastered, 'is-good') +
+        cell('会用 / 看提示才会', s.passed + s.assisted, '') +
+        cell('不会（已写进错题）', s.wrong, s.wrong ? 'is-bad' : '') +
+        cell('没测到', s.unseen, '') +
+      '</div>' +
+      '<div class="done-actions">' +
+        (s.wrong ? '<button type="button" class="btn" data-action="goto-wrongbook">去 03 看错题的出题要点</button>' : '') +
+        '<button type="button" class="btn btn-primary" data-action="goto-round2">按这些结果开第 2 轮</button>' +
+        '<button type="button" class="btn" data-action="restart-practice">重测一遍</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderPracticeRail() {
+    const list = practiceQuestions();
+    const p = practiceOf();
+    const current = activePracticeQuestion();
+    if (!list.length) { $('practiceRail').innerHTML = '<div class="rail-title">本轮考点</div><div class="chart-empty">暂无</div>'; return; }
+    const s = practiceStats();
+    const rows = list.map(function (q, i) {
+      const st = pointStateOf(q);
+      return '<div class="point-row' + (current && current.no === q.no ? ' is-current' : '') + '">' +
+        '<span class="no">' + (i + 1) + '</span>' +
+        '<span class="label">' + esc(q.knowledgePoint || '（未填知识点）') + '</span>' +
+        '<span class="point-state ' + st.tone + '">' + esc(st.label) + '</span></div>';
+    }).join('');
+    $('practiceRail').innerHTML = '<div class="rail-title">本轮考点 · ' + s.total + '</div>' +
+      '<div class="point-list">' + rows + '</div>' +
+      '<div class="rail-sum">' +
+        '<span>真会 <b>' + s.mastered + '</b>　会用 <b>' + s.passed + '</b>　看提示 <b>' + s.assisted + '</b></span>' +
+        '<span>只记住这道题 <b>' + s.fragile + '</b>　不会 <b>' + s.wrong + '</b>　未测 <b>' + s.unseen + '</b></span>' +
+        '<span>已作答 <b>' + p.attempts.length + '</b> 次</span>' +
+      '</div>';
+  }
+
+  function renderPractice() {
+    renderPracticeCard();
+    renderPracticeRail();
+  }
+
+  /* ---------- 02 答题：动作 ---------- */
+  function pickOption(index) {
+    const p = practiceOf();
+    if (p.revealed) return;
+    p.picked = p.picked === index ? null : index;
+    save(); renderPractice();
+  }
+
+  function useHint() {
+    const p = practiceOf();
+    const q = activePracticeQuestion();
+    if (!q || p.revealed) return;
+    const expectedIndex = (q.options || []).reduce(function (acc, o, i) {
+      return acc < 0 && SHT.normAnswer(o) === SHT.normAnswer(q.answer) ? i : acc;
+    }, -1);
+    const gone = (q.options || []).reduce(function (acc, o, i) {
+      return acc < 0 && i !== expectedIndex && String(o || '').trim() ? i : acc;
+    }, -1);
+    if (gone < 0) { toast('这道题没有可划掉的错项'); return; }
+    p.hintGone = gone;
+    p.hintUsed = true;
+    save(); renderPractice();
+    toast('划掉一个错的。用了提示，这题答对也不算独立答对');
+  }
+
+  function submitAnswer() {
+    const p = practiceOf();
+    const q = activePracticeQuestion();
+    if (!q || p.revealed) return;
+    const ev = SHT.evaluateAnswer(q, p.picked);
+    if (!ev.ok) { toast(ev.reason); return; }
+    const stage = p.pending ? 'variant' : 'first';
+    const kp = SHT.kpByLabel(q.knowledgePoint);
+    p.attempts.push({
+      no: q.no,
+      stage: stage,
+      kpId: kp ? kp.id : '',
+      kpLabel: q.knowledgePoint || '',
+      picked: ev.picked,
+      expected: ev.expected,
+      expectedIndex: ev.expectedIndex,
+      correct: ev.correct,
+      hintCount: p.hintUsed ? 1 : 0,
+      at: new Date().toISOString()
+    });
+    p.revealed = p.attempts[p.attempts.length - 1];
+    if (!ev.correct && stage === 'first') p.nextVariant = SHT.buildVariant(q, q.no);
+    save(); renderAll();
+  }
+
+  function writeWrongFromPractice(q, first, last) {
+    const kp = SHT.kpByLabel(q.knowledgePoint);
+    // 首次错误证据冻结（主仓约定），变体那枪只写进错因说明，不覆盖首次作答
+    const tail = last && last.stage === 'variant'
+      ? '　换了一道同考点的变体还是错（选了「' + last.picked + '」，应为「' + last.expected + '」）。'
+      : '';
+    const res = SHT.upsertWrongCase(state.wrongCases, {
+      studentId: SHT.sampleStudent.id,
+      unitId: SHT.curriculum.hostUnitId,
+      originalQuestionId: 'q' + q.no,
+      kpId: kp ? kp.id : '',
+      knowledgePoint: q.knowledgePoint || (kp ? kp.label : '未填写知识点'),
+      ability: q.ability || (kp ? kp.ability : 'vocab'),
+      category: kp ? kp.cause : '未掌握',
+      errorCause: ((kp ? kp.why : '') + '　第一次选了「' + first.picked + '」，答案是「' + first.expected + '」。' + tail).trim(),
+      questionSnapshot: q.prompt,
+      studentAnswer: first.picked,
+      correctAnswer: first.expected,
+      hintCount: first.hintCount,
+      at: first.at
+    });
+    state.wrongCases = res.list;
+    toast(res.created ? '已写进 03 错题，出题要点和教材依据一起带过去' : '这个考点又错一次，错题状态已更新');
+  }
+
+  function practiceNext() {
+    const p = practiceOf();
+    const r = p.revealed;
+    if (!r) return;
+    const q = activePracticeQuestion();
+    // 只在「原题错、且接得出变体」时留在原地换一道，其余都推进到下一个考点
+    const goVariant = !r.correct && r.stage === 'first' && !!p.nextVariant;
+    if (r.correct) {
+      toast(r.stage === 'variant' ? '换掉表面也答对，这个考点算真会' : '答对了，换下一个考点');
+    } else if (goVariant) {
+      p.pending = p.nextVariant;
+      toast('换一道同考点的变体：' + p.nextVariant.basis);
+    } else {
+      const first = p.attempts.filter(function (a) { return a.stage === 'first'; })[0] || r;
+      writeWrongFromPractice(q, first, r);
+    }
+    if (!goVariant) {
+      p.cursor += 1;
+      p.pending = null;
+      p.nextVariant = null;
+    }
+    p.revealed = null;
+    p.picked = null;
+    p.hintUsed = false;
+    p.hintGone = -1;
+    save(); renderAll();
+  }
+
+  function restartPractice() {
+    const round = currentRound();
+    round.practice = blankPractice();
+    save(); renderAll();
+    toast('作答记录已清空，从第 1 个考点重测');
+  }
+
   /* ---------- 02 错题 ---------- */
   function kpForWrong(c) {
     if (c.kpId) {
@@ -498,6 +815,7 @@
     const passed = round.questions.filter(function (q) { return verdictOf(q) === '通过'; }).length;
     const failedCount = countFailed(round);
     const overlap = overlapCount();
+    const stats = practiceStats();
 
     function kpi(label, value, note, cls) {
       return '<div class="kpi"><div class="kpi-label">' + esc(label) + '</div>' +
@@ -509,7 +827,8 @@
       kpi('本轮题数', total + ' / 5', '计划题量', '') +
       kpi('通过', passed, '四层 23 条全过', passed ? 'is-good' : '') +
       kpi('退回', failedCount === null ? 0 : failedCount, '条款见右栏', failedCount ? 'is-bad' : '') +
-      kpi('角度重复', overlap === null ? '—' : overlap + '/5', '合格线 ≤ 1/5', overlap !== null && overlap > 1 ? 'is-bad' : '');
+      kpi('角度重复', overlap === null ? '—' : overlap + '/5', '合格线 ≤ 1/5', overlap !== null && overlap > 1 ? 'is-bad' : '') +
+      kpi('真会 / 已测', stats.mastered + ' / ' + stats.tested, '共 ' + stats.total + ' 个考点', stats.wrong ? 'is-bad' : (stats.mastered ? 'is-good' : ''));
   }
 
   /* ---------- 03 出题日志 ---------- */
@@ -538,6 +857,15 @@
             detail: fails.map(function (f) { return '<code>' + esc(f) + '</code>'; }).join('') + ' ' + esc(checkText(fails[0]))
           });
         }
+        // 这道题学生的作答紧跟在它后面，出题与作答在同一条线上，看得出因果
+        (r.practice ? r.practice.attempts : []).filter(function (a) { return a.no === i + 1; })
+          .forEach(function (a) {
+            entries.push({
+              round: rn, kind: 'answer',
+              title: '#' + a.no + (a.stage === 'variant' ? ' 变体' : '') + (a.correct ? ' 答对' : ' 答错'),
+              detail: (a.correct ? '' : '选 ' + esc(a.picked) + ' / 对 ' + esc(a.expected)) + (a.hintCount ? '　用了提示' : '')
+            });
+          });
       });
       if (r.closed) entries.push({ round: rn, kind: 'close', title: '第 ' + rn + ' 轮结束', detail: '' });
     });
@@ -627,6 +955,7 @@
     renderUnitSelect();
     renderAgentRail();
     renderAgentPanel();
+    renderPractice();
     renderWrongList();
     renderAddWrongForm();
     renderMetrics();
@@ -656,7 +985,7 @@
           answer: '', analysis: '', nextIfWrong: '', checks: {}
         };
       }),
-      stopSignals: [], endReason: '', closed: false
+      stopSignals: [], endReason: '', closed: false, practice: blankPractice()
     };
     state.round = 2;
     state.activeNo = 1;
@@ -803,6 +1132,10 @@
         round2Failed: countFailed(state.rounds[2]),
         round1EndedEarly: endedEarly(state.rounds[1]),
         round2EndedEarly: endedEarly(state.rounds[2])
+      },
+      practice: {
+        round1: roundPracticeSummary(state.rounds[1]),
+        round2: roundPracticeSummary(state.rounds[2])
       },
       weaknessProjection: p,
       wrongCases: state.wrongCases,
@@ -953,6 +1286,19 @@
       const idx = Number(b.dataset.index);
       const sel = document.querySelector('[data-attempt-field="next"][data-index="' + idx + '"]');
       recordAttempt(idx, sel ? sel.value : 'wrong');
+    });
+
+    $('practiceCard').addEventListener('click', function (e) {
+      const b = e.target.closest('[data-action]');
+      if (!b) return;
+      const action = b.dataset.action;
+      if (action === 'pick-option') { pickOption(Number(b.dataset.index)); return; }
+      if (action === 'use-hint') { useHint(); return; }
+      if (action === 'submit-answer') { submitAnswer(); return; }
+      if (action === 'next-step') { practiceNext(); return; }
+      if (action === 'restart-practice') { restartPractice(); return; }
+      if (action === 'goto-wrongbook') { state.tab = 'wrongbook'; save(); renderAll(); return; }
+      if (action === 'goto-round2') { startRound2(); return; }
     });
 
     $('addWrongForm').addEventListener('click', function (e) {

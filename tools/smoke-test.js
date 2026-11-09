@@ -54,6 +54,7 @@ require('../src/core/enums.js');
 require('../src/core/fingerprint.js');
 require('../src/core/checklist.js');
 require('../src/core/wrongBook.js');
+require('../src/core/practice.js');
 require('../src/app.js');
 
 const SHT = global.SHT;
@@ -74,12 +75,52 @@ assert('三个智能体卡片 = 3', count('agentRail', 'data-role="') === 3, cou
 assert('默认显示课程智能体的 5 行配额', count('agentPanel', 'class="plan-row') === 5, count('agentPanel', 'class="plan-row'));
 assert('错题卡 3 张，每题带 6 行出题要点', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', 'class="brief-row"') === 18,
   count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="brief-row"'));
-assert('四个 KPI', count('metrics', 'class="kpi"') === 4, count('metrics', 'class="kpi"'));
+assert('五个 KPI', count('metrics', 'class="kpi"') === 5, count('metrics', 'class="kpi"'));
 assert('出题日志有记录', count('logFeed', 'class="log-item"') >= 5, count('logFeed', 'class="log-item"'));
 assert('打回缘由有渲染结果', nodes.rejectChart.innerHTML.length > 0);
 assert('已占用角度 5 个短码', count('usedCells', 'class="used-cell"') === 5, count('usedCells', 'class="used-cell"'));
 assert('停止决策两个信号', count('stopPanel', 'data-stop="') === 2, count('stopPanel', 'data-stop="'));
 assert('新增错题表单已渲染', count('addWrongForm', 'data-new="') === 8, count('addWrongForm', 'data-new="'));
+
+console.log('--- 02 答题：作答 → 判定 → 分支 ---');
+const q1 = SHT.sampleQuestions[0];
+function click(id, dataset) {
+  fire(id, 'click', {
+    closest(sel) { return sel === '[data-action]' ? { dataset } : null; },
+    matches() { return false; }
+  });
+}
+assert('答题页显示第 1 个考点的选项', count('practiceCard', 'class="opt-btn') === 3, count('practiceCard', 'class="opt-btn'));
+assert('右侧考点列表 5 行', count('practiceRail', 'class="point-row') === 5, count('practiceRail', 'class="point-row'));
+
+click('practiceCard', { action: 'pick-option', index: '0' });
+click('practiceCard', { action: 'submit-answer' });
+assert('答对后判定条出现', count('practiceCard', 'class="verdict is-good"') === 1);
+assert('答对提示换下一个考点', nodes.practiceCard.innerHTML.indexOf('换下一个考点') >= 0);
+click('practiceCard', { action: 'next-step' });
+assert('答对推进到第 2 个考点', nodes.practiceCard.innerHTML.indexOf('第 2 个考点') >= 0);
+assert('右侧第 1 个考点记为会用', nodes.practiceRail.innerHTML.indexOf('会用') >= 0);
+
+click('practiceCard', { action: 'restart-practice' });
+assert('重测回到第 1 个考点', nodes.practiceCard.innerHTML.indexOf('第 1 个考点') >= 0);
+click('practiceCard', { action: 'pick-option', index: '1' });
+click('practiceCard', { action: 'submit-answer' });
+assert('答错给的是「换一道同考点的变体」', nodes.practiceCard.innerHTML.indexOf('换一道同考点的变体再考') >= 0);
+click('practiceCard', { action: 'next-step' });
+assert('变体题上屏且标注同考点换表面', nodes.practiceCard.innerHTML.indexOf('变体 · 同考点换表面') >= 0);
+
+const variant1 = SHT.buildVariant(q1, q1.no);
+const wrongIdx = variant1.options.findIndex(o => SHT.normAnswer(o) !== SHT.normAnswer(variant1.answer));
+click('practiceCard', { action: 'pick-option', index: String(wrongIdx) });
+click('practiceCard', { action: 'submit-answer' });
+assert('变体答错后判定条是失败态', count('practiceCard', 'class="verdict is-bad"') === 1);
+assert('变体答错写明不写 mastered', nodes.practiceCard.innerHTML.indexOf('这个考点不写 mastered') >= 0);
+const wrongBefore = count('wrongList', 'class="wrong-card');
+click('practiceCard', { action: 'next-step' });
+assert('变体再错自动写进错题本', count('wrongList', 'class="wrong-card') === wrongBefore + 1,
+  wrongBefore + ' → ' + count('wrongList', 'class="wrong-card'));
+assert('写进去的错题带知识点与作答', nodes.wrongList.innerHTML.indexOf('classroom') >= 0 && nodes.wrongList.innerHTML.indexOf('窗户') >= 0);
+assert('作答记录进了日志信息流', count('logFeed', 'is-answer') >= 2, count('logFeed', 'is-answer'));
 
 console.log('--- 教材知识库 ---');
 const BOOK = global.SHT_BOOK;
@@ -177,6 +218,46 @@ const ex = SHT.buildExclusionList([{ questions: SHT.sampleQuestions }]);
 assert('历史格子 5 个且全部可排除', ex.usedCells.size === 5 && SHT.sampleQuestions.every(x => ex.isCellBlocked(x.cell)));
 assert('四层检查共 23 条', SHT.ALL_CHECKS.length === 23, SHT.ALL_CHECKS.length);
 assert('自检十问 = 10', SHT.SELF_CHECK_TEN.length === 10);
+
+console.log('--- 判对错与变体（纯函数） ---');
+assert('答案比对忽略大小写与句点', SHT.normAnswer(' Thank you. ') === 'thank you');
+assert('答对判 true / 答错判 false',
+  SHT.evaluateAnswer(q, 0).correct === true && SHT.evaluateAnswer(q, 1).correct === false);
+assert('没选答案直接拒答', SHT.evaluateAnswer(q, null).ok === false);
+assert('缺答案的题不能作答', SHT.evaluateAnswer({ options: ['a', 'b'], answer: '' }, 0).ok === false);
+
+const variants = SHT.sampleQuestions.map(x => SHT.buildVariant(x, x.no));
+assert('U1 五道题都能接出变体', variants.every(Boolean),
+  variants.map(v => v ? 'ok' : 'null').join(','));
+assert('变体答案都落在自己的选项里',
+  variants.every(v => v.options.some(o => SHT.normAnswer(o) === SHT.normAnswer(v.answer))));
+assert('同参调用结果完全一致（确定性）',
+  JSON.stringify(SHT.buildVariant(q, q.no)) === JSON.stringify(variants[0]));
+assert('变体确实换了表面：答案与原题不同、并写明换了什么',
+  SHT.normAnswer(variants[0].answer) !== SHT.normAnswer(q.answer) && variants[0].basis.indexOf('换') === 0,
+  variants[0].basis);
+assert('变体沿用原题格子（同考点才叫探针）',
+  variants.every((v, i) => JSON.stringify(v.cell) === JSON.stringify(SHT.sampleQuestions[i].cell)));
+
+const A = (stage, correct, hintCount) => ({ stage: stage, correct: correct, hintCount: hintCount || 0 });
+assert('没作答 → 未测', SHT.judgePoint([]).state === 'unseen');
+assert('原题对 + 变体对 → 真会', SHT.judgePoint([A('first', true), A('variant', true)]).state === 'mastered');
+assert('原题对 + 变体错 → 只记住这道题', SHT.judgePoint([A('first', true), A('variant', false)]).state === 'fragile');
+assert('原题对、接不出变体 → 只算会用', SHT.judgePoint([A('first', true)]).state === 'passed');
+assert('原题错 + 变体对 → 换个角度才会', SHT.judgePoint([A('first', false), A('variant', true)]).state === 'passed');
+assert('原题错 + 变体错 → 不会', SHT.judgePoint([A('first', false), A('variant', false)]).state === 'wrong');
+assert('用了提示最高只到看提示才会', SHT.judgePoint([A('first', true, 1), A('variant', true)]).state === 'assisted');
+
+const draft = {
+  kpId: 'kp-U1-04', knowledgePoint: 'vocab · classroom', unitId: 'G4-上-U1',
+  originalQuestionId: 'q1', category: '未掌握', at: '2026-11-09T10:00:00'
+};
+const createdCase = SHT.upsertWrongCase([], draft);
+assert('错题写入用业务键生成 id',
+  createdCase.created === true && createdCase.list[0].id === 'wq:S-001:G4-上-U1:q1', createdCase.list[0].id);
+const againCase = SHT.upsertWrongCase(createdCase.list, draft);
+assert('同考点再错只追加记录，不新建卡片',
+  againCase.created === false && againCase.list.length === 1 && againCase.list[0].variantAttempts.length === 1);
 
 console.log('--- 单元切换 ---');
 fire('unitSelect', 'change', { value: 'U5' });

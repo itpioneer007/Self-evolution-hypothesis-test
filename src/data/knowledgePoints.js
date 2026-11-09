@@ -393,4 +393,11 @@
   SHT.kpById = function (id) {
     return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.id === id; })[0] || null;
   };
+
+  // 作答侧只拿得到题上写的知识点中文，靠它倒查回候选条目（错因 / 教材依据 / 建议角度）
+  SHT.kpByLabel = function (label) {
+    const key = String(label == null ? '' : label).trim();
+    if (!key) return null;
+    return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.label === key; })[0] || null;
+  };
 })(window);

@@ -27,8 +27,9 @@
 
   <nav class="tabbar" id="tabbar">
     <button type="button" data-tab="agents" class="tab is-active"><span class="tab-no">01</span>出题</button>
-    <button type="button" data-tab="wrongbook" class="tab"><span class="tab-no">02</span>错题</button>
-    <button type="button" data-tab="loop" class="tab"><span class="tab-no">03</span>日志</button>
+    <button type="button" data-tab="practice" class="tab"><span class="tab-no">02</span>答题</button>
+    <button type="button" data-tab="wrongbook" class="tab"><span class="tab-no">03</span>错题</button>
+    <button type="button" data-tab="loop" class="tab"><span class="tab-no">04</span>日志</button>
   </nav>
 
   <main class="stage">
@@ -36,6 +37,11 @@
     <section class="stage-page is-active" id="page-agents">
       <aside class="agent-rail" id="agentRail"></aside>
       <div class="agent-work" id="agentPanel"></div>
+    </section>
+
+    <section class="stage-page" id="page-practice">
+      <div class="practice-work" id="practiceCard"></div>
+      <aside class="practice-rail" id="practiceRail"></aside>
     </section>
 
     <section class="stage-page" id="page-wrongbook">
@@ -89,6 +95,7 @@
 <script src="src/core/fingerprint.js"></script>
 <script src="src/core/checklist.js"></script>
 <script src="src/core/wrongBook.js"></script>
+<script src="src/core/practice.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

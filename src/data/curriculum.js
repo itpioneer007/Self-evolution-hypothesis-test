@@ -54,7 +54,7 @@
   SHT.sampleQuestions = [
     {
       no: 1,
-      knowledgePoint: 'vocab · 教室物品名词 · 音义联结（classroom）',
+      knowledgePoint: 'vocab · 教室物品名词 · 听音选义（音义联结）',
       ability: 'listening / vocab',
       cell: { type: '听音选义', scene: '学校', level: '认', distractor: '同类不同物' },
       prompt: '听录音，选出你听到的单词的中文意思。',
@@ -66,7 +66,7 @@
     },
     {
       no: 2,
-      knowledgePoint: 'spelling · blackboard · oa+ar 双字母组合',
+      knowledgePoint: 'spelling · blackboard · oa + ar 双字母组合',
       ability: 'spelling',
       cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
       prompt: '选出 blackboard 的正确拼写。',
@@ -90,7 +90,7 @@
     },
     {
       no: 4,
-      knowledgePoint: 'sentence · Where is it? · 介词 on / in 选择',
+      knowledgePoint: 'sentence · Where is it? · on / in 介词',
       ability: 'sentence',
       cell: { type: '选词填空', scene: '学校', level: '用', distractor: '语义近' },
       prompt: '— Where is the picture?\n— It\'s ___ the wall.',
