@@ -97,6 +97,22 @@
           lines.push('语音点：本册没有语音板块，不要提 phonics 类考点。');
         }
         lines.push('');
+        const stage = ctx.stage;
+        if (stage && stage.cap) {
+          lines.push('学生当前阶段：' + stage.layer + ' 层；这一轮层次上限「' + stage.cap + '」，' +
+            '高过上限的层次不许出（层次阶梯：' + (stage.ladder || []).join(' → ') + '）。');
+          if ((stage.retired || []).length) {
+            lines.push('这些考点他已经真会到顶，一个都不要排：' + stage.retired.join('；'));
+          }
+          if ((stage.advancing || []).length) {
+            lines.push('这些考点上一轮已经答对，这一轮要往上走一层：' +
+              stage.advancing.map(function (a) { return a.kp + ' → ' + a.level; }).join('；'));
+          }
+          if (stage.scopeExhausted) {
+            lines.push('注意：本轮勾选的范围已经考完，考点要从范围外另提。');
+          }
+          lines.push('');
+        }
         const scope = ctx.scope || [];
         if (scope.length) {
           lines.push('本轮考点范围（' + scope.length + ' 个，只能从里面挑，kp 原样照抄）：');

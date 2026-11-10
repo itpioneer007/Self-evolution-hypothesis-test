@@ -54,6 +54,7 @@ require('../src/core/practice.js');
 require('../src/core/llm.js');
 require('../src/core/agents.js');
 require('../src/core/validate.js');
+require('../src/core/progress.js');
 require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
 

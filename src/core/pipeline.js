@@ -176,11 +176,22 @@
     // 三个智能体各自的记忆：由代码在调用之间搬运，下一轮各自读回
     const memory = (o.memory && o.memory.plan) ? o.memory : SHT.agentMemory.blank();
     const recall = function (id) { return SHT.agentMemory.recallText(memory, id); };
+
+    // 考点推进：会过的考点退役、升层的考点带上目标层次、学生分层给层次上限
+    const progress = (o.progress && o.progress.points) ? o.progress : SHT.progress.blank();
+    const hint = SHT.progress.planHint(progress, { layer: (o.stage && o.stage.layer) || 'B', scope: scope });
+    const scopeAlive = scope.filter(function (s) { return hint.retired.indexOf(s.label) < 0; });
+    hint.retiredInScope.forEach(function (kp) {
+      failures.push(failEntry({
+        stage: 'plan', attempt: 1, planKp: kp, codes: ['PLAN_RETIRED'],
+        reason: '这个考点他已经真会到顶了，本轮从范围里移出', detail: ''
+      }));
+    });
     const normKp = function (s) { return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[·・.]/g, ''); };
 
     // ---------- 环节 1：规划 ----------
-    const want = scope.length ? Math.min(count, scope.length) : count;
-    onEvent({ phase: 'plan', text: '规划中：提 ' + want + ' 条考点' + (scope.length ? '（范围 ' + scope.length + ' 个）' : '') });
+    const want = scopeAlive.length ? Math.min(count, scopeAlive.length) : count;
+    onEvent({ phase: 'plan', text: '规划中：提 ' + want + ' 条考点' + (scopeAlive.length ? '（范围 ' + scopeAlive.length + ' 个）' : '') + (hint.layer ? '　' + hint.layer + ' 层上限 ' + hint.cap : '') });
     let plans = null;
     const planAgent = SHT.AGENTS.plan;
     for (let i = 0; i < 2 && !plans; i += 1) {
@@ -188,7 +199,8 @@
         role: 'plan',
         system: planAgent.system(),
         user: planAgent.user(Object.assign({}, ctxBase, {
-          brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [], count: want, scope: scope
+          brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [], count: want,
+          scope: scopeAlive, stage: hint
         })) + (recall('plan') ? '\n\n' + recall('plan') : ''),
         maxTokens: 1400
       });
@@ -206,8 +218,8 @@
         }).filter(function (p) { return p.kp; });
         // 范围的硬校验：说好只考这几个，就得真落在这几个上。
         // 提示词里写「必须照抄」不管用，模型会顺手把它改得更漂亮。
-        if (scope.length) {
-          const pool = scope.map(function (s) { return normKp(s.label); });
+        if (scopeAlive.length) {
+          const pool = scopeAlive.map(function (s) { return normKp(s.label); });
           const kept = [];
           plans.forEach(function (p) {
             const n = normKp(p.kp);
@@ -220,6 +232,27 @@
           });
           plans = kept;
         }
+        // 层次上限：C 层不给「用」，B 层不给「表达」。模型爱往高考，代码按住。
+        plans.forEach(function (p) {
+          if (SHT.LEVELS.indexOf(p.level) < 0) { p.level = hint.cap; return; }
+          const over = SHT.LEVELS.indexOf(p.level) > SHT.LEVELS.indexOf(hint.cap);
+          if (over) {
+            failures.push(failEntry({
+              stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_LEVEL_CAP'],
+              reason: '层次「' + p.level + '」超过 ' + hint.layer + ' 层的上限「' + hint.cap + '」，已降到上限', detail: ''
+            }));
+            p.level = hint.cap;
+          }
+        });
+        // 退役考点再出现（模型从记忆里抄回来的），直接剔掉
+        plans = plans.filter(function (p) {
+          if (hint.retired.indexOf(p.kp) < 0) return true;
+          failures.push(failEntry({
+            stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_RETIRED'],
+            reason: '这个考点已经真会到顶，不再排题', detail: ''
+          }));
+          return false;
+        });
         if (!plans.length) plans = null;
       }
       if (!plans) {
@@ -441,6 +474,10 @@
       failures: failures,
       stage: 'done',
       memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures }),
+      // 推进状态与自动停止建议：界面据此把停止条自动勾上，并把已会的考点从下一轮范围里去掉
+      progressNext: SHT.progress.commit(progress, { questions: questions, attempts: o.attempts || [] }),
+      stageHint: hint,
+      stop: SHT.progress.stopJudge({ questions: questions, attempts: o.attempts || [], failures: failures }),
       stats: SHT.llm.stats()
     };
   };

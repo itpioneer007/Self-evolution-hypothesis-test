@@ -61,6 +61,7 @@ require('../src/core/practice.js');
 require('../src/core/llm.js');
 require('../src/core/agents.js');
 require('../src/core/validate.js');
+require('../src/core/progress.js');
 require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
 require('../src/app.js');
@@ -676,6 +677,57 @@ async function runCase(name, script, expect) {
       out.questions.length === 1 && out.questions[0].audioText === 'shirt' && out.questions[0].checks.__audioFilled === 'auto',
       JSON.stringify(out.questions.map(q => q.audioText + '/' + q.checks.__audioFilled)));
   });
+
+/* ================= 考点推进与自动停止 ================= */
+console.log('--- 考点推进与自动停止 ---');
+const PQ = [{ no: 1, knowledgePoint: 'kp-a' }, { no: 2, knowledgePoint: 'kp-b' }];
+const PA = [{ no: 1, stage: 'first', correct: true }, { no: 1, stage: 'variant', correct: true }, { no: 2, stage: 'first', correct: false }, { no: 2, stage: 'variant', correct: false }];
+let PX = SHT.progress.blank();
+PX = SHT.progress.commit(PX, { questions: PQ, attempts: PA });
+assert('真会一次升一层（认→辨）', PX.points['kp-a'].level === '辨', JSON.stringify(PX.points['kp-a']));
+assert('答错降一层，但不低于最低层', PX.points['kp-b'].level === '认', JSON.stringify(PX.points['kp-b']));
+PX = SHT.progress.commit(PX, { questions: PQ, attempts: PA });
+PX = SHT.progress.commit(PX, { questions: PQ, attempts: PA });
+assert('考到顶层且会了两次以上就退役', PX.points['kp-a'].retired === true, JSON.stringify(PX.points['kp-a']));
+assert('C 层上限是辨，B 层是用，A 层才是表达',
+  SHT.progress.planHint(PX, { layer: 'C' }).cap === '辨' &&
+  SHT.progress.planHint(PX, { layer: 'B' }).cap === '用' &&
+  SHT.progress.planHint(PX, { layer: 'A' }).cap === '表达');
+const HINT = SHT.progress.planHint(PX, { layer: 'B', scope: [{ label: 'kp-a' }, { label: 'kp-c' }] });
+assert('提示里带上退役清单与范围里的存活考点', HINT.retired.indexOf('kp-a') >= 0 && HINT.aliveInScope.join() === 'kp-c', JSON.stringify(HINT));
+assert('整池退役时给 scopeExhausted，界面据此扩池',
+  SHT.progress.planHint(PX, { layer: 'B', scope: [{ label: 'kp-a' }] }).scopeExhausted === true);
+
+const stop1 = SHT.progress.stopJudge({
+  questions: [{ no: 1, knowledgePoint: 'kp-1' }, { no: 2, knowledgePoint: 'kp-2' }, { no: 3, knowledgePoint: 'kp-3' }],
+  attempts: [1, 2, 3].filter(function () { return true; }).map(function (n) { return { no: n, stage: 'first', correct: true }; }).concat(
+    [1, 2, 3].map(function (n) { return { no: n, stage: 'variant', correct: true }; })),
+  failures: []
+});
+assert('三个考点全真会 → 自动判 SATURATED 并给依据', stop1.saturated && !!stop1.reason, stop1.reason);
+const stop2 = SHT.progress.stopJudge({ questions: [], attempts: [], failures: [{ stage: 'giveup', planKp: 'x' }, { stage: 'giveup', planKp: 'y' }] });
+assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, stop2.reason);
+
+// 流水线：退役考点不许再排、超上限的层次被按下
+
+  await (function () {
+    const script = [
+      () => ({ ok: true, tokens: 1, ms: 1, json: { plans: [{ kp: 'kp-a', ability: 'vocab', level: '表达', nextIfWrong: 'x' }] } }),
+      () => ({ ok: true, tokens: 1, ms: 1, json: { plans: [{ kp: 'kp-b', ability: 'vocab', level: '用', cause: '形近', nextIfWrong: 'x' }] } }),
+      () => ({ ok: true, json: qJson(), tokens: 1, ms: 1 }),
+      () => ({ ok: true, json: { verdict: 'pass' }, tokens: 1, ms: 1 })
+    ];
+    let m = 0;
+    SHT.llm.call = async function () { const f = script[Math.min(m, script.length - 1)]; m += 1; return f(); };
+    return SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 5, brief: {}, existing: [],
+      scope: [{ label: 'kp-a' }, { label: 'kp-b' }],
+      progress: PX, stage: { layer: 'C' }, attempts: []
+    }).then(function (out) {
+      assert('退役考点被剔掉并留 PLAN_RETIRED', out.failures.some(function (f) { return f.codes.indexOf('PLAN_RETIRED') >= 0; }), JSON.stringify(out.failures.map(function (f) { return f.codes; })));
+      assert('超过 C 层上限的层次被降到上限并留痕', out.plans.length === 1 && out.plans[0].level === '辨' && out.failures.some(function (f) { return f.codes.indexOf('PLAN_LEVEL_CAP') >= 0; }), JSON.stringify(out.plans.map(function (p) { return p.level; })));
+    });
+  })();
 
   SHT.llm.call = REAL_CALL;
 

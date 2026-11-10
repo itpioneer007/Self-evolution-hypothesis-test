@@ -79,7 +79,9 @@
       llmBusy: false,
       // 本轮要考察的知识点范围（候选清单里的 id）。空数组 = 不限制，交规划环节现场提
       kpScope: [],
-      agentMemory: SHT.agentMemory.blank()
+      agentMemory: SHT.agentMemory.blank(),
+      // 每个考点考到哪一层、哪些已经退役，跨轮累积
+      progress: SHT.progress.blank()
     };
   }
 
@@ -88,6 +90,7 @@
     if (!Array.isArray(parsed.failures)) parsed.failures = [];
     if (!Array.isArray(parsed.kpScope)) parsed.kpScope = [];
     if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
+    if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
@@ -270,7 +273,11 @@
       return '<div class="kp-empty">本册无候选清单 · 考点由规划环节现场提</div>';
     }
     const scope = state.kpScope || [];
+    const doneCount = (state.progress && state.progress.points)
+      ? Object.keys(state.progress.points).filter(function (k) { return state.progress.points[k].retired; }).length : 0;
+    const layer = state.learningLayer || 'B';
     const scopeBar = '<div class="kp-scope">本轮范围 <strong>' + scope.length + '</strong> / ' + list.length +
+      '<span class="kp-scope-note">' + layer + ' 层 · 上限 ' + SHT.progress.CAP_OF_LAYER[layer] + (doneCount ? ' · 已考会 ' + doneCount : '') + '</span>' +
       (scope.length
         ? '<span class="kp-scope-note">最多出 ' + scope.length + ' 题</span><button type="button" class="btn btn-mini" data-action="clear-scope">清空</button>'
         : '<span class="kp-scope-note">不限范围 · 规划环节现场提</span>') +
@@ -1314,6 +1321,7 @@
     // 候选清单是跟着单元走的，换书换单元后旧的 id 全部失效，范围必须清空
     state.kpScope = [];
     state.agentMemory = SHT.agentMemory.blank();
+    state.progress = SHT.progress.blank();
     save();
     renderAll();
     toast('已切到 ' + SHT.curriculum.bookName + ' · ' + state.unitId + ' ' + SHT.curriculum.title);
@@ -1426,13 +1434,29 @@
     });
     brief.levelHint = brief.levelHint || '持平';
 
+    // 勾选范围内已经全考过 → 自动扩池：把没考过的候选补进来，一次只考一点
+    let scopeNow = kpScopePayload();
+    const retired = (state.progress && state.progress.points) || {};
+    if (scopeNow.length && scopeNow.every(function (s) { return (retired[s.label] || {}).retired; })) {
+      const rest = unitKps().filter(function (k) { return !(retired[k.label] || {}).retired; })
+        .slice(0, 5).map(function (k) { return { id: k.id, label: k.label, ability: k.ability, cell: k.cell }; });
+      if (rest.length) {
+        state.kpScope = rest.map(function (s) { return s.id; });
+        scopeNow = rest;
+        toast('勾选范围已考完，自动换下一批 ' + rest.length + ' 个考点');
+      }
+    }
+
     try {
       const res = await SHT.pipeline.runRound({
         unit: SHT.curriculum,
         count: 5,
         brief: brief,
-        scope: kpScopePayload(),
+        scope: scopeNow,
         memory: state.agentMemory,
+        progress: state.progress,
+        stage: { layer: state.learningLayer },
+        attempts: (round.practice && round.practice.attempts) || [],
         existing: round.questions.filter(function (q) { return q.prompt; }),
         planOnly: !!planOnly,
         onEvent: function (ev) {
@@ -1445,6 +1469,12 @@
       state.failures = (res.failures || []).concat(state.failures || []).slice(0, 200);
       // 记忆按角色分开存：下一轮各自读回自己那份
       if (res.memoryNext) state.agentMemory = res.memoryNext;
+      if (res.progressNext) state.progress = res.progressNext;
+      // 自动停止：代码判出来的信号直接写进停止条，依据一并写上，人还可以改
+      if (res.stop && res.stop.signals.length && !round.stopSignals.length) {
+        round.stopSignals = res.stop.signals.slice();
+        round.endReason = '（自动判定）' + (res.stop.reason || '');
+      }
 
       if (res.ok && res.questions.length) {
         round.questions = res.questions.map(function (q, i) {
