@@ -8,6 +8,8 @@
  *   V1 超纲     题干/选项/解析里每个英文词都在「本单元词表 ∪ 全册功能词」
  *   V2 答案     答案必须与某个选项完全一致
  *   V3 选项     三项互不相同、都不为空
+ *       V3c     拼写题的干扰项必须是原词的近似错拼（编辑距离 ≤ 词长/4），
+ *               否则它其实是个真词，学生按「差太多」就能排掉，测不出拼写
  *   V4 泄题     题干里不许出现答案原词
  *   V5 解析     不超过 30 字，且不是「本题考查……」这类空话
  *   V6 听力     听力类题型必须有 audioText，且朗读的正是答案
@@ -67,6 +69,29 @@
       if (set[abbr[1] + abbr[2]]) return true;
     }
     return false;
+  }
+
+  // 编辑距离（Damerau 变体：相邻两个字母颠倒算一次错）。
+  // 拼写题的干扰项判定用它。为什么不用纯 Levenshtein：sheo / shoe 这种「字母顺序
+  // 颠倒」是小学生最常见的拼写错误，纯 Levenshtein 会算成两次替换，把合法干扰项
+  // 误判成「差太远」。词长都在 20 以内，朴素二维实现足够。
+  function editDistance(a, b) {
+    const m = a.length, n = b.length;
+    if (!m) return n;
+    if (!n) return m;
+    const d = [];
+    for (let i = 0; i <= m; i += 1) { d[i] = [i]; }
+    for (let j = 0; j <= n; j += 1) { d[0][j] = j; }
+    for (let i = 1; i <= m; i += 1) {
+      for (let j = 1; j <= n; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+          d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+        }
+      }
+    }
+    return d[m][n];
   }
 
   function unknownWords(text, unit, set) {
@@ -140,18 +165,23 @@
       uniq[k] = true;
     });
     if (isSpelling) {
+      // V3c 拼写题的干扰项必须是「原词的近似错拼」。
+      // V1 对拼写题跳过选项检查（干扰项本来就是故意写错的词），这里必须补上：
+      // 差得太远说明它不是错拼，而是一个学生没学过的真词，按「差太多」就能排掉，
+      // 测不出拼写。判定用编辑距离，不用逐位比——黑板上少一个 c 会把后面全部错位，
+      // 逐位比会把它误判成「差得远」。
       const target = String(q.answer || '');
-      const bad = opts.filter(function (op) {
-        if (!op.trim() || SHT.normAnswer(op) === SHT.normAnswer(target)) return false;
-        const a = lower(op), b = lower(target);
-        const lenDiff = Math.abs(a.length - b.length);
-        let diff = 0;
-        const n = Math.min(a.length, b.length);
-        for (let i = 0; i < n; i += 1) if (a[i] !== b[i]) diff += 1;
-        diff += lenDiff;
-        return diff > Math.max(3, Math.ceil(b.length / 2));
-      });
-      if (bad.length) warn('V3b', '有几个干扰拼写与原词差得太远，学生一眼能排掉：' + bad.join('、'));
+      const pureEn = function (s) { return /^[A-Za-z'’-]+$/.test(s); };
+      if (pureEn(target)) {
+        const limit = Math.max(1, Math.ceil(target.length / 4));
+        const bad = opts.filter(function (op) {
+          const o2 = String(op || '').trim();
+          if (!o2 || !pureEn(o2)) return false;
+          if (SHT.normAnswer(o2) === SHT.normAnswer(target)) return false;
+          return editDistance(lower(o2), lower(target)) > limit;
+        });
+        if (bad.length) push('V3c', '干扰拼写和原词差太远，不像错拼：' + bad.join('、'));
+      }
     }
 
     // V4 题干泄答案（只查英文答案，中文答案不可能出现在英文题干里）

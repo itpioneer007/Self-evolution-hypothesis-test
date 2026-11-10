@@ -213,6 +213,28 @@
       return { ok: false, plans: [], questions: [], failures: failures, stage: 'plan' };
     }
 
+    // 考点去重：模型偶尔把同一个考点换个说法给两条，出出来就是两道同考点的题。
+    // 宁可这一轮少一道，也不出两道重复的；被去掉的写进失败记录，不静默吞掉。
+    const seenKp = Object.create(null);
+    const deduped = [];
+    plans.forEach(function (p) {
+      const k = p.kp.toLowerCase().replace(/\s+/g, ' ');
+      if (seenKp[k]) {
+        failures.push(failEntry({
+          stage: 'plan', attempt: 1, planKp: p.kp, codes: ['PLAN_DUP'],
+          reason: '考点与前面重复：「' + p.kp + '」，这一条不排题', detail: ''
+        }));
+        return;
+      }
+      seenKp[k] = true;
+      deduped.push(p);
+    });
+    if (deduped.length !== plans.length) {
+      plans = deduped;
+      plans.forEach(function (p, i) { p.no = i + 1; });
+      onEvent({ phase: 'planned', plans: plans, text: '考点去重后剩 ' + plans.length + ' 条' });
+    }
+
     // ---------- 分格（代码，不让模型碰） ----------
     const used = (o.existing || []).map(function (q) { return q.cell; }).filter(Boolean);
     plans.forEach(function (p, i) {

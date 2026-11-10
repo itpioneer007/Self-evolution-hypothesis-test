@@ -423,6 +423,19 @@ assert('拼写题不按超纲判干扰项（故意写错的词）', SHT.validate
   knowledgePoint: '拼写 · skirt · 形近', cell: { type: '拼写补全', scene: '身体与衣物', level: '辨', distractor: '形近' },
   prompt: '选出「裙子」的正确拼写。', audioText: '', options: ['skirt', 'skrit', 'skirtt'], answer: 'skirt', analysis: 'skirt 中间是 ir。'
 }, SHT.BOOKS.get('HEB-G4A').units[0], {}).pass === true);
+const v3c = SHT.validateQuestion({
+  knowledgePoint: '拼写 · trousers · 形近', cell: { type: '拼写补全', scene: '身体与衣物', level: '辨', distractor: '形近' },
+  prompt: '选出「裤子」的正确拼写。', audioText: '', options: ['trousers', 'curtain', 'zebra'], answer: 'trousers', analysis: '看清词形再选。'
+}, SHT.BOOKS.get('HEB-G4A').units[0], {});
+assert('V3c 抓拼写题里「其实是个真词」的干扰项', v3c.fails.some(f => f.id === 'V3c'), SHT.failsText(v3c));
+assert('V3c 不误伤字母顺序颠倒的错拼（sheo / sohe）', SHT.validateQuestion({
+  knowledgePoint: 'spelling · shoe · 形近', cell: { type: '拼写补全', scene: '身体与衣物', level: '辨', distractor: '形近' },
+  prompt: '选出「鞋」的正确拼写。', audioText: '', options: ['shoe', 'sheo', 'sohe'], answer: 'shoe', analysis: 'o 在 h 后面。'
+}, SHT.BOOKS.get('HEB-G4A').units[0], {}).pass === true);
+assert('V3c 不误伤少字母的错拼（blackbord / blakboard）', SHT.validateQuestion({
+  knowledgePoint: 'spelling · blackboard · oa + ar', cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
+  prompt: '选出「黑板」的正确拼写。', audioText: '', options: ['blackboard', 'blackbord', 'blakboard'], answer: 'blackboard', analysis: 'oa 和 ar 两个组合都不能省。'
+}, SHT.BOOKS.get('PEP-G4A').getUnit('U1'), {}).pass === true);
 
 /* ================= 格子分配 ================= */
 console.log('--- 格子分配（代码，不让模型碰） ---');
@@ -544,6 +557,32 @@ async function runCase(name, script, expect) {
     assert('规划失败不产出题', out.questions.length === 0 && out.ok === false);
     assert('规划失败带错误类型', out.failures.every(f => f.codes.length > 0));
   });
+
+  // 考点去重：模型把同一个考点给两条时，只排一道，另一条记 PLAN_DUP
+  await (function () {
+    const dupPlan = {
+      ok: true, tokens: 10, ms: 1,
+      json: {
+        plans: [
+          { kp: 'vocab · shirt · 音义联结', ability: 'vocab', cause: '形近', whyThisOne: '核心词', nextIfWrong: '先配对', level: '认' },
+          { kp: 'Vocab ·  Shirt · 音义联结', ability: 'spelling', cause: '形近', whyThisOne: '换个说法再说一遍', nextIfWrong: '先配对', level: '辨' }
+        ]
+      }
+    };
+    let k = 0;
+    const script = [
+      () => dupPlan,
+      () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+      () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+    ];
+    SHT.llm.call = async function () { const f = script[Math.min(k, script.length - 1)]; k += 1; return f(); };
+    return SHT.pipeline.runRound({ unit: SHT.curriculum, count: 2, brief: {}, existing: [] }).then((out) => {
+      assert('同一考点给两条时只排一道', out.plans.length === 1, JSON.stringify(out.plans.map(p => p.kp)));
+      assert('被去掉的重复考点进失败记录', out.failures.some(f => f.codes.includes('PLAN_DUP')),
+        JSON.stringify(out.failures.map(f => f.codes)));
+      assert('去重后题号重排，不留空号', out.plans[0].no === 1);
+    });
+  })();
 
   SHT.llm.call = REAL_CALL;
 

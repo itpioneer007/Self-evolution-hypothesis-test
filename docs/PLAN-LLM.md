@@ -192,3 +192,27 @@ P0–P1 就能回答「模型能不能出题」；P4 才能回答「自进化有
 - 5 题 2 轮的样本量不随接模型变大。模型让出题变快，不让「是否有效」的结论变强。
 - 判对错仍是字符串比对，不是语法判定。
 - 23 条里有一部分（F5 情绪安全、P5 位置合适）模型和代码都判不准，仍需人过一眼。
+
+## 十一、P0–P5 落地情况（2026-11-10）
+
+按第九节的三条定论（教材从 englishanchor 随便抓几个版本、模型用 DeepSeek、三角色同一模型三套配置）全部做完，超出原计划的部分也记在这里。
+
+| 批次 | 状态 | 落点 |
+|---|---|---|
+| P0 设置项 + 单题生成 | 做完 | `src/core/llm.js`（13 类错误分类，不抛异常）、顶栏「模型」浮层、`SHT.pipeline.selfCheck()` |
+| P1 整轮 5 题 + 代码闸 | 做完 | `src/core/validate.js` V1–V8（含本次新增 V3c）、`tools/smoke-test.js` |
+| P2 规划接模型 | 做完 | `src/core/agents.js` 的 `plan`，格子仍由 `SHT.pickCell` 代码分配 |
+| P3 质检 + 退回重试 | 做完 | `src/core/agents.js` 的 `verify`，退回最多 3 次，仍不过记 `GIVE_UP` |
+| P4 错题 brief 回灌 | 做完 | `SHT.pipeline.buildBrief()`，前两条计划必须冲 `priority` |
+| P5 第二本教材 | 超额（三本） | `src/data/books.js` 注册表 + 冀教四上 / 湘少四上 |
+
+三处和方案不同的地方：
+
+1. **key 只在浏览器 localStorage，不进仓库**。`sht-llm-config-v1` 与题目数据分开存，导出 JSON 时剔掉。
+2. **教材注册表化**：原方案说「第二本教材入库」，实际做成一册一文件的注册表，因为第三本插进来时不需要改任何判定代码。
+3. **失败记录从「一句 reason」升级成 `{stage, planKp, attempt, codes[], reason, detail}`**：`codes` 是条款号数组，界面按条款统计打回缘由，退回复出时把 `reason` 原样拼进下一次提示词。
+
+### 仍然堵着的
+
+**真实 DeepSeek 调用没跑通**：手上的 key 返回 `HTTP 401 Authentication Fails, Your api key: ****0471 is invalid`。浏览器侧链路已用本地 mock 验证过（`tools/e2e-browser.js` 全绿），但「模型实际出的题质量如何、一轮真实 token 成本多少、通过率是多少」三个问题都还没有答案，必须等一个有效 key。这三个数正是第九节里「P0–P1 就能回答模型能不能出题」的答案。
+
