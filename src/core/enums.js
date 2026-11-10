@@ -71,6 +71,12 @@
     'vocab', 'spelling', 'sentence', 'listening', 'speaking', 'phonics', 'grammar'
   ];
 
+  // 能力的中文短标签。配额条上一行要放下七类，只能用两个字。
+  SHT.ABILITY_LABEL = {
+    vocab: '词汇', spelling: '拼写', sentence: '句型', listening: '听力',
+    speaking: '口语', phonics: '语音', grammar: '语法'
+  };
+
   // 错因 → 格子（单题出题检查表第七节）
   SHT.ERROR_TO_CELL = [
     { pattern: '形近', level: '辨', distractor: '形近', types: ['拼写补全', '中英匹配'] },

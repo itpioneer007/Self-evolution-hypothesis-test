@@ -141,7 +141,7 @@ const PAGE = function () {
     'src/data/books/xiangshao-g4a.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
     'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/agents.js',
-    'src/core/validate.js', 'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
+    'src/core/validate.js', 'src/core/quota.js', 'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
   ];
   return [
     '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>e2e</title></head><body>',
@@ -155,7 +155,9 @@ const PAGE = function () {
     '    SHT.setBook("HEB-G4A","U1");',
     '    var unit = SHT.curriculum;',
     '    var events = [];',
-    '    var res = await SHT.pipeline.runRound({unit:unit,count:5,brief:SHT.pipeline.buildBrief({unitId:unit.id,rounds:[],wrongCases:[]}),existing:[],onEvent:function(e){events.push(e.phase);}});',
+    // 显式给配额：这个用例要验的是「退回 → 留痕 → 重出 → 放弃」这条链，
+    // 不该被自动算出来的能力配额拦掉几条计划
+    '    var res = await SHT.pipeline.runRound({unit:unit,count:5,brief:SHT.pipeline.buildBrief({unitId:unit.id,rounds:[],wrongCases:[]}),existing:[],quota:{total:5,byAbility:{vocab:3,spelling:1,sentence:1}},onEvent:function(e){events.push(e.phase);}});',
     '    var cells = {};',
     '    res.questions.forEach(function(q){cells[SHT.cellKey(q.cell)]=1;});',
     '    var summary = {',

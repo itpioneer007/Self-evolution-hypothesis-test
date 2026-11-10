@@ -35,15 +35,25 @@ const DRIVER = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><titl
 <body style="margin:0;font:14px sans-serif">
 <pre id="out" style="padding:8px;background:#f2f7fd">running…</pre>
 <script>
+/* 页面里的错误报回服务器：这个脚本一旦有语法错，整块都不执行，
+   只写「等不到报告」根本看不出原因（踩过：模板字符串把正则里的 \ 吃掉） */
+window.onerror = function (m, s, l) {
+  try { fetch('/progress', { method: 'POST', body: 'ERR ' + m + ' @line ' + l }); } catch (e) {}
+  return false;
+};
+</script>
+<script>
 const KEY = ${JSON.stringify(KEY)};
 const log = [];
 function rec(name, ok, extra) { log.push({ name: name, ok: !!ok, extra: extra == null ? '' : String(extra) }); }
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function mark(s) { try { fetch('/progress', { method: 'POST', body: s }); } catch (e) { /* ignore */ } }
 function q(sel) { return D.querySelector(sel); }
 function qa(sel) { return Array.from(D.querySelectorAll(sel)); }
 function click(el) { if (el) el.click(); return !!el; }
 
 (async function () {
+  mark('IIFE 开始');
   localStorage.setItem('sht-llm-config-v1', JSON.stringify({
     baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', key: KEY,
     temperature: 0.6, maxTokens: 1600, timeoutMs: 90000
@@ -54,14 +64,25 @@ function click(el) { if (el) el.click(); return !!el; }
   fr.style.width = '1440px'; fr.style.height = '980px'; fr.style.border = '0';
   fr.src = '/index.html';
   document.body.appendChild(fr);
-  await new Promise(function (r) { fr.onload = r; });
+  mark('iframe 已插入');
+  await new Promise(function (r) {
+    let done = false;
+    const fin = function () { if (done) return; done = true; r(); };
+    fr.onload = fin;
+    // 兜底：onload 可能已经过掉或在 iframe 里被吞，别让整轮挂死在这里
+    setTimeout(fin, 12000);
+  });
+  mark('iframe 已载入');
   const W = fr.contentWindow;
   const D = fr.contentDocument;
   window.D = D;
   await sleep(400);
+  mark('sleep 结束');
 
   const errs = [];
   W.addEventListener('error', function (e) { errs.push(String(e.message || e)); });
+
+  mark('打开页面');
 
   // 1 三张智能体卡片
   rec('01 页渲染出 3 张智能体卡片', qa('[data-role]').length === 3, qa('[data-role]').length);
@@ -69,6 +90,8 @@ function click(el) { if (el) el.click(); return !!el; }
   // 2 候选知识点清单（PEP 四上 U1 有 8 条）
   const scopeBtns = qa('[data-action="toggle-scope"]');
   rec('候选清单带「纳入」按钮', scopeBtns.length >= 3, scopeBtns.length);
+
+  mark('勾范围');
 
   // 3 勾 3 个考点进本轮范围
   // 每次都要重新取节点：点一下会 renderAll 整块重渲染，旧节点已经脱离文档
@@ -80,6 +103,34 @@ function click(el) { if (el) el.click(); return !!el; }
   }
   const scopeNum = q('.kp-scope strong') ? q('.kp-scope strong').textContent.trim() : '';
   rec('点「纳入」后范围计数变成 3', scopeNum === '3', scopeNum);
+
+  // 3.5 配额条：七类能力都列出来（含 0 的，才能看出哪类这轮一次没考），点「＋」能改
+  const chips = qa('.quota-chip');
+  rec('配额条列出七类能力', chips.length === 7,
+    chips.map(function (c) { return String(c.textContent || '').replace(/\\s+/g, ''); }).join(' '));
+  const vocabQ = function () {
+    const c = qa('.quota-chip')[0];
+    const n = c ? c.querySelector('.q') : null;
+    return n ? String(n.textContent || '').trim() : '';
+  };
+  const qBefore = vocabQ();
+  const inc = q('[data-action="quota-inc"]');
+  if (inc) inc.click();
+  await sleep(400);
+  const qAfter = vocabQ();
+  rec('点「＋」后该类配额加一条（不是从 0 重算）', qBefore !== qAfter && !!qAfter, qBefore + ' → ' + qAfter);
+  const dec = q('[data-action="quota-dec"]');
+  if (dec) dec.click();
+  await sleep(400);
+  rec('点「−」能减回去', vocabQ() === qBefore, qBefore + ' → ' + vocabQ());
+  // 手改过就得手动重算回来，否则后面出题会按「人工调整」那份配额走
+  const rc = q('[data-action="quota-recalc"]');
+  if (rc) rc.click();
+  await sleep(500);
+  rec('点「重算」后配额跟着勾选范围走', /3/.test(String((q('.quota-sum') || {}).textContent || '')),
+    String((q('.quota-sum') || {}).textContent || '').trim());
+
+  mark('点模型出题');
 
   // 4 点「模型出 5 题」，等出题（真模型，给足 4 分钟）
   const btn = q('[data-action="model-round"]');
@@ -93,16 +144,24 @@ function click(el) { if (el) el.click(); return !!el; }
     await sleep(500);
     started = !!q('[data-action="stop-model"]');
   }
-  for (let w = 0; w < 300000; w += 2000) {
+  for (let w = 0; w < 240000; w += 2000) {
     await sleep(2000);
     if (!q('[data-action="stop-model"]') && Date.now() - t0 > 3000) break;
   }
+  mark('模型跑完');
   const elapsed = Math.round((Date.now() - t0) / 1000);
   const opts = qa('[data-action="pick-option"]').length;
   const failRows = qa('.fail-row').length;
-  const nowPrompt = (q('.q-prompt, .prompt-box, .q-body') || {}).textContent || '';
   rec('模型真跑了一轮并出题', started && opts > 0, opts + ' 个选项 / ' + elapsed + ' 秒 / 失败 ' + failRows + ' 条');
-  rec('题目被模型结果替换（不是预置示例题）', started && nowPrompt !== seedPrompt, (seedPrompt || '').slice(0, 20) + ' → ' + (nowPrompt || '').slice(0, 20));
+  // 出题成功后界面会自动切到执行智能体（单题九字段），计划面板不在 DOM 里了。
+  // 要看配额条得先点回课程智能体，否则读到的是空的。
+  click(q('[data-role="course"]'));
+  await sleep(400);
+  const chipTextAfter = qa('.quota-chip').map(function (c) { return String(c.textContent || '').replace(/\\s+/g, ''); }).join(' ');
+  rec('模型结果回写进状态（配额条变成 已排/配额）',
+    chipTextAfter.split(' ').some(function (x) { return x.indexOf('/') > 0; }), chipTextAfter);
+
+  mark('去答题');
 
   // 5 切到 02 答题：故意答错两枪（原题 + 变体），走完写错题的路径
   click(q('[data-tab="practice"]'));
@@ -176,6 +235,7 @@ function click(el) { if (el) el.click(); return !!el; }
   await sleep(300);
   const wrongCards = qa('.wrong-card').length;
   const answered = qa('.verdict, [data-action="record-attempt"]').length;
+  mark('看错题');
   rec('03 错题页渲染正常', !!q('#wrongList') && wrongCards >= 0, wrongCards + ' 张错题卡');
 
   // 7 切到 04 日志
@@ -205,6 +265,7 @@ const done = new Promise(function (r) { finish = r; });
 
 const server = http.createServer(function (req, res) {
   if (req.method === 'GET' && req.url.split('?')[0] === '/ui-check') {
+    console.log('  · 提供了 driver 页');
     res.writeHead(200, { 'Content-Type': MIME['.html'] });
     return res.end(DRIVER);
   }
@@ -221,6 +282,11 @@ const server = http.createServer(function (req, res) {
   let body = '';
   req.on('data', function (c) { body += c; });
   req.on('end', function () {
+    if (req.url.split('?')[0] === '/progress') {
+      res.writeHead(200); res.end('ok');
+      console.log('  · ' + body);
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"ok":true}');
     try { finish(JSON.parse(body)); } catch (e) { finish({ log: [{ name: '报告解析失败', ok: false, extra: '' }] }); }
@@ -242,7 +308,10 @@ server.listen(PORT, '127.0.0.1', function () {
     'http://127.0.0.1:' + PORT + '/ui-check'
   ], { stdio: 'ignore' });
 
-  const timer = setTimeout(function () { finish({ log: [{ name: '超时 300 秒没有拿到报告', ok: false, extra: '' }] }); }, 300000);
+  const TIMEOUT = Number(process.env.UI_TIMEOUT || 420000);
+  const timer = setTimeout(function () {
+    finish({ log: [{ name: '超时 ' + Math.round(TIMEOUT / 1000) + ' 秒没有拿到报告（UI_TIMEOUT 可调）', ok: false, extra: '' }] });
+  }, TIMEOUT);
   done.then(function (report) {
     clearTimeout(timer);
     try { child.kill(); } catch (e) { /* ignore */ }

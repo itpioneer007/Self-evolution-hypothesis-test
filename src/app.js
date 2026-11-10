@@ -81,7 +81,9 @@
       kpScope: [],
       agentMemory: SHT.agentMemory.blank(),
       // 每个考点考到哪一层、哪些已经退役，跨轮累积
-      progress: SHT.progress.blank()
+      progress: SHT.progress.blank(),
+      // 能力配额：这一轮各类能力各出几题。来源见 core/quota.js，接画像后只换来源
+      quota: SHT.quota.blank()
     };
   }
 
@@ -91,6 +93,7 @@
     if (!Array.isArray(parsed.kpScope)) parsed.kpScope = [];
     if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
+    parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
@@ -321,6 +324,15 @@
     const at = state.kpScope.indexOf(id);
     if (at >= 0) state.kpScope.splice(at, 1);
     else state.kpScope.push(id);
+    // 范围变了配额跟着重算：勾 3 个考点就该按这 3 个的能力分布分名额，
+    // 否则会出现「范围里没有听力，却给听力留一个名额」。人手动改过的不动。
+    if (state.quota && state.quota.source !== 'manual') {
+      state.quota = SHT.quota.auto({
+        scope: kpScopePayload(),
+        kps: unitKps(),
+        total: QUOTA_LIMIT
+      });
+    }
     save(); renderAll();
     toast(at >= 0 ? '已移出范围：' + kp.label : '已纳入范围：' + kp.label);
   }
@@ -362,6 +374,50 @@
     return '<span class="model-pill is-on">' + esc(cfg.model) + '</span>';
   }
 
+  // 这一轮最多出几题。重算配额时用它当上限，不能用「当前配额之和」，
+  // 否则勾第一个考点算出 1 条，勾第二个时又拿 1 当上限，永远长不回去。
+  const QUOTA_LIMIT = 5;
+
+  // 配额条：一行放下七类能力的「已排 / 配额」。
+  // 不在计划表里加列——七列已经满了，加两列会挤掉知识点输入框；
+  // 而且配额是「这一轮各类能力各几条」的判断，本来就该横着看。
+  function quotaBarHtml() {
+    let q = SHT.quota.normalize(state.quota);
+    if (SHT.quota.sum(q) === 0) {
+      // 还没分配过：按当前状态算一份，同时落进状态，
+      // 否则显示的是一份、点「＋」时按空表从 0 起算，数字会跳
+      q = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: QUOTA_LIMIT });
+      state.quota = q;
+    }
+    const list = currentRound().questions;
+    const got = {};
+    list.forEach(function (x) { const a = x.ability || ''; if (a) got[a] = (got[a] || 0) + 1; });
+    const filled = Object.keys(got).reduce(function (n, a) { return n + got[a]; }, 0);
+    const total = SHT.quota.sum(q);
+    // 还没跑过模型时「已排」没有意义（计划表里是预置示例题），只显示配额数字
+    const hasReport = !!(state.quotaReport && state.quotaReport.byAbility);
+    let shortN = 0;
+    const chips = SHT.SKILL_CATEGORIES.map(function (a) {
+      const want = q.byAbility[a] || 0;
+      const have = got[a] || 0;
+      if (hasReport && want > have) shortN += 1;
+      const cls = want === 0 ? ' is-zero' : (!hasReport ? '' : (have >= want ? ' is-ok' : ' is-short'));
+      return '<span class="quota-chip' + cls + '">' +
+        '<b>' + esc(SHT.ABILITY_LABEL[a] || a) + '</b>' +
+        '<span class="q">' + (hasReport ? have + '/' + want : String(want)) + '</span>' +
+        '<i data-action="quota-dec" data-ability="' + a + '" title="减一条">−</i>' +
+        '<i data-action="quota-inc" data-ability="' + a + '" title="加一条">＋</i>' +
+      '</span>';
+    }).join('');
+    return '<div class="quota-bar">' +
+      '<span class="quota-label">本轮配额' + (q.note ? ' · ' + esc(q.note) : '') + '</span>' +
+      chips +
+      '<span class="quota-sum' + (shortN ? ' is-short' : '') + '">' +
+        (hasReport ? filled + '/' + total : '共 ' + total + ' 条') + '</span>' +
+      '<button type="button" class="btn btn-mini" data-action="quota-recalc">重算</button>' +
+    '</div>';
+  }
+
   function renderPlanPanel() {
     const list = currentRound().questions;
     const exclusion = exclusionForCurrentRound();
@@ -375,7 +431,8 @@
           const no = i + 1;
           const blocked = exclusion.isCellBlocked(q.cell);
           return '<div class="plan-row' + (no === state.activeNo ? ' is-active' : '') + (blocked ? ' is-blocked' : '') + '" data-no="' + no + '">' +
-            '<span class="no">' + no + '</span>' +
+            '<span class="no" title="' + esc(SHT.ABILITY_LABEL[q.ability] || q.ability || '未定') + '">' + no +
+              (q.ability ? '<em>' + esc((SHT.ABILITY_LABEL[q.ability] || q.ability || '').slice(0, 2)) + '</em>' : '') + '</span>' +
             '<input data-no="' + no + '" data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '" placeholder="如 class / classroom 形近，别只写「词汇」">' +
             '<select data-no="' + no + '" data-field="type">' + selectHtml(SHT.QUESTION_TYPES.map(function (t) { return t.id; }), q.cell.type) + '</select>' +
             '<select data-no="' + no + '" data-field="scene">' + selectHtml(SHT.SCENES, q.cell.scene) + '</select>' +
@@ -404,7 +461,7 @@
               '<button type="button" class="btn" data-action="fill-weakness">按薄弱点填</button>') +
         '</div>' +
       '</div>' +
-      kpFoldHtml() + body + failFeedHtml();
+      kpFoldHtml() + quotaBarHtml() + body + failFeedHtml();
   }
 
   /* ---------- 01 执行智能体：单题九字段 ---------- */
@@ -1131,6 +1188,30 @@
     toast('已排好 5 个角度');
   }
 
+  // 手工改配额：一按就记成 manual，来源不再被自动覆盖
+  function bumpQuota(ability, delta) {
+    if (SHT.SKILL_CATEGORIES.indexOf(ability) < 0) return;
+    const q = SHT.quota.normalize(state.quota);
+    const next = {};
+    SHT.SKILL_CATEGORIES.forEach(function (x) {
+      const v = (q.byAbility[x] || 0) + (x === ability ? delta : 0);
+      if (v > 0) next[x] = v;
+    });
+    const sum = SHT.quota.sum({ byAbility: next });
+    const limit = Math.max(QUOTA_LIMIT, sum);
+    state.quota = SHT.quota.normalize({ source: 'manual', total: limit, byAbility: next, note: '人工调整' });
+    save(); renderAll();
+  }
+
+  // 重算：有勾选范围按范围分，没有按错题画像分，都没有按本册铺开
+  function recalcQuota() {
+    const rounds = state.round === 2 ? [state.rounds[1], state.rounds[2]] : [state.rounds[1]];
+    const brief = SHT.pipeline.buildBrief({ unitId: state.unitId, rounds: rounds, wrongCases: state.wrongCases });
+    state.quota = SHT.quota.auto({ scope: kpScopePayload(), brief: brief, kps: unitKps(), total: QUOTA_LIMIT });
+    save(); renderAll();
+    toast('配额已重算：' + (state.quota.note || '') + '　' + SHT.quota.text(state.quota));
+  }
+
   function fillWeakness() {
     const queue = weaknessProjection().queue.slice(0, 3);
     if (!queue.length) { toast('没有待练知识点，先去 02 加一条错题'); return; }
@@ -1266,6 +1347,9 @@
       failures: state.failures || [],
       // 本轮考察范围与三个智能体各自的记忆，导出时一并留档（不含 key）
       kpScope: state.kpScope || [],
+      // 这一轮的能力配额与达成情况，导出后能复盘「是不是又全考了词汇」
+      quota: state.quota || null,
+      quotaReport: state.quotaReport || null,
       agentMemory: state.agentMemory || null,
       llm: {
         model: SHT.llm.config().model,
@@ -1322,6 +1406,7 @@
     state.kpScope = [];
     state.agentMemory = SHT.agentMemory.blank();
     state.progress = SHT.progress.blank();
+    state.quota = SHT.quota.blank();
     save();
     renderAll();
     toast('已切到 ' + SHT.curriculum.bookName + ' · ' + state.unitId + ' ' + SHT.curriculum.title);
@@ -1455,6 +1540,7 @@
         scope: scopeNow,
         memory: state.agentMemory,
         progress: state.progress,
+        quota: state.quota,
         stage: { layer: state.learningLayer },
         attempts: (round.practice && round.practice.attempts) || [],
         existing: round.questions.filter(function (q) { return q.prompt; }),
@@ -1470,6 +1556,9 @@
       // 记忆按角色分开存：下一轮各自读回自己那份
       if (res.memoryNext) state.agentMemory = res.memoryNext;
       if (res.progressNext) state.progress = res.progressNext;
+      // 配额回写：自动算出来的那份要落回界面，否则下一轮又按旧的算
+      if (res.quota) state.quota = SHT.quota.normalize(res.quota);
+      if (res.quotaReport) state.quotaReport = res.quotaReport;
       // 自动停止：代码判出来的信号直接写进停止条，依据一并写上，人还可以改
       if (res.stop && res.stop.signals.length && !round.stopSignals.length) {
         round.stopSignals = res.stop.signals.slice();
@@ -1557,6 +1646,9 @@
         if (action === 'model-round') { runModelRound(false); return; }
         if (action === 'stop-model') { runToken += 1; state.llmBusy = false; save(); renderAll(); toast('已停止后续步骤，已经发出去的请求不会收回'); return; }
         if (action === 'auto-quota') { autoQuota(); return; }
+        if (action === 'quota-inc') { bumpQuota(b.dataset.ability, 1); return; }
+        if (action === 'quota-dec') { bumpQuota(b.dataset.ability, -1); return; }
+        if (action === 'quota-recalc') { recalcQuota(); return; }
         if (action === 'fill-weakness') { fillWeakness(); return; }
         if (action === 'pick-kp') { applyKnowledgePoint(b.dataset.id, state.activeNo, true); return; }
         if (action === 'toggle-scope') { toggleScope(b.dataset.id); return; }
@@ -1690,6 +1782,12 @@
       save(); renderAll();
       toast('已恢复成 ' + keepUnit + ' 的初始示例');
     });
+  }
+
+  // 配额先定下来再渲染：首屏就该看到「词汇 2 / 语法 1」这样的分配，
+  // 而不是一片 0/0 等着人去点
+  if (SHT.quota.sum(state.quota) === 0) {
+    state.quota = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: QUOTA_LIMIT });
   }
 
   bind();

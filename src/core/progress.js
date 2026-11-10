@@ -23,7 +23,7 @@
   function up(level) { return LADDER[Math.min(LADDER.length - 1, idx(level) + 1)]; }
   function down(level) { return LADDER[Math.max(0, idx(level) - 1)]; }
 
-  function blank() { return { points: {} }; }
+  function blank() { return { points: {}, retry: {} }; }
 
   function entryOf(state, kp) {
     state.points[kp] = state.points[kp] || { level: '认', mastered: 0, wrong: 0, retired: false };
@@ -37,8 +37,21 @@
    */
   function commit(prev, round) {
     const next = JSON.parse(JSON.stringify(prev && prev.points ? prev : blank()));
+    if (!next.retry) next.retry = {};
     const questions = (round && round.questions) || [];
     const attempts = (round && round.attempts) || [];
+    const failures = (round && round.failures) || [];
+
+    // 没出成的考点进重试队列。这是「失败要留痕，然后再重新生成」里「然后」那一半：
+    // 光把原因写进失败记录，下一轮不会自己补上，那一格就永远空着。
+    const gaveUp = {};
+    failures.forEach(function (f) {
+      if (f && f.stage === 'giveup' && f.planKp) gaveUp[f.planKp] = (gaveUp[f.planKp] || 0) + 1;
+    });
+    Object.keys(gaveUp).forEach(function (kp) {
+      next.retry[kp] = (next.retry[kp] || 0) + gaveUp[kp];
+    });
+
     if (!questions.length) return next;
 
     const byNo = {};
@@ -48,6 +61,8 @@
 
     questions.forEach(function (q) {
       if (!q || !q.knowledgePoint) return;
+      // 出了题就不再是待重试的考点
+      delete next.retry[q.knowledgePoint];
       const list = byNo[q.no] || [];
       if (!list.length) return;
       const judged = SHT.judgePoint(list);
@@ -86,12 +101,18 @@
     const scopeKps = scope.map(function (s) { return s.label; });
     const retiredInScope = scopeKps.filter(function (kp) { return retired.indexOf(kp) >= 0; });
     const aliveInScope = scopeKps.filter(function (kp) { return retired.indexOf(kp) < 0; });
+    // 上一轮没出成题的考点，这一轮换个角度重试（退役的不算）
+    const retry = Object.keys(state.retry || {})
+      .filter(function (kp) { return retired.indexOf(kp) < 0; })
+      .map(function (kp) { return { kp: kp, times: state.retry[kp] }; })
+      .sort(function (a, b) { return b.times - a.times; });
     return {
       layer: o.layer || 'B',
       cap: cap,
       ladder: LADDER.slice(),
       retired: retired,
       advancing: advancing,
+      retry: retry,
       retiredInScope: retiredInScope,
       aliveInScope: aliveInScope,
       // 范围考完了：整个勾选池都退役

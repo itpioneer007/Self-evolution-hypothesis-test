@@ -177,7 +177,7 @@ p { margin: 0; }
 /* 计划表 */
 .plan-head, .plan-row {
   display: grid;
-  grid-template-columns: 34px minmax(200px, 2.4fr) repeat(4, minmax(84px, 1fr)) 62px;
+  grid-template-columns: 42px minmax(196px, 2.4fr) repeat(4, minmax(82px, 1fr)) 62px;
   gap: 8px;
   align-items: center;
 }
@@ -704,7 +704,7 @@ select { cursor: pointer; }
 }
 
 @media (max-width: 860px) {
-  .plan-head, .plan-row { grid-template-columns: 30px minmax(140px, 2fr) repeat(3, minmax(78px, 1fr)); }
+  .plan-head, .plan-row { grid-template-columns: 36px minmax(140px, 2fr) repeat(3, minmax(78px, 1fr)); }
   .plan-row > :nth-child(6), .plan-row > .verdict, .plan-head > span:nth-child(n+6) { display: none; }
   .field-grid { grid-template-columns: 1fr; }
   .kp-inline { grid-template-columns: 1fr; }
@@ -809,3 +809,41 @@ select { cursor: pointer; }
 
 /* 卡片上「记忆」那一行的实时摘要 */
 .agent-mem { font-style: normal; color: var(--blue); margin-left: 6px; font-size: 11px; }
+
+/* ---------- 能力配额条 ---------- */
+/* 一行放下七类能力的「已排 / 配额」。不在计划表里加列：七列已满，
+   而且判断「这轮是不是又全考了词汇」需要横着看，不是逐行看。 */
+.quota-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 7px 9px; margin: 8px 0;
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: 9px;
+}
+.quota-label { font-size: 11.5px; color: var(--ink-hint); margin-right: 2px; }
+.quota-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 5px 2px 7px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--canvas);
+  font-size: 11.5px; color: var(--ink-soft); white-space: nowrap;
+}
+.quota-chip b { font-weight: 600; color: var(--ink); }
+.quota-chip .q { font-variant-numeric: tabular-nums; color: var(--ink-hint); }
+.quota-chip.is-ok { border-color: var(--blue-line); background: var(--blue-soft); }
+.quota-chip.is-ok .q { color: var(--blue-deep); }
+.quota-chip.is-short { border-color: #e6cfa8; background: var(--amber-soft); }
+.quota-chip.is-short .q { color: var(--amber); font-weight: 600; }
+.quota-chip.is-zero { color: var(--ink-hint); opacity: .75; }
+.quota-chip i {
+  font-style: normal; cursor: pointer; user-select: none;
+  width: 16px; height: 16px; line-height: 15px; text-align: center;
+  border-radius: 4px; color: var(--ink-hint); font-size: 12px;
+}
+.quota-chip i:hover { background: var(--blue-soft); color: var(--blue-deep); }
+.quota-sum {
+  margin-left: auto; font-size: 11.5px; color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.quota-sum.is-short { color: var(--amber); font-weight: 600; }
+
+/* 计划行题号里带能力缩写，与配额条的 chip 对上 */
+.plan-row .no { line-height: 1.1; }
+.plan-row .no em { display: block; font-style: normal; font-size: 9.5px; color: var(--ink-hint); }

@@ -61,6 +61,7 @@ require('../src/core/practice.js');
 require('../src/core/llm.js');
 require('../src/core/agents.js');
 require('../src/core/validate.js');
+require('../src/core/quota.js');
 require('../src/core/progress.js');
 require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
@@ -698,6 +699,29 @@ assert('提示里带上退役清单与范围里的存活考点', HINT.retired.in
 assert('整池退役时给 scopeExhausted，界面据此扩池',
   SHT.progress.planHint(PX, { layer: 'B', scope: [{ label: 'kp-a' }] }).scopeExhausted === true);
 
+// 没出成题的考点要进重试队列，下一轮才知道该补哪一格
+const PR = SHT.progress.commit(SHT.progress.blank(), {
+  questions: [{ no: 1, knowledgePoint: 'kp-ok' }],
+  attempts: [],
+  failures: [
+    { stage: 'giveup', planKp: 'kp-lost', codes: ['GIVE_UP'] },
+    { stage: 'verify', planKp: 'kp-notgiveup', codes: ['C3'] }
+  ]
+});
+assert('放弃的考点进重试队列，被退回但没放弃的不进', !!PR.retry['kp-lost'] && !PR.retry['kp-notgiveup'],
+  JSON.stringify(PR.retry));
+const PR2 = SHT.progress.commit(PR, {
+  questions: [{ no: 1, knowledgePoint: 'kp-lost' }], attempts: [], failures: []
+});
+assert('出了题的考点从重试队列里删掉', !PR2.retry['kp-lost'], JSON.stringify(PR2.retry));
+assert('重试队列进得了规划提示词的上下文', SHT.progress.planHint(PR, { layer: 'B' }).retry.length === 1,
+  JSON.stringify(SHT.progress.planHint(PR, { layer: 'B' }).retry));
+assert('规划提示词里写出「上一轮这些考点没出成题」', SHT.AGENTS.plan.user({
+  bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 }, unit: SHT.curriculum,
+  brief: {}, blockedCells: [], count: 1, scope: [],
+  stage: SHT.progress.planHint(PR, { layer: 'B' })
+}).indexOf('没出成题') >= 0);
+
 const stop1 = SHT.progress.stopJudge({
   questions: [{ no: 1, knowledgePoint: 'kp-1' }, { no: 2, knowledgePoint: 'kp-2' }, { no: 3, knowledgePoint: 'kp-3' }],
   attempts: [1, 2, 3].filter(function () { return true; }).map(function (n) { return { no: n, stage: 'first', correct: true }; }).concat(
@@ -726,6 +750,72 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
     }).then(function (out) {
       assert('退役考点被剔掉并留 PLAN_RETIRED', out.failures.some(function (f) { return f.codes.indexOf('PLAN_RETIRED') >= 0; }), JSON.stringify(out.failures.map(function (f) { return f.codes; })));
       assert('超过 C 层上限的层次被降到上限并留痕', out.plans.length === 1 && out.plans[0].level === '辨' && out.failures.some(function (f) { return f.codes.indexOf('PLAN_LEVEL_CAP') >= 0; }), JSON.stringify(out.plans.map(function (p) { return p.level; })));
+    });
+  })();
+
+  /* ================= 能力配额 ================= */
+  console.log('--- 能力配额 ---');
+  assert('配额分配可复算：同样输入两次结果一样',
+    JSON.stringify(SHT.quota.allocate([{ ability: 'vocab', w: 3 }, { ability: 'grammar', w: 1 }], 5))
+    === JSON.stringify(SHT.quota.allocate([{ ability: 'vocab', w: 3 }, { ability: 'grammar', w: 1 }], 5)));
+  const AQ = SHT.quota.allocate([{ ability: 'vocab', w: 3 }, { ability: 'grammar', w: 1 }], 5);
+  assert('名额先每类各给 1 个，谁也别饿着', AQ.vocab >= 1 && AQ.grammar >= 1 && AQ.vocab + AQ.grammar === 5, JSON.stringify(AQ));
+  const AQ2 = SHT.quota.allocate([{ ability: 'vocab', w: 9 }, { ability: 'spelling', w: 1 }], 5);
+  assert('权重悬殊时真按比例给（9:1 → 4:1，不是 3:2）', AQ2.vocab === 4 && AQ2.spelling === 1, JSON.stringify(AQ2));
+  assert('名额比能力少时只给权重最大的',
+    JSON.stringify(SHT.quota.allocate([{ ability: 'vocab', w: 2 }, { ability: 'grammar', w: 5 }], 1)) === '{"grammar":1}');
+  const NQ = SHT.quota.normalize({ source: '乱写', total: 2, byAbility: { vocab: 2, grammar: 1, 乱来: 5, listening: -3 } });
+  assert('归一化丢掉枚举外的能力、负数归零', !NQ.byAbility['乱来'] && !NQ.byAbility.listening, JSON.stringify(NQ));
+  assert('各项之和超过 total 时以和为准', NQ.total === 3, String(NQ.total));
+  assert('来源不认识时退回 manual', NQ.source === 'manual');
+  const SQ = SHT.quota.fromScope([{ label: 'a', ability: 'vocab' }, { label: 'b', ability: 'vocab' }, { label: 'c', ability: 'listening' }], { total: 5 });
+  assert('按范围分：范围只有 3 个考点就最多 3 条', SHT.quota.sum(SQ) === 3 && SQ.source === 'scope', JSON.stringify(SQ.byAbility));
+  assert('按范围分：两类能力都拿到名额', SQ.byAbility.vocab >= 2 && SQ.byAbility.listening === 1, JSON.stringify(SQ.byAbility));
+  const PQ2 = SHT.quota.fromProfile({ layer: 'B', weaknesses: [
+    { ability: 'grammar', wrongCount: 4, lastWrongDays: 1 },
+    { ability: 'vocab', wrongCount: 1, lastWrongDays: 10 }
+  ] }, { total: 4 });
+  assert('画像里错得多的能力先拿名额', PQ2.byAbility.grammar >= PQ2.byAbility.vocab, JSON.stringify(PQ2.byAbility));
+  assert('画像来源记成 profile', PQ2.source === 'profile', PQ2.source);
+  const BQ = SHT.quota.fromBrief({ priority: [{ kp: 'x', ability: 'listening', missCount: 2 }] }, { total: 3 });
+  assert('错题画像折算成配额', BQ.byAbility.listening >= 1, JSON.stringify(BQ.byAbility));
+  const ap = SHT.quota.apply([
+    { kp: 'v1', ability: 'vocab' }, { kp: 'v2', ability: 'vocab' }, { kp: 'v3', ability: 'vocab' },
+    { kp: 'g1', ability: 'grammar' }
+  ], { total: 4, byAbility: { vocab: 2, grammar: 1, listening: 1 } });
+  assert('超额的能力被剔掉并记下来', ap.plans.length === 3 && ap.over.length === 1 && ap.over[0].kp === 'v3', JSON.stringify(ap.over));
+  assert('没排满的能力进 short，不补假题', ap.report.short.some(function (x) { return x.ability === 'listening'; }), JSON.stringify(ap.report.short));
+  const ax = SHT.quota.apply([{ kp: 'l1', ability: 'listening' }], { total: 3, byAbility: { vocab: 2 } });
+  assert('配额外的能力名额还空着就收下，只记 extra', ax.plans.length === 1 && ax.extra.length === 1, JSON.stringify(ax.extra));
+  assert('规划提示词里带着能力配额', SHT.AGENTS.plan.user({
+    bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 },
+    unit: SHT.curriculum, brief: {}, blockedCells: [], count: 3,
+    quota: { total: 3, byAbility: { vocab: 2, grammar: 1 }, note: '人工填写' }
+  }).indexOf('vocab：2 条') >= 0);
+
+  // 流水线：配额只给 1 条 vocab，多出来的那类不排题
+  await (function () {
+    let n = 0;
+    const script = [
+      () => ({ ok: true, tokens: 10, ms: 1, json: { plans: [
+        { kp: 'vocab · A · x', ability: 'vocab', level: '认' },
+        { kp: 'vocab · B · y', ability: 'vocab', level: '认' },
+        { kp: 'grammar · C · z', ability: 'grammar', level: '认' }
+      ] } }),
+      () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+      () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+    ];
+    SHT.llm.call = async function () { const f = script[Math.min(n, script.length - 1)]; n += 1; return f(); };
+    return SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 5, brief: {}, existing: [],
+      quota: { source: 'manual', total: 2, byAbility: { vocab: 1, grammar: 1 } }
+    }).then(function (out) {
+      assert('配额只给 1 条 vocab 时多出来的不排题',
+        out.plans.length === 2 && !out.plans.some(function (p) { return p.kp === 'vocab · B · y'; }),
+        JSON.stringify(out.plans.map(function (p) { return p.kp; })));
+      assert('超额条目记 QUOTA_OVER', out.failures.some(function (f) { return f.codes.indexOf('QUOTA_OVER') >= 0; }),
+        JSON.stringify(out.failures.map(function (f) { return f.codes; })));
+      assert('返回这一轮实际用的配额', !!out.quota && out.quota.byAbility.vocab === 1, JSON.stringify(out.quota));
     });
   })();
 

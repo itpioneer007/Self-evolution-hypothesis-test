@@ -189,9 +189,21 @@
     });
     const normKp = function (s) { return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[·・.]/g, ''); };
 
+    // 能力配额：给了就用给的（人改过的优先），没给就按「范围 → 错题 → 本册」自动算。
+    // 题量不是「出 5 题」，是「词汇 2 / 语法 2 / 听力 1」这张小表。
+    const quota = (o.quota && SHT.quota.sum(o.quota) > 0)
+      ? SHT.quota.normalize(o.quota)
+      : SHT.quota.auto({ scope: scopeAlive, brief: o.brief, kps: (unit.kps || SHT.kpsOf(unit.id) || []), total: count });
+    const quotaSum = SHT.quota.sum(quota);
+    let quotaReport = null;
+
     // ---------- 环节 1：规划 ----------
-    const want = scopeAlive.length ? Math.min(count, scopeAlive.length) : count;
-    onEvent({ phase: 'plan', text: '规划中：提 ' + want + ' 条考点' + (scopeAlive.length ? '（范围 ' + scopeAlive.length + ' 个）' : '') + (hint.layer ? '　' + hint.layer + ' 层上限 ' + hint.cap : '') });
+    const want = scopeAlive.length ? Math.min(quotaSum, scopeAlive.length) : quotaSum;
+    onEvent({
+      phase: 'plan',
+      text: '规划中：' + want + ' 条考点' + (scopeAlive.length ? '（范围 ' + scopeAlive.length + ' 个）' : '') +
+        (hint.layer ? '　' + hint.layer + ' 层上限 ' + hint.cap : '') + '　配额 ' + SHT.quota.text(quota)
+    });
     let plans = null;
     const planAgent = SHT.AGENTS.plan;
     for (let i = 0; i < 2 && !plans; i += 1) {
@@ -200,12 +212,12 @@
         system: planAgent.system(),
         user: planAgent.user(Object.assign({}, ctxBase, {
           brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [], count: want,
-          scope: scopeAlive, stage: hint
+          scope: scopeAlive, stage: hint, quota: quota
         })) + (recall('plan') ? '\n\n' + recall('plan') : ''),
         maxTokens: 1400
       });
       if (res.ok && res.json && Array.isArray(res.json.plans) && res.json.plans.length) {
-        plans = res.json.plans.slice(0, want).map(function (p, idx) {
+        plans = res.json.plans.map(function (p, idx) {
           return {
             kp: String(p.kp || p.knowledgePoint || '').trim(),
             ability: (SHT.SKILL_CATEGORIES.indexOf(p.ability) >= 0) ? p.ability : 'vocab',
@@ -253,6 +265,26 @@
           }));
           return false;
         });
+
+        // 能力配额：模型爱把一整轮都写成 vocab（最容易出题），代码按住。
+        // 先按配额裁，再截总条数——反过来会把靠后能力的题当超额砍掉。
+        const applied = SHT.quota.apply(plans, quota);
+        applied.over.forEach(function (x) {
+          failures.push(failEntry({
+            stage: 'plan', attempt: i + 1, planKp: x.kp, codes: ['QUOTA_OVER'],
+            reason: '「' + x.ability + '」这一轮只排 ' + quota.byAbility[x.ability] + ' 条，这条超出配额，不排题', detail: ''
+          }));
+        });
+        // 配额外的能力没被剔掉（名额还空着就收下），只留一笔在报告里，不算失败
+        applied.report.short.forEach(function (x) {
+          failures.push(failEntry({
+            stage: 'plan', attempt: i + 1, codes: ['QUOTA_SHORT'],
+            reason: '「' + x.ability + '」配额 ' + x.want + ' 条，规划只给了 ' + x.got + ' 条', detail: ''
+          }));
+        });
+        plans = applied.plans.slice(0, want);
+        plans.forEach(function (p, idx) { p.no = idx + 1; });
+        quotaReport = applied.report;
         if (!plans.length) plans = null;
       }
       if (!plans) {
@@ -266,7 +298,8 @@
     }
     if (!plans) {
       onEvent({ phase: 'done', text: '规划失败，本轮没有出题' });
-      return { ok: false, plans: [], questions: [], failures: failures, stage: 'plan' };
+      return { ok: false, plans: [], questions: [], failures: failures, stage: 'plan',
+        quota: quota, quotaReport: null };
     }
 
     // 考点去重：模型偶尔把同一个考点换个说法给两条，出出来就是两道同考点的题。
@@ -301,6 +334,7 @@
 
     if (o.planOnly) {
       return { ok: true, plans: plans, questions: [], failures: failures, stage: 'plan',
+        quota: quota, quotaReport: quotaReport,
         memoryNext: SHT.agentMemory.commit(memory, { questions: [], failures: failures }) };
     }
 
@@ -478,6 +512,8 @@
       progressNext: SHT.progress.commit(progress, { questions: questions, attempts: o.attempts || [] }),
       stageHint: hint,
       stop: SHT.progress.stopJudge({ questions: questions, attempts: o.attempts || [], failures: failures }),
+      // 这一轮实际用的配额与达成情况，界面回写后下一轮才看得见偏差
+      quota: quota, quotaReport: quotaReport,
       stats: SHT.llm.stats()
     };
   };

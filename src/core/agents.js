@@ -80,7 +80,8 @@
           '6. 如果给了「本轮考点范围」，每条的 kp 必须原样用范围内的一条说法，一个字都不许改，也不许自己另造。',
           '7. whyThisOne：为什么这一轮要考它，一句话，不超过 25 个字。',
           '8. nextIfWrong：他这次还错，下一轮出什么，必须是更小的一步，不超过 25 个字。',
-          '9. 不要输出题目内容、选项、解析、答案。只输出 JSON。'
+          '9. 如果给了「本轮能力配额」，按配额分每类能力的条数，一类都不许多；每条的 ability 必须来自配额表，配额里没有的能力不要出现。',
+          '10. 不要输出题目内容、选项、解析、答案。只输出 JSON。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -104,6 +105,10 @@
           if ((stage.retired || []).length) {
             lines.push('这些考点他已经真会到顶，一个都不要排：' + stage.retired.join('；'));
           }
+          if ((stage.retry || []).length) {
+            lines.push('上一轮这些考点没出成题（被退回或放弃），这一轮换个角度重试，不要照原样再写一遍：' +
+              stage.retry.map(function (x) { return x.kp + '（已失败 ' + x.times + ' 次）'; }).join('；'));
+          }
           if ((stage.advancing || []).length) {
             lines.push('这些考点上一轮已经答对，这一轮要往上走一层：' +
               stage.advancing.map(function (a) { return a.kp + ' → ' + a.level; }).join('；'));
@@ -111,6 +116,15 @@
           if (stage.scopeExhausted) {
             lines.push('注意：本轮勾选的范围已经考完，考点要从范围外另提。');
           }
+          lines.push('');
+        }
+        const quota = ctx.quota;
+        if (quota && quota.byAbility && Object.keys(quota.byAbility).length) {
+          lines.push('本轮能力配额（共 ' + SHT.quota.sum(quota) + ' 条，一类都不许多）：');
+          SHT.SKILL_CATEGORIES.forEach(function (a) {
+            if (quota.byAbility[a]) lines.push('- ' + a + '：' + quota.byAbility[a] + ' 条');
+          });
+          lines.push('配额的来历：' + (quota.note || '人工填写') + '。配额外的能力一个都不要排。');
           lines.push('');
         }
         const scope = ctx.scope || [];
