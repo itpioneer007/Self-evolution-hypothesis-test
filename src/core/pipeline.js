@@ -171,9 +171,16 @@
     };
     const failures = [];
     const onEvent = typeof o.onEvent === 'function' ? o.onEvent : function () {};
+    // 本轮要考察的知识点范围（[{label, ability, cell}]）。空 = 不限制，由模型现场提。
+    const scope = (o.scope || []).filter(function (s) { return s && s.label; });
+    // 三个智能体各自的记忆：由代码在调用之间搬运，下一轮各自读回
+    const memory = (o.memory && o.memory.plan) ? o.memory : SHT.agentMemory.blank();
+    const recall = function (id) { return SHT.agentMemory.recallText(memory, id); };
+    const normKp = function (s) { return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[·・.]/g, ''); };
 
     // ---------- 环节 1：规划 ----------
-    onEvent({ phase: 'plan', text: '规划中：提 ' + count + ' 条考点' });
+    const want = scope.length ? Math.min(count, scope.length) : count;
+    onEvent({ phase: 'plan', text: '规划中：提 ' + want + ' 条考点' + (scope.length ? '（范围 ' + scope.length + ' 个）' : '') });
     let plans = null;
     const planAgent = SHT.AGENTS.plan;
     for (let i = 0; i < 2 && !plans; i += 1) {
@@ -181,12 +188,12 @@
         role: 'plan',
         system: planAgent.system(),
         user: planAgent.user(Object.assign({}, ctxBase, {
-          brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [], count: count
-        })),
+          brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [], count: want, scope: scope
+        })) + (recall('plan') ? '\n\n' + recall('plan') : ''),
         maxTokens: 1400
       });
       if (res.ok && res.json && Array.isArray(res.json.plans) && res.json.plans.length) {
-        plans = res.json.plans.slice(0, count).map(function (p, idx) {
+        plans = res.json.plans.slice(0, want).map(function (p, idx) {
           return {
             kp: String(p.kp || p.knowledgePoint || '').trim(),
             ability: (SHT.SKILL_CATEGORIES.indexOf(p.ability) >= 0) ? p.ability : 'vocab',
@@ -197,6 +204,22 @@
             no: idx + 1
           };
         }).filter(function (p) { return p.kp; });
+        // 范围的硬校验：说好只考这几个，就得真落在这几个上。
+        // 提示词里写「必须照抄」不管用，模型会顺手把它改得更漂亮。
+        if (scope.length) {
+          const pool = scope.map(function (s) { return normKp(s.label); });
+          const kept = [];
+          plans.forEach(function (p) {
+            const n = normKp(p.kp);
+            const hit = pool.some(function (x) { return x === n || x.indexOf(n) >= 0 || n.indexOf(x) >= 0; });
+            if (hit) { kept.push(p); return; }
+            failures.push(failEntry({
+              stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_SCOPE'],
+              reason: '考点不在本轮选定范围内，这一条不排题：「' + p.kp + '」', detail: ''
+            }));
+          });
+          plans = kept;
+        }
         if (!plans.length) plans = null;
       }
       if (!plans) {
@@ -244,7 +267,8 @@
     onEvent({ phase: 'planned', plans: plans, text: '规划完成：' + plans.length + ' 条' });
 
     if (o.planOnly) {
-      return { ok: true, plans: plans, questions: [], failures: failures, stage: 'plan' };
+      return { ok: true, plans: plans, questions: [], failures: failures, stage: 'plan',
+        memoryNext: SHT.agentMemory.commit(memory, { questions: [], failures: failures }) };
     }
 
     // ---------- 环节 2 / 闸 / 环节 3 ----------
@@ -264,6 +288,7 @@
           role: 'generate',
           system: genAgent.system(),
           user: genAgent.user(Object.assign({}, ctxBase, { plan: plan })) +
+            (recall('generate') ? '\n\n' + recall('generate') : '') +
             (feedback ? '\n\n上一版被退回，原因是：\n' + feedback + '\n这次必须避开这些问题。' : ''),
           maxTokens: 900
         });
@@ -296,6 +321,17 @@
         };
         while (question.options.length < 3) question.options.push('');
 
+        // 听力题的兜底：模型十次有四五次忘记填 audioText，题目本身却没问题。
+        // 只给「真要听」的题补：题型是听音选义 / 听写，或题干里写了听 / 录音。
+        // 书面辨音题（选出与 cake 中 a 同音的词）不需要朗读，硬补反而音文不一，质检会否。
+        const LISTENING = ['听音选义', '字母组合辨音', '听写'];
+        const needsAudio = question.cell.type === '听音选义' || question.cell.type === '听写' ||
+          /听|录音/.test(question.prompt);
+        if (needsAudio && !question.audioText && /^[A-Za-z'’\- ]+$/.test(question.answer)) {
+          question.audioText = question.answer;
+          question.checks.__audioFilled = 'auto';
+        }
+
         // 代码闸：有通过权
         const gate = SHT.validateQuestion(question, unit, { others: questions });
         if (!gate.pass) {
@@ -315,7 +351,8 @@
         const verdict = await SHT.llm.call({
           role: 'verify',
           system: verifyAgent.system(),
-          user: verifyAgent.user(Object.assign({}, ctxBase, { question: question })),
+          user: verifyAgent.user(Object.assign({}, ctxBase, { question: question })) +
+            (recall('verify') ? '\n\n' + recall('verify') : ''),
           maxTokens: 700,
           temperature: 0.1
         });
@@ -335,6 +372,24 @@
 
         const vj = verdict.json || {};
         const vfails = Array.isArray(vj.fails) ? vj.fails.filter(function (f) { return f && f.id; }) : [];
+        // 软否决：所有理由都指向「解析写得不够细」时，不重出、直接采纳并标 weak。
+        // 理由：解析限 30 字，逐项罗列本来就写不下；为解析把整道题丢掉，代价远大于收益，
+        // 而且题面本身是合规的（代码闸已经过了）。解析留给人再润一句就行。
+        const softOnly = vj.verdict === 'fail' && vfails.length > 0 &&
+          vfails.every(function (f) { return /解析/.test(String(f.reason || '')); });
+        if (softOnly) {
+          failures.push(failEntry({
+            stage: 'verify', planKp: plan.kp, attempt: attempt,
+            codes: ['VERIFY_SOFT'].concat(vfails.map(function (f) { return f.id; })),
+            reason: '质检只嫌解析写得不够细，题面没过错，采纳并标待润色',
+            detail: vfails.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；').slice(0, 200)
+          }));
+          question.modelVerdict = 'pass';
+          question.checks.__verify = 'soft';
+          question.checks.__analysis = 'needs-polish';
+          adopted = question;
+          break;
+        }
         if (vj.verdict === 'fail') {
           if (!vfails.length) {
             // 说挂又不给条款号 = 无效否决，不采纳但记下来
@@ -385,6 +440,7 @@
       questions: questions,
       failures: failures,
       stage: 'done',
+      memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures }),
       stats: SHT.llm.stats()
     };
   };

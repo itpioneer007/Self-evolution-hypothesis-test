@@ -253,7 +253,8 @@
       : blanked;
     v.options = rotate([hit.word, others[0], others[1]], seed);
     v.answer = hit.word;
-    v.analysis = '原句是 ' + hit.line + '　这里的 ' + hit.word + ' 不能换成别的介词。';
+    // 解析要压到 25 字内：变体也过同一道闸（V5），把整句原句抄进来必然超长
+    v.analysis = '这里用 ' + hit.word + '，换成别的介词就不对了。';
     v.basis = '换空：' + hit.line;
     return v;
   }
@@ -346,6 +347,17 @@
     if (!v) return null;
     v = withBait(question, v);
     if (!auditVariant(question, v)) return null;
+    // 变体是代码派生的，但它照样要过同一道闸：实测派生出来的题干会引用句型原文里
+    // 没进词表的词（TV / many），不过闸的变体发给学生，等于把超纲词当成学生的错。
+    // 过不了就当接不出变体——这比发一道坏题诚实。
+    if (SHT.validateQuestion) {
+      const gate = SHT.validateQuestion(
+        Object.assign({}, v, { knowledgePoint: question.knowledgePoint || '变体探针' }),
+        SHT.curriculum,
+        { exempt: [question.answer] }
+      );
+      if (!gate.pass) return null;
+    }
     // 答案变化单独成字段，不塞进 basis 的长句里：界面把它当标签显示
     v.answerShift = String(question.answer || '').trim() + ' → ' + v.answer;
     return v;

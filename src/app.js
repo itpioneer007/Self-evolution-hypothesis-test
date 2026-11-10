@@ -76,13 +76,18 @@
       rounds: { 1: blankRound(), 2: blankRound() },
       wrongCases: cloneWrongCases(),
       failures: [],
-      llmBusy: false
+      llmBusy: false,
+      // 本轮要考察的知识点范围（候选清单里的 id）。空数组 = 不限制，交规划环节现场提
+      kpScope: [],
+      agentMemory: SHT.agentMemory.blank()
     };
   }
 
   function normalizeState(parsed) {
     if (!parsed.bookId) parsed.bookId = 'PEP-G4A';
     if (!Array.isArray(parsed.failures)) parsed.failures = [];
+    if (!Array.isArray(parsed.kpScope)) parsed.kpScope = [];
+    if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
@@ -205,10 +210,18 @@
     {
       id: 'verify', no: '环节 3', name: '验证智能体', stage: '质检',
       prompt: '独立质检 · 23 条二元',
-      memory: '教材词表 · 学生画像',
+      memory: '教材词表 · 四层判据',
       skill: '四层判据 · 条款号'
     }
   ];
+
+  // 卡片上的记忆摘要：课程/执行/验证 对应 agents.js 里的 plan/generate/verify
+  const AGENT_OF_ROLE = { course: 'plan', execute: 'generate', verify: 'verify' };
+  function agentMemLine(roleId) {
+    const id = AGENT_OF_ROLE[roleId];
+    if (!id || !state.agentMemory) return '';
+    return SHT.agentMemory.summary(state.agentMemory, id);
+  }
 
   function renderAgentRail() {
     $('agentRail').innerHTML = ROLES.map(function (r) {
@@ -216,7 +229,8 @@
         '<div class="agent-top"><span class="agent-name">' + esc(r.name) + '</span><span class="agent-stage">' + esc(r.no) + ' · ' + esc(r.stage) + '</span></div>' +
         '<div class="agent-meta">' +
           '<div class="agent-meta-row"><span>提示词</span><span>' + esc(r.prompt) + '</span></div>' +
-          '<div class="agent-meta-row"><span>记忆</span><span>' + esc(r.memory) + '</span></div>' +
+          '<div class="agent-meta-row"><span>记忆</span><span>' + esc(r.memory) +
+            (agentMemLine(r.id) ? '<em class="agent-mem">' + esc(agentMemLine(r.id)) + '</em>' : '') + '</span></div>' +
           '<div class="agent-meta-row"><span>技能</span><span>' + esc(r.skill) + '</span></div>' +
         '</div></button>';
     }).join('');
@@ -255,16 +269,26 @@
     if (!list.length) {
       return '<div class="kp-empty">本册无候选清单 · 考点由规划环节现场提</div>';
     }
-    return '<details class="kp-fold"><summary>候选知识点 · ' + SHT.curriculum.id + ' · ' + list.length + '</summary>' +
-      '<div class="kp-current">写入第 ' + state.activeNo + ' 题</div>' +
+    const scope = state.kpScope || [];
+    const scopeBar = '<div class="kp-scope">本轮范围 <strong>' + scope.length + '</strong> / ' + list.length +
+      (scope.length
+        ? '<span class="kp-scope-note">最多出 ' + scope.length + ' 题</span><button type="button" class="btn btn-mini" data-action="clear-scope">清空</button>'
+        : '<span class="kp-scope-note">不限范围 · 规划环节现场提</span>') +
+      '</div>';
+    return '<details class="kp-fold"' + (scope.length ? ' open' : '') + '><summary>候选知识点 · ' + SHT.curriculum.id + ' · ' + list.length + '</summary>' +
+      scopeBar +
+      '<div class="kp-current">点「用这个」写入第 ' + state.activeNo + ' 题；点「纳入」加进本轮范围</div>' +
       SHT.KP_GROUPS.map(function (g) {
         const items = list.filter(function (k) { return k.group === g.id; });
         if (!items.length) return '';
         return '<div class="kp-group"><div class="kp-group-head"><strong>' + esc(g.name) + '</strong>' +
           '<span>' + esc(g.note) + '</span></div>' +
           items.map(function (k) {
-            return '<div class="kp-item">' +
+            const inScope = scope.indexOf(k.id) >= 0;
+            return '<div class="kp-item' + (inScope ? ' is-scope' : '') + '">' +
               '<div class="kp-main"><span class="kp-label">' + esc(k.label) + '</span>' +
+                '<button type="button" class="btn btn-mini' + (inScope ? ' is-on' : '') + '" data-action="toggle-scope" data-id="' + esc(k.id) + '">' +
+                  (inScope ? '移出' : '纳入') + '</button>' +
                 '<button type="button" class="btn btn-mini" data-action="pick-kp" data-id="' + esc(k.id) + '">用这个</button></div>' +
               '<div class="kp-why">' + esc(k.why) + '　<span>依据：' + esc(k.source) + '</span></div>' +
               '<div class="kp-meta">建议出题角度：' + esc(k.cell.type) + ' / ' + esc(k.cell.level) + ' / ' + esc(k.cell.distractor) +
@@ -272,6 +296,26 @@
             '</div>';
           }).join('') + '</div>';
       }).join('') + '</details>';
+  }
+
+  // 勾选的候选知识点 → 交给规划角色的范围（带 label / ability / 建议角度）
+  function kpScopePayload() {
+    return (state.kpScope || []).map(function (id) {
+      const kp = kpById(id);
+      if (!kp) return null;
+      return { id: kp.id, label: kp.label, ability: kp.ability, cell: kp.cell };
+    }).filter(Boolean);
+  }
+
+  function toggleScope(id) {
+    const kp = kpById(id);
+    if (!kp) return;
+    state.kpScope = state.kpScope || [];
+    const at = state.kpScope.indexOf(id);
+    if (at >= 0) state.kpScope.splice(at, 1);
+    else state.kpScope.push(id);
+    save(); renderAll();
+    toast(at >= 0 ? '已移出范围：' + kp.label : '已纳入范围：' + kp.label);
   }
 
   function applyKnowledgePoint(id, no, withCell) {
@@ -693,6 +737,10 @@
     const tail = last && last.stage === 'variant'
       ? '　换了一道同考点的变体还是错（选了「' + last.picked + '」，应为「' + last.expected + '」）。'
       : '';
+    // 「只记住这道题」这一态：原题答对、换题面才错。这时还按首次作答记
+    // studentAnswer，卡片上会出现「作答 name / 正确 name」这种看不出错在哪的记录。
+    // 这种情况要把变体那枪的选择摆到台面上。
+    const onlyVariantWrong = first.correct && last && last.stage === 'variant' && !last.correct;
     const res = SHT.upsertWrongCase(state.wrongCases, {
       studentId: SHT.sampleStudent.id,
       unitId: SHT.curriculum.hostUnitId,
@@ -701,10 +749,12 @@
       knowledgePoint: q.knowledgePoint || (kp ? kp.label : '未填写知识点'),
       ability: q.ability || (kp ? kp.ability : 'vocab'),
       category: kp ? kp.cause : '未掌握',
-      errorCause: ((kp ? kp.why : '') + '　第一次选了「' + first.picked + '」，答案是「' + first.expected + '」。' + tail).trim(),
+      errorCause: (onlyVariantWrong
+        ? '原题答对，换题面就错了——他记住的是这道题，不是这个考点。'
+        : (kp ? kp.why : '') + '　第一次选了「' + first.picked + '」，答案是「' + first.expected + '」。') + tail,
       questionSnapshot: q.prompt,
-      studentAnswer: first.picked,
-      correctAnswer: first.expected,
+      studentAnswer: onlyVariantWrong ? last.picked : first.picked,
+      correctAnswer: onlyVariantWrong ? last.expected : first.expected,
       hintCount: first.hintCount,
       at: first.at
     });
@@ -1207,6 +1257,9 @@
       },
       // 生成失败的全量记录：哪一步、哪条判据、什么原因、第几次
       failures: state.failures || [],
+      // 本轮考察范围与三个智能体各自的记忆，导出时一并留档（不含 key）
+      kpScope: state.kpScope || [],
+      agentMemory: state.agentMemory || null,
       llm: {
         model: SHT.llm.config().model,
         calls: stats.calls,
@@ -1258,6 +1311,9 @@
     state.rounds[1].questions = cloneSample(state.unitId);
     state.wrongCases = cloneWrongCases(state.unitId);
     state.failures = [];
+    // 候选清单是跟着单元走的，换书换单元后旧的 id 全部失效，范围必须清空
+    state.kpScope = [];
+    state.agentMemory = SHT.agentMemory.blank();
     save();
     renderAll();
     toast('已切到 ' + SHT.curriculum.bookName + ' · ' + state.unitId + ' ' + SHT.curriculum.title);
@@ -1375,6 +1431,8 @@
         unit: SHT.curriculum,
         count: 5,
         brief: brief,
+        scope: kpScopePayload(),
+        memory: state.agentMemory,
         existing: round.questions.filter(function (q) { return q.prompt; }),
         planOnly: !!planOnly,
         onEvent: function (ev) {
@@ -1385,6 +1443,8 @@
       if (token !== runToken) return;
 
       state.failures = (res.failures || []).concat(state.failures || []).slice(0, 200);
+      // 记忆按角色分开存：下一轮各自读回自己那份
+      if (res.memoryNext) state.agentMemory = res.memoryNext;
 
       if (res.ok && res.questions.length) {
         round.questions = res.questions.map(function (q, i) {
@@ -1469,6 +1529,8 @@
         if (action === 'auto-quota') { autoQuota(); return; }
         if (action === 'fill-weakness') { fillWeakness(); return; }
         if (action === 'pick-kp') { applyKnowledgePoint(b.dataset.id, state.activeNo, true); return; }
+        if (action === 'toggle-scope') { toggleScope(b.dataset.id); return; }
+        if (action === 'clear-scope') { state.kpScope = []; save(); renderAll(); toast('本轮不限知识点范围'); return; }
         if (action === 'q-nav') { state.activeNo = Number(b.dataset.no); save(); renderAll(); return; }
         if (action === 'layer') { state.checkLayer = Number(b.dataset.index); save(); renderAll(); return; }
         if (action === 'check') {

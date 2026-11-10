@@ -42,7 +42,7 @@
       'it', 'its', 'he', 'she', 'him', 'his', 'her', 'we', 'our', 'i', 'you', 'your',
       'my', 'me', 'they', 'them', 'their', 'in', 'on', 'at', 'to', 'of', 'and', 'or',
       'but', 'with', 'for', 'from', 'under', 'near', 'many', 'some', 'any', 'no',
-      'not', 'yes', 'please', 'thanks', 'thank', 'now', 'look', 'let', 'let\'s',
+      'not', 'yes', 'please', 'thanks', 'thank', 'welcome', 'sorry', 'ok', 'now', 'look', 'let', 'let\'s',
       'where', 'what', 'who', 'how', 'here', 'there', 'can', 'do', 'does', 'have',
       'has', 'like', 'would', 'very', 'too', 'oh', 'hi', 'hello', 'good', 'nice'
     ]

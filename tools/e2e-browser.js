@@ -141,7 +141,7 @@ const PAGE = function () {
     'src/data/books/xiangshao-g4a.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
     'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/agents.js',
-    'src/core/validate.js', 'src/core/pipeline.js'
+    'src/core/validate.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
   ];
   return [
     '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>e2e</title></head><body>',

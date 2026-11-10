@@ -61,6 +61,7 @@ require('../src/core/practice.js');
 require('../src/core/llm.js');
 require('../src/core/agents.js');
 require('../src/core/validate.js');
+require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
 require('../src/app.js');
 
@@ -268,8 +269,8 @@ assert('变体题干里不出现答案原词（拼写题不许把答案写在题
 
 // 辨音：原答案所在词对必须整组排除，否则换 seed 就撞回同一个答案
 const cakeQ = {
-  no: 3, cell: { type: '字母组合辨音' }, prompt: '听录音，选出你听到的单词。',
-  options: ['cake', 'cat', 'hat'], answer: 'cake'
+  no: 3, cell: { type: '字母组合辨音', scene: '学校', level: '辨', distractor: '音近' }, prompt: '听录音，选出你听到的单词。',
+  options: ['cake', 'cat', 'hat'], answer: 'cake', audioText: 'cake'
 };
 const cakeVars = [1, 2, 3, 4, 5, 6, 7, 8].map(n => SHT.buildVariant(cakeQ, n)).filter(Boolean);
 assert('辨音变体不会撞回原答案（原答案所在词对整组排除）',
@@ -286,9 +287,21 @@ let variantBad = [];
 SHT_BOOK.units.forEach(function (u) {
   SHT.setUnit(u.id);
   ['听音选义', '中英匹配', '拼写补全', '字母组合辨音', '选词填空', '句子判断', '对话补全'].forEach(function (t) {
+    // 基底题要造得像真题：题干用中文、选项取词表词、听力题带原文，
+    // 否则它自己就过不了闸，变体自然全接不出，这一条会退化成空断言
+    const ws = SHT.curriculum.words;
+    const listening = ['听音选义', '字母组合辨音', '听写'].indexOf(t) >= 0;
+    const spelling = t === '拼写补全' || t === '听写';
+    const swap = function (w, k) {
+      const a = w.split(''); const i = 1 + (k % Math.max(1, a.length - 2));
+      const tmp = a[i]; a[i] = a[i + 1]; a[i + 1] = tmp; return a.join('');
+    };
     const base = {
-      no: 2, cell: { type: t }, prompt: SHT.curriculum.sentencePatterns[0] || '',
-      options: ['a', 'b', 'c'], answer: SHT.curriculum.words[0].en
+      no: 2, cell: { type: t, scene: '学校', level: '辨', distractor: '形近' },
+      prompt: '选出「' + ws[0].zh + '」对应的英文。',
+      options: spelling ? [ws[0].en, swap(ws[0].en, 1), swap(ws[0].en, 2)] : [ws[0].en, ws[1].en, ws[2].en],
+      answer: ws[0].en,
+      audioText: listening ? ws[0].en : ''
     };
     const v = SHT.buildVariant(base, 2);
     if (!v) return;
@@ -428,6 +441,30 @@ const v3c = SHT.validateQuestion({
   prompt: '选出「裤子」的正确拼写。', audioText: '', options: ['trousers', 'curtain', 'zebra'], answer: 'trousers', analysis: '看清词形再选。'
 }, SHT.BOOKS.get('HEB-G4A').units[0], {});
 assert('V3c 抓拼写题里「其实是个真词」的干扰项', v3c.fails.some(f => f.id === 'V3c'), SHT.failsText(v3c));
+const pho = SHT.validateQuestion({
+  knowledgePoint: 'phonics · a / a-e · cake 与 cat', ability: 'phonics',
+  cell: { type: '字母组合辨音', scene: '学校', level: '辨', distractor: '音近' },
+  prompt: '听录音，选出你听到的单词。', audioText: 'cake', options: ['cake', 'cat', 'hat'], answer: 'cake',
+  analysis: 'a-e 读字母音，cat 读短音。'
+}, SHT.BOOKS.get('PEP-G4A').getUnit('U1'), {});
+assert('语音点里的对比词对不算超纲（cake / cat 不在词表但学过的）',
+  !pho.fails.some(f => f.id === 'V1'), SHT.failsText(pho));
+const anaOpt = SHT.validateQuestion({
+  knowledgePoint: 'spelling · blackboard · oa + ar', cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
+  prompt: '选出「黑板」的正确拼写。', audioText: '', options: ['blackboard', 'blackbord', 'blakboard'], answer: 'blackboard',
+  analysis: 'blakboard 少 c，blackbord 少 a。'
+}, SHT.BOOKS.get('PEP-G4A').getUnit('U1'), {});
+assert('解析引用本题选项里的错拼不算超纲', !anaOpt.fails.some(f => f.id === 'V1'), SHT.failsText(anaOpt));
+assert('听音题题干不许把要听的词写出来', SHT.validateQuestion({
+  knowledgePoint: 'vocab · fan · 音义联结', cell: { type: '听音选义', scene: '学校', level: '认', distractor: '同类不同物' },
+  prompt: '听音选义：选出「fan」的中文意思。', audioText: 'fan', options: ['风扇', '电灯', '门'], answer: '风扇', analysis: 'light 是电灯。'
+}, SHT.BOOKS.get('PEP-G4A').getUnit('U1'), {}).fails.some(f => f.id === 'V6'));
+
+assert('解析拆解词根（black + board）不算超纲', !SHT.validateQuestion({
+  knowledgePoint: 'spelling · blackboard · oa + ar', cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
+  prompt: '选出「黑板」的正确拼写。', audioText: '', options: ['blackboard', 'blackbord', 'blakboard'], answer: 'blackboard',
+  analysis: 'black board 两个词合起来，oa 和 ar 都不能省。'
+}, SHT.BOOKS.get('PEP-G4A').getUnit('U1'), {}).fails.some(f => f.id === 'V1'));
 assert('V3c 不误伤字母顺序颠倒的错拼（sheo / sohe）', SHT.validateQuestion({
   knowledgePoint: 'spelling · shoe · 形近', cell: { type: '拼写补全', scene: '身体与衣物', level: '辨', distractor: '形近' },
   prompt: '选出「鞋」的正确拼写。', audioText: '', options: ['shoe', 'sheo', 'sohe'], answer: 'shoe', analysis: 'o 在 h 后面。'
@@ -475,6 +512,26 @@ assert('brief 带着错题优先级', brief.priority.length >= 1 && brief.priori
 assert('brief 记下已真会的考点', brief.mastered.includes('真会考点'), brief.mastered.join(','));
 assert('两枪都对的考点不会再被优先出', brief.priority.every(p => p.kp !== '真会考点'));
 assert('brief 是结构化字段，不是一段话', typeof brief.levelHint === 'string' && Array.isArray(brief.blockedCells));
+
+/* ================= 三个智能体各自的记忆 ================= */
+console.log('--- 智能体记忆 ---');
+const MEM0 = SHT.agentMemory.blank();
+const MEM1 = SHT.agentMemory.commit(MEM0, {
+  questions: [{ knowledgePoint: 'vocab · shirt', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' } }],
+  failures: [
+    { stage: 'validate', codes: ['V1'] },
+    { stage: 'validate', codes: ['V1'] },
+    { stage: 'verify', codes: ['VERIFY_NO_CODE'] }
+  ]
+});
+assert('记忆按角色分开写：plan 记角度与考点', MEM1.plan.cells.length === 1 && MEM1.plan.kps[0] === 'vocab · shirt');
+assert('generate 记「最常被退回的条款」', MEM1.generate.fails.V1 === 2);
+assert('verify 记自己的无效否决次数', MEM1.verify.noCodeCount === 1);
+assert('commit 不改入参（纯函数）', MEM0.plan.rounds === 0 && MEM0.generate.fails.V1 === undefined);
+assert('plan 记忆会写进出题提示词', SHT.agentMemory.recallText(MEM1, 'plan').indexOf('别重复') >= 0);
+assert('verify 记忆会提醒它给条款号', SHT.agentMemory.recallText(MEM1, 'verify').indexOf('没给条款号') >= 0);
+assert('没有记忆时不留占位噪音', SHT.agentMemory.recallText(MEM0, 'plan') === '');
+assert('卡片摘要能读出一轮记忆', SHT.agentMemory.summary(MEM1, 'plan').indexOf('已记 1 轮') === 0);
 
 /* ================= 流水线（mock 模型） ================= */
 console.log('--- 流水线：规划 → 生成 → 闸 → 质检 → 退回重出 ---');
@@ -583,6 +640,42 @@ async function runCase(name, script, expect) {
       assert('去重后题号重排，不留空号', out.plans[0].no === 1);
     });
   })();
+
+  // 选定知识点范围：范围外的考点不许进这一轮，提示词要真带上范围
+  const SCOPE = [{ id: 'k1', label: 'vocab · shirt · 音义联结', ability: 'vocab', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' } }];
+  assert('规划提示词里带着选定范围', SHT.AGENTS.plan.user({
+    bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 },
+    unit: SHT.curriculum, brief: {}, blockedCells: [], count: 1, scope: SCOPE
+  }).indexOf('vocab · shirt · 音义联结') >= 0);
+
+  await (function () {
+    let n = 0;
+    const script = [
+      () => ({ ok: true, tokens: 10, ms: 1, json: { plans: [{ kp: 'vocab · 范围外的考点 · 自造', ability: 'vocab', level: '认' }] } }),
+      () => ({ ok: true, tokens: 10, ms: 1, json: { plans: [{ kp: 'vocab · shirt · 音义联结', ability: 'vocab', cause: '形近', nextIfWrong: '先配对', level: '认' }] } }),
+      () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+      () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+    ];
+    SHT.llm.call = async function () { const f = script[Math.min(n, script.length - 1)]; n += 1; return f(); };
+    return SHT.pipeline.runRound({ unit: SHT.curriculum, count: 5, brief: {}, existing: [], scope: SCOPE }).then((out) => {
+      assert('范围外的考点被丢掉并留 PLAN_SCOPE', out.failures.some(f => f.codes.includes('PLAN_SCOPE')),
+        JSON.stringify(out.failures.map(f => f.codes)));
+      assert('重排后只出范围内的考点', out.questions.length === 1 && out.plans[0].kp === SCOPE[0].label,
+        JSON.stringify(out.plans.map(p => p.kp)));
+      assert('范围只有 1 个时不硬凑 5 题', out.plans.length === 1);
+    });
+  })();
+
+  // 听力题漏填 audioText：用答案补上并留痕，不整题作废
+  await runCase('听力题漏填原文 → 兜底补上', [
+    () => ({ ok: true, tokens: 10, ms: 1, json: { plans: [{ kp: 'vocab · shirt · 音义联结', ability: 'listening', cause: '形近', nextIfWrong: '先配对', level: '认' }] } }),
+    () => ({ ok: true, json: qJson({ prompt: '听录音，选出你听到的单词。', audioText: '', options: ['shirt', 'skirt', 'coat'], answer: 'shirt' }), tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+  ], (out) => {
+    assert('听力题漏填原文时用答案兜底并留痕',
+      out.questions.length === 1 && out.questions[0].audioText === 'shirt' && out.questions[0].checks.__audioFilled === 'auto',
+      JSON.stringify(out.questions.map(q => q.audioText + '/' + q.checks.__audioFilled)));
+  });
 
   SHT.llm.call = REAL_CALL;
 

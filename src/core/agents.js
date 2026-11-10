@@ -33,6 +33,24 @@
     return fw.join(' ');
   }
 
+  // 除了词表和功能词，还有两类词是「学过但不在词表里」的，必须主动告诉模型与质检：
+  //   语音板块的对比词对（a / a-e 这一课就是用 cat / cake 讲的）
+  //   教材句型表原文里出现的词（One blackboard, one TV, many desks and chairs）
+  // 不说清楚，模型会不敢用、质检会拿词表去否掉本来对的题（实测两条都发生过）。
+  function extraKnownText(unit) {
+    const lines = [];
+    const pairs = ((unit.phonics && unit.phonics.pairs) || []).map(function (p) { return p.join(' / '); });
+    const extras = ((unit.phonics && unit.phonics.extras) || []);
+    if (pairs.length) {
+      lines.push('语音板块词对（必须用这些词，它们算学过）：' + pairs.concat(extras).join('；'));
+    }
+    return lines.join('\n');
+  }
+
+  function patternText(unit) {
+    return (unit.sentencePatterns || []).map(function (p, i) { return (i + 1) + '. ' + p; }).join('\n');
+  }
+
   const CHECK_TEXT = function () {
     return (SHT.CHECK_LAYERS || []).map(function (layer) {
       return '【' + layer.name + '】' + layer.items.map(function (it) {
@@ -59,9 +77,10 @@
           '3. ability 只能取：vocab / spelling / sentence / listening / speaking / phonics / grammar。',
           '4. level 只能取：认 / 辨 / 用 / 表达。',
           '5. 各条考点互不重复；如果给了错题画像，前两条必须冲画像里的 priority 考点。',
-          '6. whyThisOne：为什么这一轮要考它，一句话，不超过 25 个字。',
-          '7. nextIfWrong：他这次还错，下一轮出什么，必须是更小的一步，不超过 25 个字。',
-          '8. 不要输出题目内容、选项、解析、答案。只输出 JSON。'
+          '6. 如果给了「本轮考点范围」，每条的 kp 必须原样用范围内的一条说法，一个字都不许改，也不许自己另造。',
+          '7. whyThisOne：为什么这一轮要考它，一句话，不超过 25 个字。',
+          '8. nextIfWrong：他这次还错，下一轮出什么，必须是更小的一步，不超过 25 个字。',
+          '9. 不要输出题目内容、选项、解析、答案。只输出 JSON。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -78,6 +97,14 @@
           lines.push('语音点：本册没有语音板块，不要提 phonics 类考点。');
         }
         lines.push('');
+        const scope = ctx.scope || [];
+        if (scope.length) {
+          lines.push('本轮考点范围（' + scope.length + ' 个，只能从里面挑，kp 原样照抄）：');
+          scope.forEach(function (s, i) {
+            lines.push((i + 1) + '. ' + s.label + (s.cell ? '　（建议角度：' + s.cell.type + ' / ' + s.cell.level + '）' : ''));
+          });
+          lines.push('');
+        }
         const brief = ctx.brief || {};
         if (brief.priority && brief.priority.length) {
           lines.push('错题画像（按优先级）：');
@@ -130,8 +157,8 @@
           '1. 题干、选项、解析里出现的每一个英文单词，必须来自给定词表或给定功能词。一个都不许多。',
           '2. options 三项互不相同，且只有一项正确。其余两项要能说出错在哪，且错法要与指定的干扰项类型一致。',
           '3. prompt 里不许出现答案本身。拼写题用中文提问，例：选出「黑板」的正确拼写。',
-          '4. audioText：听力类题型填要朗读的英文原文；非听力题型填 ""。',
-          '5. analysis 不超过 25 个字，说人话，讲清错在哪，不要写「本题考查……」。',
+          '4. audioText：听力类题型（听音选义 / 字母组合辨音 / 听写）必须填要朗读的英文原文，就是答案那个词；非听力题型填 ""。漏填整题作废。',
+          '5. analysis 不超过 25 个字，只讲最主要的那个错因，不要把每个错项都罗列一遍（罗列必然超字数）。不要写「本题考查……」。',
           '6. keyword 填这道题真正在考的那个词或那个句型片段，方便系统归类。',
           '7. 题号、格子、知识点由系统填，你不用输出。',
           '8. 只输出 JSON。'
@@ -154,8 +181,9 @@
         lines.push('');
         lines.push('允许的功能词（可直接用，不算超纲）：');
         lines.push(funcText(u));
+        if (extraKnownText(u)) lines.push(extraKnownText(u));
         lines.push('');
-        lines.push('本单元句型表（题干里的句子必须来自这里或由其替换词构成）：');
+        lines.push('本单元句型表（题干里的句子必须来自这里或由其替换词构成；句型原文里的词也算学过）：');
         lines.push(patternsText(u));
         lines.push('');
         if (u.phonics && (u.phonics.pairs || []).length && p.cell.type === '字母组合辨音') {
@@ -186,6 +214,8 @@
           '1. 每条检查项只能判 pass 或 fail，不许「基本可以」「建议修改」。',
           '2. 判 fail 必须给条款号 + 一句具体理由，指出是哪个词、哪个选项、哪个字段。',
           '3. 你看不到出题者的说明，也不要去推测他的意图，只看题面与词表。',
+          '3.1 知识点的措辞由系统给定，不是你判的范围。知识点与题目对不上时，只判题目本身，不要因为「标签写得不准」而判挂。',
+          '3.2 解析只要求讲清最主要的错因，不要求逐项罗列每个错项。以「解析没有分别说明每个错项」为由判挂，属于无效否决。',
           '4. 拿不准的按 fail 处理，理由写「拿不准：……」。',
           '5. 只输出 JSON。'
         ].join('\n');
@@ -210,6 +240,9 @@
         lines.push('');
         lines.push('允许的功能词：');
         lines.push(funcText(u));
+        if (extraKnownText(u)) lines.push(extraKnownText(u));
+        lines.push('本单元句型表原文（其中出现的词也算学过，不许按超纲否）：');
+        lines.push(patternText(u));
         lines.push('');
         lines.push('检查项（每条二元判定）：');
         lines.push(CHECK_TEXT());

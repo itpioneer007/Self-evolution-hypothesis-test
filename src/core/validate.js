@@ -51,6 +51,21 @@
     const set = Object.create(null);
     unit.words.forEach(function (w) { set[lower(w.en)] = 'word'; });
     (unit.allowedFunctionWords || []).forEach(function (w) { set[lower(w)] = 'fn'; });
+    // 语音板块的对比词对也算「教过的」：a / a-e 这一课就是拿 cat / cake、dad / date
+    // 这些词来讲的，它们不在词表里，但学生确实学过。不并进来，phonics 题会被 V1 全部误杀。
+    const ph = unit.phonics || {};
+    (ph.pairs || []).forEach(function (pair) {
+      (pair || []).forEach(function (w) { if (w) set[lower(w)] = 'phonics'; });
+    });
+    (ph.extras || []).forEach(function (w) { if (w) set[lower(w)] = 'phonics'; });
+    // 教材句型表里出现的词也算学过：句型原文就写着 One blackboard, one TV, many desks
+    // and chairs，TV / many 不在词表里但在书上。引用课文句子却被判超纲，是最冤的误杀。
+    (unit.sentencePatterns || []).forEach(function (p) {
+      tokensOf(p).forEach(function (tk) {
+        if (resolveToken(tk, set)) return;
+        set[lower(tk)] = 'pattern';
+      });
+    });
     return set;
   }
 
@@ -138,9 +153,18 @@
     });
 
     // 解析放宽：它天然会引用答案、对比错项、写字母组合（ir / oa / a-e），
-    // 这些不是「考题内容」，逐词查表会大量误判。只抓 4 字母以上、且不是答案本身的生词。
+    // 这些不是「考题内容」，逐词查表会大量误判。只抓 4 字母以上、且不是答案本身、
+    // 也不属于本题任何选项的生词——解析引用选项里的错拼（blakboard）是正常写法。
+    const optionSet = Object.create(null);
+    (q.options || []).forEach(function (op) { optionSet[SHT.normAnswer(op)] = true; });
     const analysisUnknown = unknownWords(q.analysis, unit, set).filter(function (w) {
-      return w.length >= 4 && lower(w) !== lower(q.answer) && lower(w) !== lower(q.audioText);
+      if (w.length < 4) return false;
+      if (lower(w) === lower(q.answer) || lower(w) === lower(q.audioText)) return false;
+      if (optionSet[SHT.normAnswer(w)]) return false;
+      // 解析拆解词形时会引用词根：blackboard 讲成 black + board。
+      // 词根本身不是「考题内容」，是答案的一部分，不能算超纲。
+      if (lower(q.answer).indexOf(lower(w)) >= 0) return false;
+      return true;
     });
     if (analysisUnknown.length) {
       push('V1', '解析里出现了本单元没教过的词：' + analysisUnknown.join('、'));
@@ -172,12 +196,17 @@
       // 逐位比会把它误判成「差得远」。
       const target = String(q.answer || '');
       const pureEn = function (s) { return /^[A-Za-z'’-]+$/.test(s); };
+      // 豁免项：变体探针会把原题答案留在选项里当诱饵（那是铁律三，不是违规），
+      // 诱饵离新答案远是必然的，不能按「差太远」判。
+      const exempt = Object.create(null);
+      ((o.exempt || [])).forEach(function (x) { exempt[SHT.normAnswer(x)] = true; });
       if (pureEn(target)) {
         const limit = Math.max(1, Math.ceil(target.length / 4));
         const bad = opts.filter(function (op) {
           const o2 = String(op || '').trim();
           if (!o2 || !pureEn(o2)) return false;
           if (SHT.normAnswer(o2) === SHT.normAnswer(target)) return false;
+          if (exempt[SHT.normAnswer(o2)]) return false;
           return editDistance(lower(o2), lower(target)) > limit;
         });
         if (bad.length) push('V3c', '干扰拼写和原词差太远，不像错拼：' + bad.join('、'));
@@ -207,10 +236,21 @@
     // V6 听力题音文一致
     if (isListening) {
       const audio = String(q.audioText || '').trim();
-      if (!audio) {
+      // 只有「题干真要求学生听」的题才查音文一致。书面辨音题（选出与 cake 中 a
+      // 同音的词）本身不需要朗读，模型顺手给的 audioText 只是素材，不能按不一致判死。
+      const needAudio = /听|录音/.test(String(q.prompt || '')) || type === '听音选义' || type === '听写';
+      if (needAudio && !audio) {
         push('V6', '听力题没有听力原文');
-      } else if (SHT.normAnswer(audio) !== SHT.normAnswer(q.answer) && lower(audio).indexOf(lower(q.answer)) < 0) {
-        push('V6', '朗读的「' + audio + '」和答案「' + q.answer + '」对不上');
+      } else if (needAudio && /[A-Za-z]/.test(ans)) {
+        // 答案是英文时，朗读的必须就是它（听写 / 辨音 / 选词）
+        if (SHT.normAnswer(audio) !== SHT.normAnswer(ans) && lower(audio).indexOf(lower(ans)) < 0) {
+          push('V6', '朗读的「' + audio + '」和答案「' + ans + '」对不上');
+        }
+      }
+      // 答案是中文（听音选义）时，朗读的英文本来就不会等于中文答案，只要求原文非空。
+      // 但这时题干里绝不能把要听的词写出来：写了就是看词选义，听的部分等于没考。
+      if (needAudio && audio && new RegExp('\\b' + esc(audio) + '\\b', 'i').test(String(q.prompt || ''))) {
+        push('V6', '题干把要听的词「' + audio + '」写出来了，这就不是听力题了');
       }
     }
 
