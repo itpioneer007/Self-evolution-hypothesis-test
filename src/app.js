@@ -65,6 +65,7 @@
   function defaultState() {
     return {
       version: 2,
+      bookId: SHT.BOOKS.current().meta.id,
       unitId: SHT.curriculum.id,
       tab: 'agents',
       agent: 'course',
@@ -73,11 +74,15 @@
       activeNo: 1,
       learningLayer: SHT.sampleLearningLayer || 'B',
       rounds: { 1: blankRound(), 2: blankRound() },
-      wrongCases: cloneWrongCases()
+      wrongCases: cloneWrongCases(),
+      failures: [],
+      llmBusy: false
     };
   }
 
   function normalizeState(parsed) {
+    if (!parsed.bookId) parsed.bookId = 'PEP-G4A';
+    if (!Array.isArray(parsed.failures)) parsed.failures = [];
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
@@ -124,7 +129,8 @@
   }
 
   let state = loadState();
-  SHT.setUnit(state.unitId);
+  // 先按存过的书切，再切单元；只切单元会拿错词表边界
+  SHT.setBook(state.bookId, state.unitId);
   if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample(state.unitId);
 
   function save() {
@@ -136,7 +142,14 @@
 
   function verdictOf(q) {
     if (!q) return '待检';
-    const values = Object.keys(q.checks || {}).map(function (k) { return q.checks[k]; });
+    // 模型质检过的题以模型结论为准；人工勾的 checks 优先级更高（人能否决模型）
+    const checks = q.checks || {};
+    const human = Object.keys(checks).filter(function (k) { return k.charAt(0) !== '_'; }).map(function (k) { return checks[k]; });
+    if (human.indexOf('fail') >= 0) return '退回';
+    if (q.modelVerdict === 'fail') return '退回';
+    if (q.modelVerdict === 'pass') return '通过';
+    if (q.modelVerdict === 'unverified') return '待复核';
+    const values = human;
     if (values.indexOf('fail') >= 0) return '退回';
     const total = SHT.ALL_CHECKS.length;
     if (values.length === total && values.every(function (v) { return v === 'pass'; })) return '通过';
@@ -238,6 +251,10 @@
 
   function kpFoldHtml() {
     const list = unitKps();
+    // 只有 PEP 四上入库了候选清单；冀教、湘少版的考点由模型现场提，不给假候选
+    if (!list.length) {
+      return '<div class="kp-empty">本册无候选清单 · 考点由规划环节现场提</div>';
+    }
     return '<details class="kp-fold"><summary>候选知识点 · ' + SHT.curriculum.id + ' · ' + list.length + '</summary>' +
       '<div class="kp-current">写入第 ' + state.activeNo + ' 题</div>' +
       SHT.KP_GROUPS.map(function (g) {
@@ -271,13 +288,36 @@
       : '已填入候选知识点；出题角度请回第 1 个角色改');
   }
 
+  function failFeedHtml() {
+    const list = (state.failures || []).slice(0, 12);
+    if (!list.length) return '';
+    const rows = list.map(function (f) {
+      const stage = { plan: '规划', generate: '生成', validate: '代码闸', verify: '质检', giveup: '放弃' }[f.stage] || f.stage;
+      const codes = (f.codes || []).join(' ');
+      return '<div class="fail-row">' +
+        '<span class="fail-stage is-' + esc(f.stage) + '">' + esc(stage) + '</span>' +
+        '<span class="fail-kp">' + esc(f.planKp || '整轮') + (f.attempt ? ' · 第 ' + f.attempt + ' 次' : '') + '</span>' +
+        '<span class="fail-reason">' + (codes ? '<code>' + esc(codes) + '</code> ' : '') + esc(String(f.reason || '').slice(0, 120)) + '</span>' +
+      '</div>';
+    }).join('');
+    return '<details class="fail-fold"' + (list.length ? ' open' : '') + '>' +
+      '<summary>失败记录 · ' + (state.failures || []).length + '</summary>' +
+      '<div class="fail-list">' + rows + '</div></details>';
+  }
+
+  function modelStateHtml() {
+    const cfg = SHT.llm.config();
+    if (!cfg.key) return '<span class="model-pill is-off">模型未配置</span>';
+    return '<span class="model-pill is-on">' + esc(cfg.model) + '</span>';
+  }
+
   function renderPlanPanel() {
     const list = currentRound().questions;
     const exclusion = exclusionForCurrentRound();
     const projection = weaknessProjection();
     let body;
     if (!list.length) {
-      body = '<div class="hint-box">这一轮还没写计划。点右上「帮我排 5 个不重复的出题角度」开始；也可以切回第 1 轮。</div>';
+      body = '<div class="hint-box">这一轮还没写计划。点「模型出 5 题」让它自己排；也可以自己排 5 个角度。</div>';
     } else {
       body = '<div class="plan-head"><span>题号</span><span>考什么（写到错因）</span><span>题型</span><span>场景</span><span>考查层次</span><span>错项类型</span><span>挑错结果</span></div>' +
         '<div class="plan-table">' + list.map(function (q, i) {
@@ -297,18 +337,23 @@
     }
     const blockedCount = list.filter(function (q) { return exclusion.isCellBlocked(q.cell); }).length;
     const note = state.round === 1
-      ? '待练 ' + projection.remainingCount + ' 个知识点'
+      ? (projection.remainingCount ? '错题待练 ' + projection.remainingCount + ' 个考点' : '暂无错题记录')
       : '上轮占用 ' + exclusion.usedCells.size + ' 个角度 · 本轮撞车 ' + blockedCount + ' 道';
 
     $('agentPanel').innerHTML = '' +
       '<div class="panel-toolbar">' +
         '<span class="hint">' + esc(note) + '</span>' +
         '<div class="toolbar-actions">' +
-          '<button type="button" class="btn btn-primary" data-action="auto-quota">排 5 个角度</button>' +
-          '<button type="button" class="btn" data-action="fill-weakness">按薄弱点填</button>' +
+          modelStateHtml() +
+          (state.llmBusy
+            ? '<span class="model-step">' + esc(state.llmStep || '跑着…') + '</span>' +
+              '<button type="button" class="btn" data-action="stop-model">停</button>'
+            : '<button type="button" class="btn btn-primary" data-action="model-round">模型出 5 题</button>' +
+              '<button type="button" class="btn" data-action="auto-quota">排 5 个角度</button>' +
+              '<button type="button" class="btn" data-action="fill-weakness">按薄弱点填</button>') +
         '</div>' +
       '</div>' +
-      kpFoldHtml() + body;
+      kpFoldHtml() + body + failFeedHtml();
   }
 
   /* ---------- 01 执行智能体：单题九字段 ---------- */
@@ -935,10 +980,19 @@
   }
 
   /* ---------- 总渲染 ---------- */
+  function renderBookSelect() {
+    const sel = $('bookSelect');
+    if (!sel) return;
+    sel.innerHTML = SHT.BOOKS.list().map(function (b) {
+      return '<option value="' + esc(b.id) + '"' + (b.id === SHT.curriculum.bookId ? ' selected' : '') + '>' +
+        esc(b.shortName + '（' + b.unitCount + ' 单元）') + '</option>';
+    }).join('');
+  }
+
   function renderUnitSelect() {
     const sel = $('unitSelect');
     if (!sel) return;
-    sel.innerHTML = root.SHT_BOOK.units.map(function (u) {
+    sel.innerHTML = SHT.BOOKS.current().units.map(function (u) {
       return '<option value="' + esc(u.id) + '"' + (u.id === SHT.curriculum.id ? ' selected' : '') + '>' +
         esc(u.id + ' ' + u.title) + '</option>';
     }).join('');
@@ -954,6 +1008,7 @@
     document.querySelectorAll('#roundSwitch button').forEach(function (b) {
       b.classList.toggle('is-active', Number(b.dataset.round) === state.round);
     });
+    renderBookSelect();
     renderUnitSelect();
     renderAgentRail();
     renderAgentPanel();
@@ -970,6 +1025,10 @@
     $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.curriculum.hostUnitId +
       ' · 词 ' + SHT.curriculum.words.length + ' / 句 ' + SHT.curriculum.sentencePatterns.length +
       ' / 候选 ' + unitKps().length;
+    if ($('footHint')) {
+      const cfg = SHT.llm.config();
+      $('footHint').textContent = cfg.key ? ('模型 ' + cfg.model + ' · 本地保存') : '本地保存 · 模型未配置';
+    }
   }
 
   /* ---------- 动作 ---------- */
@@ -1116,13 +1175,20 @@
 
   function exportJSON() {
     const p = weaknessProjection();
+    const b = SHT.BOOKS.current();
+    const stats = SHT.llm.stats();
     const payload = {
       exportedAt: new Date().toISOString(),
       book: {
         id: SHT.curriculum.bookId,
-        name: root.SHT_BOOK.meta.name,
-        publisher: root.SHT_BOOK.meta.publisher,
-        source: root.SHT_BOOK.meta.source
+        name: b.meta.name,
+        shortName: b.meta.shortName,
+        publisher: b.meta.publisher,
+        grade: b.meta.grade,
+        term: b.meta.term,
+        unitCount: b.units.length,
+        source: b.meta.source,
+        warnings: b.meta.warnings
       },
       unit: SHT.curriculum.hostUnitId,
       unitTitle: SHT.curriculum.title,
@@ -1138,6 +1204,16 @@
       practice: {
         round1: roundPracticeSummary(state.rounds[1]),
         round2: roundPracticeSummary(state.rounds[2])
+      },
+      // 生成失败的全量记录：哪一步、哪条判据、什么原因、第几次
+      failures: state.failures || [],
+      llm: {
+        model: SHT.llm.config().model,
+        calls: stats.calls,
+        ok: stats.ok,
+        fail: stats.fail,
+        tokens: stats.tokens,
+        totalMs: stats.ms
       },
       weaknessProjection: p,
       wrongCases: state.wrongCases,
@@ -1168,34 +1244,200 @@
     toastTimer = setTimeout(function () { node.remove(); }, 3400);
   }
 
-  /* ---------- 教材单元切换 ---------- */
-  function switchUnit(unitId) {
-    if (!unitId || unitId === SHT.curriculum.id) return;
-    const unit = root.SHT_BOOK.getUnit(unitId);
-    if (!unit) return;
-    if (!window.confirm('切到 ' + unitId + ' ' + unit.title + '？两轮题目、出题计划与错题记录会按新单元重建。')) {
-      renderAll();
-      return;
-    }
-    SHT.setUnit(unitId);
-    state.unitId = unitId;
+  /* ---------- 教材版本 / 单元切换 ---------- */
+  function resetFor(bookId, unitId, msg) {
+    if (!window.confirm(msg)) { renderAll(); return; }
+    SHT.setBook(bookId, unitId);
+    state.bookId = bookId;
+    state.unitId = SHT.curriculum.id;
     state.round = 1;
     state.activeNo = 1;
     state.checkLayer = 0;
     state.agent = 'course';
     state.rounds = { 1: blankRound(), 2: blankRound() };
-    state.rounds[1].questions = cloneSample(unitId);
-    state.wrongCases = cloneWrongCases(unitId);
+    state.rounds[1].questions = cloneSample(state.unitId);
+    state.wrongCases = cloneWrongCases(state.unitId);
+    state.failures = [];
     save();
     renderAll();
-    toast('已切到 ' + unitId + ' ' + unit.title + '：词表 / 句型 / 候选知识点 / 错题都按这本教材重建');
+    toast('已切到 ' + SHT.curriculum.bookName + ' · ' + state.unitId + ' ' + SHT.curriculum.title);
+  }
+
+  function switchBook(bookId) {
+    if (!bookId || bookId === SHT.curriculum.bookId) { renderAll(); return; }
+    const b = SHT.BOOKS.get(bookId);
+    if (!b) { renderAll(); return; }
+    resetFor(bookId, b.units[0].id,
+      '切到「' + b.meta.shortName + '」？两轮题目、出题计划与错题记录会按新教材重建。');
+  }
+
+  function switchUnit(unitId) {
+    if (!unitId || unitId === SHT.curriculum.id) { renderAll(); return; }
+    const unit = SHT.BOOKS.current().getUnit(unitId);
+    if (!unit) { renderAll(); return; }
+    resetFor(SHT.curriculum.bookId, unitId,
+      '切到 ' + unitId + ' ' + unit.title + '？两轮题目、出题计划与错题记录会按新单元重建。');
+  }
+
+  /* ---------- 模型设置 ---------- */
+  function renderModelForm() {
+    const cfg = SHT.llm.config();
+    const stats = SHT.llm.stats();
+    const last = SHT.llm.lastError();
+    $('modelForm').innerHTML = '' +
+      '<div class="model-field"><label>接口地址</label><input data-model="baseUrl" value="' + esc(cfg.baseUrl) + '"></div>' +
+      '<div class="model-field"><label>模型</label><input data-model="model" value="' + esc(cfg.model) + '"></div>' +
+      '<div class="model-field"><label>API Key</label><input data-model="key" type="password" value="' + esc(cfg.key) + '" placeholder="sk-…"></div>' +
+      '<div class="model-actions">' +
+        '<button type="button" class="btn btn-primary" data-action="save-model">保存</button>' +
+        '<button type="button" class="btn" data-action="test-model">测试连通性</button>' +
+      '</div>' +
+      '<div class="model-status" id="modelStatus">' +
+        (stats.calls ? '本次会话 ' + stats.calls + ' 次调用 · 成功 ' + stats.ok + ' · 失败 ' + stats.fail + ' · ' + stats.tokens + ' tokens' : '还没有调用记录') +
+        (last ? '<br>最近一次失败：' + esc(last.errorType + ' · ' + last.message) : '') +
+      '</div>' +
+      '<div class="model-note">Key 只存在本机浏览器，不进仓库、不进导出文件。这个页面是零依赖静态页，key 在本机 URL 下可被同源脚本读到，别发布到公网。</div>';
+  }
+
+  function openModel() {
+    const modal = $('modelModal');
+    if (!modal) return;
+    modal.hidden = false;
+    renderModelForm();
+  }
+
+  function closeModel() {
+    const modal = $('modelModal');
+    if (modal) modal.hidden = true;
+  }
+
+  function saveModelFromForm() {
+    const get = function (k) {
+      const el = document.querySelector('[data-model="' + k + '"]');
+      return el ? el.value.trim() : '';
+    };
+    SHT.llm.save({
+      baseUrl: get('baseUrl') || SHT.llm.defaults.baseUrl,
+      model: get('model') || SHT.llm.defaults.model,
+      key: get('key')
+    });
+    renderModelForm();
+    renderAll();
+    toast('模型配置已保存');
+  }
+
+  async function testModel() {
+    const box = $('modelStatus');
+    if (box) box.textContent = '正在测试…';
+    const res = await SHT.pipeline.selfCheck();
+    if (box) {
+      box.innerHTML = res.ok
+        ? '连通正常 · ' + esc(res.model) + ' · ' + res.ms + ' ms · ' + (res.tokens || 0) + ' tokens'
+        : '失败：<code>' + esc(res.type) + '</code> ' + esc(res.message);
+    }
+    renderAll();
+  }
+
+  /* ---------- 模型出题 ---------- */
+  let runToken = 0;
+
+  function setStep(text) {
+    state.llmStep = text;
+    const el = document.querySelector('.model-step');
+    if (el) el.textContent = text;
+    else renderAll();
+  }
+
+  async function runModelRound(planOnly) {
+    if (!SHT.llm.isReady()) {
+      openModel();
+      toast('先填 API Key');
+      return;
+    }
+    if (state.llmBusy) return;
+    const token = (runToken += 1);
+    state.llmBusy = true;
+    state.llmStep = '准备';
+    save();
+    renderAll();
+
+    const round = currentRound();
+    const rounds = state.round === 2 ? [state.rounds[1], state.rounds[2]] : [state.rounds[1]];
+    const brief = SHT.pipeline.buildBrief({
+      unitId: state.unitId,
+      rounds: rounds,
+      wrongCases: state.wrongCases
+    });
+    brief.levelHint = brief.levelHint || '持平';
+
+    try {
+      const res = await SHT.pipeline.runRound({
+        unit: SHT.curriculum,
+        count: 5,
+        brief: brief,
+        existing: round.questions.filter(function (q) { return q.prompt; }),
+        planOnly: !!planOnly,
+        onEvent: function (ev) {
+          if (token !== runToken) return;
+          setStep(ev.text || '');
+        }
+      });
+      if (token !== runToken) return;
+
+      state.failures = (res.failures || []).concat(state.failures || []).slice(0, 200);
+
+      if (res.ok && res.questions.length) {
+        round.questions = res.questions.map(function (q, i) {
+          return Object.assign({}, q, { no: i + 1 });
+        });
+        // 题目换了，作答进度作废，避免拿旧记录判新题
+        round.practice = blankPractice();
+        state.activeNo = 1;
+        state.agent = 'execute';
+        toast('出了 ' + res.questions.length + ' 题，' + (res.plans.length - res.questions.length) + ' 个格子没成，原因在失败记录里');
+      } else if (res.ok && planOnly) {
+        toast('规划好了 ' + res.plans.length + ' 条，格子已分配');
+      } else {
+        toast('这一轮没出成，看失败记录里的原因');
+        state.agent = 'course';
+      }
+    } catch (err) {
+      state.failures = [{
+        at: new Date().toISOString(), stage: 'generate', attempt: 1,
+        codes: ['EXCEPTION'], reason: String(err && err.message || err), detail: ''
+      }].concat(state.failures || []).slice(0, 200);
+      toast('出错了：' + (err && err.message ? err.message : err));
+    } finally {
+      if (token === runToken) {
+        state.llmBusy = false;
+        save();
+        renderAll();
+      }
+    }
   }
 
   /* ---------- 事件（全部委托，重渲染不会重复绑定） ---------- */
   function bind() {
+    const bookSel = $('bookSelect');
+    if (bookSel) {
+      bookSel.addEventListener('change', function (e) { switchBook(e.target.value); });
+    }
     const unitSel = $('unitSelect');
     if (unitSel) {
       unitSel.addEventListener('change', function (e) { switchUnit(e.target.value); });
+    }
+    const modelBtn = $('modelBtn');
+    if (modelBtn) modelBtn.addEventListener('click', openModel);
+    const modal = $('modelModal');
+    if (modal) {
+      modal.addEventListener('click', function (e) {
+        if (e.target === modal) closeModel();
+        const act = e.target.closest('[data-action]');
+        if (!act) return;
+        if (act.dataset.action === 'close-model') closeModel();
+        else if (act.dataset.action === 'save-model') saveModelFromForm();
+        else if (act.dataset.action === 'test-model') testModel();
+      });
     }
 
     $('tabbar').addEventListener('click', function (e) {
@@ -1222,6 +1464,8 @@
       const b = e.target.closest('[data-action]');
       if (b) {
         const action = b.dataset.action;
+        if (action === 'model-round') { runModelRound(false); return; }
+        if (action === 'stop-model') { runToken += 1; state.llmBusy = false; save(); renderAll(); toast('已停止后续步骤，已经发出去的请求不会收回'); return; }
         if (action === 'auto-quota') { autoQuota(); return; }
         if (action === 'fill-weakness') { fillWeakness(); return; }
         if (action === 'pick-kp') { applyKnowledgePoint(b.dataset.id, state.activeNo, true); return; }

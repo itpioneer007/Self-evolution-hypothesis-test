@@ -1,16 +1,18 @@
 /*
- * 当前单元切片：从 src/data/textbook.js 的整册知识库派生。
+ * 当前单元切片：从教材注册表里「当前这本书」派生。
  *
- * 以前这里是手抄的一个单元（湘少版 "Our School"），现在改成「整册入库 + 按单元切片」：
- * 换单元时词表、句型表、语音点、情境域一起换，超纲判定才不会拿别的单元的词放行。
+ * 两级切换：setBook(id) 换书，setUnit(id) 换单元。换书时词表、句型表、语音点、
+ * 情境域、功能词白名单五样一起换——只换词表会让超纲判定拿错边界。
  *
- * 本文件只做派生，不改教材数据；教材变更请改 textbook.js。
+ * 本文件只做派生，不改教材数据；教材变更请改 src/data/books/ 下对应文件。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
-  const BOOK = root.SHT_BOOK;
+
+  function book() { return SHT.BOOKS.current(); }
 
   function slice(unit) {
+    const b = book();
     return {
       id: unit.id,
       no: unit.no,
@@ -21,9 +23,10 @@
       pages: unit.pages,
       topicDomain: unit.topicDomain,
       functions: unit.functions,
-      bookId: BOOK.meta.id,
-      bookName: BOOK.meta.shortName,
-      // 词表：>= 8 词才能凑够 4 个选项（主仓 quizAssessment.ts 的约束）
+      bookId: b.meta.id,
+      bookName: b.meta.shortName,
+      bookUnitCount: b.units.length,
+      // 词表：>= 6 词才能凑够 3 个选项加干扰项
       words: unit.words.map(function (w) { return { en: w.en, zh: w.zh, p: w.p }; }),
       // 句型表：出题时句型不得越出此表
       sentencePatterns: unit.sentencePatterns.slice(),
@@ -33,18 +36,24 @@
         (unit.phonics.pairs || []).reduce(function (acc, pair) { return acc.concat(pair); }, []),
         unit.phonics.extras || []
       ),
-      allowedFunctionWords: BOOK.meta.allowedFunctionWords.slice()
+      allowedFunctionWords: b.meta.allowedFunctionWords.slice()
     };
   }
 
   SHT.setUnit = function (unitId) {
-    const unit = BOOK.getUnit(unitId) || BOOK.units[0];
+    const b = book();
+    const unit = b.getUnit(unitId) || b.units[0];
     SHT.curriculum = slice(unit);
     return SHT.curriculum;
   };
 
-  // 启动即切到第 1 单元；界面切单元时再调 SHT.setUnit
-  SHT.setUnit(BOOK.units[0].id);
+  SHT.setBook = function (bookId, unitId) {
+    const b = SHT.BOOKS.setCurrent(bookId);
+    return SHT.setUnit(unitId || b.units[0].id);
+  };
+
+  // 启动即切到第一本书的第 1 单元；界面切书/切单元时再调 setBook / setUnit
+  SHT.setUnit(book().units[0].id);
 
   /*
    * 5 道示例题：U1 My classroom 的真实词句，刻意落在 5 个不同格子。
@@ -54,6 +63,7 @@
   SHT.sampleQuestions = [
     {
       no: 1,
+      bookId: 'PEP-G4A', unitId: 'U1',
       knowledgePoint: 'vocab · 教室物品名词 · 听音选义（音义联结）',
       ability: 'listening / vocab',
       cell: { type: '听音选义', scene: '学校', level: '认', distractor: '同类不同物' },
@@ -119,7 +129,7 @@
    * 知识点与格子从该单元的候选清单里确定性带出，人再往里填题干选项。
    */
   SHT.blankQuestionsFor = function (unitId) {
-    const kps = (SHT.KNOWLEDGE_POINTS || []).filter(function (k) { return k.unit === unitId; });
+    const kps = SHT.kpsOf ? SHT.kpsOf(unitId) : [];
     const out = [];
     for (let i = 0; i < 5; i += 1) {
       const kp = kps[i] || null;
@@ -137,8 +147,11 @@
     return out;
   };
 
+  // 示例题只有 PEP 四上 U1 这一组（真实词句、5 个不同格子）。换书或换单元后
+  // 一律返回空白题：题目内容由模型或人填，不拿别的单元的词硬凑。
   SHT.sampleQuestionsFor = function (unitId) {
-    return unitId === 'U1' ? SHT.sampleQuestions : SHT.blankQuestionsFor(unitId);
+    const isPep = SHT.BOOKS.current().meta.id === 'PEP-G4A';
+    return isPep && unitId === 'U1' ? SHT.sampleQuestions : SHT.blankQuestionsFor(unitId);
   };
 
   // 最小测试用的学生画像（mock，来自「最小测试记录表」第 0 节字段）

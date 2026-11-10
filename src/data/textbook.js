@@ -341,4 +341,10 @@
     if (BOOK.meta.allowedFunctionWords.indexOf(k) >= 0) return true;
     return u.words.some(function (w) { return w.en.toLowerCase() === k; });
   };
+
+  BOOK.meta.kind = 'primary-english';
+  BOOK.meta.notes = '词表取自书后附录 Words in each unit，逐条校对过页码；音标未收录（PDF 嵌入字体抽取为乱码）。';
+
+  root.SHT_BOOK = BOOK;
+  root.SHT.BOOKS.register(BOOK);
 })(window);

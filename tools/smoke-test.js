@@ -46,7 +46,10 @@ global.URL = class extends NativeURL {
   static revokeObjectURL() {}
 };
 
+require('../src/data/books.js');
 require('../src/data/textbook.js');
+require('../src/data/books/hebei-g4a.js');
+require('../src/data/books/xiangshao-g4a.js');
 require('../src/data/curriculum.js');
 require('../src/data/knowledgePoints.js');
 require('../src/data/wrongCases.js');
@@ -55,6 +58,10 @@ require('../src/core/fingerprint.js');
 require('../src/core/checklist.js');
 require('../src/core/wrongBook.js');
 require('../src/core/practice.js');
+require('../src/core/llm.js');
+require('../src/core/agents.js');
+require('../src/core/validate.js');
+require('../src/core/pipeline.js');
 require('../src/app.js');
 
 const SHT = global.SHT;
@@ -354,5 +361,192 @@ try {
   assert('v1 数据可迁移且 endedEarly 转成 SATURATED', false, err.message);
 }
 
-console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
-process.exit(failed === 0 ? 0 : 1);
+/* ================= 多版本教材 ================= */
+console.log('--- 多版本教材 ---');
+const BOOKS = SHT.BOOKS;
+assert('入库三本教材', BOOKS.list().length === 3, BOOKS.list().map(b => b.id).join(','));
+assert('三本书的单元数不同（PEP 6 / 冀教 4 / 湘少 12）',
+  BOOKS.get('PEP-G4A').units.length === 6 && BOOKS.get('HEB-G4A').units.length === 4 && BOOKS.get('XS-G4A').units.length === 12,
+  [BOOKS.get('PEP-G4A').units.length, BOOKS.get('HEB-G4A').units.length, BOOKS.get('XS-G4A').units.length].join('/'));
+assert('每本书都有自己的功能词白名单', BOOKS.list().every(b => {
+  const bk = BOOKS.get(b.id);
+  return Array.isArray(bk.meta.allowedFunctionWords) && bk.meta.allowedFunctionWords.length > 30;
+}));
+assert('词表全部带书上页码', BOOKS.all().every(b => b.units.every(u => u.words.every(w => typeof w.p === 'number' && w.p > 0))));
+assert('每单元至少 1 条句型', BOOKS.all().every(b => b.units.every(u => u.sentencePatterns.length >= 1)));
+assert('登记时没有结构错误', BOOKS.all().every(b => (b.meta.warnings || []).every(w => w.indexOf('缺') < 0)),
+  BOOKS.all().map(b => b.meta.id + ':' + b.meta.warnings.join('|')).join(' / '));
+
+SHT.setBook('HEB-G4A');
+assert('切到冀教：切片换成 The Clothes We Wear', SHT.curriculum.bookId === 'HEB-G4A' && SHT.curriculum.title === 'The Clothes We Wear');
+assert('切书时功能词白名单跟着换', SHT.curriculum.allowedFunctionWords.includes('straight') === true);
+assert('切书后候选知识点为空（PEP 的 33 条不外借）', SHT.kpsOf(SHT.curriculum.id).length === 0);
+assert('超纲判定用冀教的边界：shirt 过、blackboard 拦',
+  SHT.validateQuestion({ knowledgePoint: 'x', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' },
+    prompt: '选出「衬衫」的英文。', audioText: '', options: ['shirt', 'skirt', 'coat'], answer: 'shirt', analysis: 'shirt 是衬衫。' },
+    SHT.curriculum, {}).pass === true &&
+  SHT.validateQuestion({ knowledgePoint: 'x', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' },
+    prompt: '选出「衬衫」的英文。', audioText: '', options: ['shirt', 'skirt', 'blackboard'], answer: 'shirt', analysis: 'shirt 是衬衫。' },
+    SHT.curriculum, {}).pass === false);
+
+/* ================= 代码闸八条 ================= */
+console.log('--- 代码闸 ---');
+const G_UNIT = SHT.BOOKS.get('XS-G4A').getUnit('U11');
+const G_CUR = Object.assign({}, G_UNIT, {
+  allowedFunctionWords: SHT.BOOKS.get('XS-G4A').meta.allowedFunctionWords
+});
+const goodQ = {
+  knowledgePoint: '方位 · under · 介词混淆', ability: 'sentence',
+  cell: { type: '选词填空', scene: '家庭', level: '用', distractor: '语义近' },
+  prompt: 'Where is the pencil? — It is ___ the desk.', audioText: '',
+  options: ['under', 'in', 'on'], answer: 'under', analysis: '桌子下面用 under。'
+};
+assert('V1–V8 全过的题判通过', SHT.validateQuestion(goodQ, G_CUR, {}).pass === true);
+const v1 = SHT.validateQuestion(Object.assign({}, goodQ, { options: ['under', 'in', 'curtain'] }), G_CUR, {});
+assert('V1 抓超纲词', v1.fails.some(f => f.id === 'V1' && f.detail.includes('curtain')), SHT.failsText(v1));
+const v2 = SHT.validateQuestion(Object.assign({}, goodQ, { answer: 'behind' }), G_CUR, {});
+assert('V2 抓答案不在选项里', v2.fails.some(f => f.id === 'V2'), SHT.failsText(v2));
+const v3 = SHT.validateQuestion(Object.assign({}, goodQ, { options: ['under', 'under', 'on'] }), G_CUR, {});
+assert('V3 抓选项重复', v3.fails.some(f => f.id === 'V3'), SHT.failsText(v3));
+const v4 = SHT.validateQuestion(Object.assign({}, goodQ, { prompt: 'It is under the desk.' }), G_CUR, {});
+assert('V4 抓题干泄答案', v4.fails.some(f => f.id === 'V4'), SHT.failsText(v4));
+const v5 = SHT.validateQuestion(Object.assign({}, goodQ, { analysis: '本题考查介词用法的掌握情况以及空间关系的表达能力，需要学生区分 in on under 三个介词在具体语境中的不同含义' }), G_CUR, {});
+assert('V5 抓解析过长', v5.fails.some(f => f.id === 'V5'), SHT.failsText(v5));
+const v6 = SHT.validateQuestion({
+  knowledgePoint: '词汇 · cat · 听辨', cell: { type: '听音选义', scene: '家庭', level: '认', distractor: '音近' },
+  prompt: '听录音，选出你听到的单词。', audioText: '', options: ['猫', '狗', '盒子'], answer: '猫', analysis: 'cat 是猫。'
+}, G_CUR, {});
+assert('V6 抓听力题没有原文', v6.fails.some(f => f.id === 'V6'), SHT.failsText(v6));
+const v8 = SHT.validateQuestion(goodQ, G_CUR, { others: [goodQ] });
+assert('V8 抓同轮同格', v8.fails.some(f => f.id === 'V8'), SHT.failsText(v8));
+assert('拼写题不按超纲判干扰项（故意写错的词）', SHT.validateQuestion({
+  knowledgePoint: '拼写 · skirt · 形近', cell: { type: '拼写补全', scene: '身体与衣物', level: '辨', distractor: '形近' },
+  prompt: '选出「裙子」的正确拼写。', audioText: '', options: ['skirt', 'skrit', 'skirtt'], answer: 'skirt', analysis: 'skirt 中间是 ir。'
+}, SHT.BOOKS.get('HEB-G4A').units[0], {}).pass === true);
+
+/* ================= 格子分配 ================= */
+console.log('--- 格子分配（代码，不让模型碰） ---');
+SHT.setBook('XS-G4A', 'U1');
+const fivePlans = [
+  { kp: 'a', ability: 'vocab', level: '认', cause: '形近' },
+  { kp: 'b', ability: 'vocab', level: '认', cause: '形近' },
+  { kp: 'c', ability: 'sentence', level: '用', cause: '语义近' },
+  { kp: 'd', ability: 'phonics', level: '辨', cause: '音近' },
+  { kp: 'e', ability: 'spelling', level: '辨', cause: '形近' }
+];
+const cells = [];
+fivePlans.forEach((p, i) => cells.push(SHT.pickCell(p, cells, SHT.curriculum, i)));
+assert('5 行计划分到 5 个不同格子', new Set(cells.map(c => SHT.cellKey(c))).size === 5, cells.map(c => SHT.cellKey(c)).join(' | '));
+assert('格子四维全部落在枚举内', cells.every(c =>
+  SHT.QUESTION_TYPES.some(t => t.id === c.type) && SHT.SCENES.includes(c.scene) &&
+  SHT.LEVELS.includes(c.level) && SHT.DISTRACTORS.includes(c.distractor)));
+assert('场景从单元话题域映射，不乱填', cells[0].scene === '学校', cells[0].scene);
+
+/* ================= 下一轮 brief ================= */
+console.log('--- 下一轮 brief ---');
+const brief = SHT.pipeline.buildBrief({
+  unitId: 'U1',
+  rounds: [{ questions: [], practice: { attempts: [
+    { no: 1, stage: 'first', kpLabel: '真会考点', correct: true, hintCount: 0 },
+    { no: 1, stage: 'variant', kpLabel: '真会考点', correct: true, hintCount: 0 },
+    { no: 2, stage: 'first', kpLabel: '半会考点', correct: true, hintCount: 0 },
+    { no: 2, stage: 'variant', kpLabel: '半会考点', correct: false, hintCount: 0 }
+  ] } }],
+  wrongCases: [
+    { knowledgePoint: '错两次的考点', ability: 'vocab', category: '形近', masteryState: 'wrong', variantAttempts: [{ correct: false, hintCount: 0 }], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 },
+    { knowledgePoint: '错一次的考点', ability: 'vocab', category: '形近', masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }
+  ]
+});
+assert('brief 带着错题优先级', brief.priority.length >= 1 && brief.priority[0].kp === '错两次的考点',
+  JSON.stringify(brief.priority.map(p => p.kp)));
+assert('brief 记下已真会的考点', brief.mastered.includes('真会考点'), brief.mastered.join(','));
+assert('两枪都对的考点不会再被优先出', brief.priority.every(p => p.kp !== '真会考点'));
+assert('brief 是结构化字段，不是一段话', typeof brief.levelHint === 'string' && Array.isArray(brief.blockedCells));
+
+/* ================= 流水线（mock 模型） ================= */
+console.log('--- 流水线：规划 → 生成 → 闸 → 质检 → 退回重出 ---');
+SHT.setBook('HEB-G4A', 'U1');
+const REAL_CALL = SHT.llm.call;
+const PLAN_OK = { ok: true, json: { plans: [{ kp: 'vocab · shirt · 音义联结', ability: 'vocab', cause: '形近', whyThisOne: '本单元首个衣物词', nextIfWrong: '先做中英匹配', level: '认' }] }, tokens: 10, ms: 1 };
+function qJson(over) {
+  return Object.assign({
+    prompt: '选出「衬衫」的英文。', audioText: '', options: ['shirt', 'skirt', 'coat'],
+    answer: 'shirt', analysis: 'shirt 是衬衫，skirt 是裙子。', keyword: 'shirt'
+  }, over || {});
+}
+
+async function runCase(name, script, expect) {
+  let i = 0;
+  SHT.llm.call = async function () {
+    const f = script[Math.min(i, script.length - 1)];
+    i += 1;
+    return f();
+  };
+  const out = await SHT.pipeline.runRound({ unit: SHT.curriculum, count: 1, brief: {}, existing: [] });
+  expect(out, name);
+}
+
+(async function () {
+  await runCase('一次通过：规划 + 生成 + 质检', [
+    () => PLAN_OK,
+    () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+  ], (out) => {
+    assert('流水线一次通过时采到 1 题', out.questions.length === 1 && out.failures.length === 0,
+      out.questions.length + ' / ' + out.failures.length);
+    assert('采纳的题带格子与模型判定', out.questions[0].cell && out.questions[0].modelVerdict === 'pass');
+    assert('格子由代码分配，不由模型给', out.questions[0].cell.type === out.plans[0].cell.type);
+  });
+
+  await runCase('代码闸退回后重出', [
+    () => PLAN_OK,
+    () => ({ ok: true, json: qJson({ options: ['shirt', 'skirt', 'blackboard'] }), tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+  ], (out) => {
+    const gate = out.failures.filter(f => f.stage === 'validate');
+    assert('超纲的那一版被代码闸退回', gate.length === 1 && gate[0].codes.includes('V1'), JSON.stringify(gate.map(g => g.codes)));
+    assert('退回后重出，最终采纳 1 题', out.questions.length === 1);
+  });
+
+  await runCase('质检退回后重出', [
+    () => PLAN_OK,
+    () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: { verdict: 'fail', fails: [{ id: 'F5', reason: '题干提到上次做错' }] }, tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: qJson({ prompt: '选出「衬衫」的英文。' }), tokens: 10, ms: 1 }),
+    () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+  ], (out) => {
+    assert('质检否决写进失败记录并带条款号',
+      out.failures.some(f => f.stage === 'verify' && f.codes.includes('F5')),
+      JSON.stringify(out.failures.map(f => f.stage + ':' + f.codes)));
+  });
+
+  await runCase('三次都没过闸 → 放弃，不硬塞', [
+    () => PLAN_OK,
+    () => ({ ok: true, json: qJson({ options: ['shirt', 'skirt', 'blackboard'] }), tokens: 10, ms: 1 })
+  ], (out) => {
+    assert('放弃时一道题都不落库', out.questions.length === 0);
+    assert('放弃也要留原因', out.failures.some(f => f.stage === 'giveup'));
+  });
+
+  await runCase('质检接口失败 → 采纳但标未复核', [
+    () => PLAN_OK,
+    () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }),
+    () => ({ ok: false, error: { type: 'timeout', message: '超过 90 秒没返回' }, ms: 90000 })
+  ], (out) => {
+    assert('质检挂掉不废题，但标记未复核', out.questions.length === 1 && out.questions[0].modelVerdict === 'unverified');
+    assert('质检失败本身进失败记录', out.failures.some(f => f.stage === 'verify'));
+  });
+
+  await runCase('规划两次都失败 → 整轮不出题', [
+    () => ({ ok: false, error: { type: 'network', message: '网络不通' }, ms: 1 })
+  ], (out) => {
+    assert('规划失败不产出题', out.questions.length === 0 && out.ok === false);
+    assert('规划失败带错误类型', out.failures.every(f => f.codes.length > 0));
+  });
+
+  SHT.llm.call = REAL_CALL;
+
+  console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
+  process.exit(failed === 0 ? 0 : 1);
+})();

@@ -386,7 +386,11 @@
     }
   ];
 
+  // 候选清单只属于 PEP 四上（33 条全部从那一册的词句错因推出来）。
+  // 换到冀教版、湘少版时返回空数组：那些书的考点由模型现场提，不借用别册的候选。
   SHT.kpsOf = function (unitId) {
+    const bookId = (SHT.BOOKS && SHT.BOOKS.current) ? SHT.BOOKS.current().meta.id : 'PEP-G4A';
+    if (bookId !== 'PEP-G4A') return [];
     return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.unit === unitId; });
   };
 

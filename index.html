@@ -15,11 +15,13 @@
       <div class="brand-sub" id="brandSub">S-001 · U1 My classroom · 第 1 轮</div>
     </div>
     <div class="controls">
+      <select id="bookSelect" class="unit-select" title="教材版本"></select>
       <select id="unitSelect" class="unit-select" title="教材单元"></select>
       <div class="round-switch" id="roundSwitch">
         <button type="button" data-round="1" class="is-active">R1</button>
         <button type="button" data-round="2">R2</button>
       </div>
+      <button type="button" id="modelBtn" class="btn btn-ghost">模型</button>
       <button type="button" id="exportBtn" class="btn btn-ghost">导出</button>
       <button type="button" id="resetBtn" class="btn btn-ghost">重置</button>
     </div>
@@ -82,12 +84,25 @@
 
   <footer class="footbar">
     <span id="footStatus"></span>
-    <span class="foot-hint">本地保存 · 不接模型</span>
+    <span class="foot-hint" id="footHint">本地保存</span>
   </footer>
 
 </div>
 
+<div class="modal-mask" id="modelModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3>模型</h3>
+      <button type="button" class="btn btn-ghost" data-action="close-model">关</button>
+    </div>
+    <div class="modal-body" id="modelForm"></div>
+  </div>
+</div>
+
+<script src="src/data/books.js"></script>
 <script src="src/data/textbook.js"></script>
+<script src="src/data/books/hebei-g4a.js"></script>
+<script src="src/data/books/xiangshao-g4a.js"></script>
 <script src="src/data/curriculum.js"></script>
 <script src="src/data/knowledgePoints.js"></script>
 <script src="src/data/wrongCases.js"></script>
@@ -96,6 +111,10 @@
 <script src="src/core/checklist.js"></script>
 <script src="src/core/wrongBook.js"></script>
 <script src="src/core/practice.js"></script>
+<script src="src/core/llm.js"></script>
+<script src="src/core/agents.js"></script>
+<script src="src/core/validate.js"></script>
+<script src="src/core/pipeline.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>
