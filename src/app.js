@@ -273,21 +273,21 @@
     const list = unitKps();
     // 只有 PEP 四上入库了候选清单；冀教、湘少版的考点由模型现场提，不给假候选
     if (!list.length) {
-      return '<div class="kp-empty">本册无候选清单 · 考点由规划环节现场提</div>';
+      return '<div class="kp-empty">这本教材没有预先整理的考点清单，考点由模型现场提</div>';
     }
     const scope = state.kpScope || [];
     const doneCount = (state.progress && state.progress.points)
       ? Object.keys(state.progress.points).filter(function (k) { return state.progress.points[k].retired; }).length : 0;
     const layer = state.learningLayer || 'B';
-    const scopeBar = '<div class="kp-scope">本轮范围 <strong>' + scope.length + '</strong> / ' + list.length +
-      '<span class="kp-scope-note">' + layer + ' 层 · 上限 ' + SHT.progress.CAP_OF_LAYER[layer] + (doneCount ? ' · 已考会 ' + doneCount : '') + '</span>' +
+    const scopeBar = '<div class="kp-scope">这一轮挑了 <strong>' + scope.length + '</strong> 个考点，本书共 ' + list.length + ' 个' +
+      '<span class="kp-scope-note">他当前是 ' + layer + ' 层，最多考到「' + SHT.progress.CAP_OF_LAYER[layer] + '」' + (doneCount ? '，已掌握 ' + doneCount + ' 个考点' : '') + '</span>' +
       (scope.length
         ? '<span class="kp-scope-note">最多出 ' + scope.length + ' 题</span><button type="button" class="btn btn-mini" data-action="clear-scope">清空</button>'
         : '<span class="kp-scope-note">不限范围 · 规划环节现场提</span>') +
       '</div>';
     return '<details class="kp-fold"' + (scope.length ? ' open' : '') + '><summary>候选知识点 · ' + SHT.curriculum.id + ' · ' + list.length + '</summary>' +
       scopeBar +
-      '<div class="kp-current">点「用这个」写入第 ' + state.activeNo + ' 题；点「纳入」加进本轮范围</div>' +
+      '<div class="kp-current"><b>纳入</b>＝加进这一轮要考的范围；<b>写进第 N 题</b>＝直接把这条考点填到那道题上</div>' +
       SHT.KP_GROUPS.map(function (g) {
         const items = list.filter(function (k) { return k.group === g.id; });
         if (!items.length) return '';
@@ -299,7 +299,7 @@
               '<div class="kp-main"><span class="kp-label">' + esc(k.label) + '</span>' +
                 '<button type="button" class="btn btn-mini' + (inScope ? ' is-on' : '') + '" data-action="toggle-scope" data-id="' + esc(k.id) + '">' +
                   (inScope ? '移出' : '纳入') + '</button>' +
-                '<button type="button" class="btn btn-mini" data-action="pick-kp" data-id="' + esc(k.id) + '">用这个</button></div>' +
+                '<button type="button" class="btn btn-mini" data-action="pick-kp" data-id="' + esc(k.id) + '">写进第 ' + state.activeNo + ' 题</button></div>' +
               '<div class="kp-why">' + esc(k.why) + '　<span>依据：' + esc(k.source) + '</span></div>' +
               '<div class="kp-meta">建议出题角度：' + esc(k.cell.type) + ' / ' + esc(k.cell.level) + ' / ' + esc(k.cell.distractor) +
                 '　·　可以这样问：' + esc(k.example) + '</div>' +
@@ -351,22 +351,75 @@
       : '已填入候选知识点；出题角度请回第 1 个角色改');
   }
 
-  function failFeedHtml() {
-    const list = (state.failures || []).slice(0, 12);
-    if (!list.length) return '';
-    const rows = list.map(function (f) {
-      const stage = { plan: '规划', generate: '生成', validate: '代码闸', verify: '质检', giveup: '放弃' }[f.stage] || f.stage;
-      const codes = (f.codes || []).join(' ');
-      return '<div class="fail-row">' +
-        '<span class="fail-stage is-' + esc(f.stage) + '">' + esc(stage) + '</span>' +
-        '<span class="fail-kp">' + esc(f.planKp || '整轮') + (f.attempt ? ' · 第 ' + f.attempt + ' 次' : '') + '</span>' +
-        '<span class="fail-reason">' + (codes ? '<code>' + esc(codes) + '</code> ' : '') + esc(String(f.reason || '').slice(0, 120)) + '</span>' +
-      '</div>';
-    }).join('');
-    return '<details class="fail-fold"' + (list.length ? ' open' : '') + '>' +
-      '<summary>失败记录 · ' + (state.failures || []).length + '</summary>' +
-      '<div class="fail-list">' + rows + '</div></details>';
+  /* ---------- 没出成的题：按考点分组 ---------- */
+  // 术语表：界面上不出现 V1 / C3 / QUOTA_OVER 这类只有写代码的人看得懂的编号。
+  // 条款号仍然保留在 title 里，排查时能对上代码。
+  const STAGE_TEXT = { plan: '排考点', generate: '写题', validate: '自动检查', verify: '质检', giveup: '放弃' };
+  const CODE_TEXT = {
+    V1: '用了没教过的词', V2: '答案在选项里露了', V3: '选项不合规', V3b: '干扰项太好排除',
+    V3c: '干扰拼写不像错拼', V4: '题干泄露答案', V5: '解析没说到点上', V6: '听力原文对不上',
+    V7: '题型和考点对不上', V8: '和同轮别的题撞角度',
+    C1: '考点不够具体', C2: '不属于本单元', C3: '答案不唯一', C4: '题干有两种读法',
+    C5: '语言不规范', C6: '听力原文对不上', C7: '这句读出来会歧义', C8: '配图和题不符',
+    F1: '没冲着错因出', F2: '阶段不匹配', F3: '引入了没学过的词', F4: '一题压了两个难点',
+    F5: '提到了他上次做错', F6: '难到他做不出来',
+    P1: '和同轮别的题同格', P2: '相邻两题难度跳档', P3: '同题型连着太多', P4: '做题时间超出范围',
+    P5: '放在这个位置不合适',
+    L1: '解析没讲清楚', L2: '归不到具体知识点', L3: '缺出题角度标记', L4: '说不出下一轮该出什么',
+    PLAN_SCOPE: '超出本轮范围', PLAN_DUP: '考点重复', PLAN_RETIRED: '考点已掌握',
+    PLAN_LEVEL_CAP: '层次超过上限', PLAN_EMPTY: '没提到可用考点',
+    QUOTA_OVER: '超出能力配额', QUOTA_SHORT: '配额没排满', QUOTA_OFF: '不在配额内',
+    GIVE_UP: '三次都没过', VERIFY_NO_CODE: '质检没说清理由', EXCEPTION: '程序出错'
+  };
+
+  function timeOf(iso) {
+    const s = String(iso || '');
+    const m = s.match(/T(\d{2}:\d{2})/);
+    return m ? m[1] : '';
   }
+
+  function codeText(code) {
+    return CODE_TEXT[code] || code;
+  }
+
+  function failGroupsHtml() {
+    const all = (state.failures || []).slice(0, 60);
+    if (!all.length) return '<div class="chart-empty">这一轮没有没出成的题</div>';
+    const order = [];
+    const byKp = {};
+    all.forEach(function (f) {
+      const key = f.planKp || '（整轮）';
+      if (!byKp[key]) { byKp[key] = { kp: key, items: [] }; order.push(byKp[key]); }
+      byKp[key].items.push(f);
+    });
+    return order.map(function (g) {
+      // 组内按发生时间排：日志的第一诉求是「先发生了什么、再发生了什么」。
+      // 不用 f.attempt 排，因为它的语义不统一——自动检查和质检记的都是「第几次质检」，
+      // 直接拿来当序号会出现 1、2、1、3 这种看不懂的顺序。
+      const items = g.items.slice().sort(function (a, b) {
+        return String(a.at || '').localeCompare(String(b.at || ''));
+      });
+      const rows = items.map(function (f, i) {
+        // codes 经常重复（同一个 V1 报了三个选项），去重后再翻成人话
+        const codes = (f.codes || []).filter(function (c, j, arr) { return arr.indexOf(c) === j; });
+        const label = codes.map(codeText).join('、') || '未说明';
+        // reason 里常夹着「V1: 」这类编号，翻过一遍就别再露出来
+        const why = String(f.reason || '')
+          .replace(/\b(?:V\d+[a-z]?|C\d|F\d|P\d|L\d|GIVE_UP|QUOTA_[A-Z]+|PLAN_[A-Z_]+)\s*[:：]\s*/g, '')
+          .trim();
+        return '<div class="fail-row">' +
+          '<span class="fail-nth"># ' + (i + 1) + '</span>' +
+          '<span class="fail-stage is-' + esc(f.stage) + '">' + esc(STAGE_TEXT[f.stage] || f.stage) + '</span>' +
+          '<span class="fail-why"><strong>' + esc(label) + '</strong>' + (why ? '　' + esc(why) : '') + '</span>' +
+          '<span class="fail-at">' + esc(timeOf(f.at)) + '</span>' +
+        '</div>';
+      }).join('');
+      return '<div class="fail-group">' +
+        '<div class="fail-kp-head"><span>' + esc(g.kp) + '</span><em>' + g.items.length + ' 次没成</em></div>' +
+        rows + '</div>';
+    }).join('');
+  }
+
 
   function modelStateHtml() {
     const cfg = SHT.llm.config();
@@ -424,9 +477,9 @@
     const projection = weaknessProjection();
     let body;
     if (!list.length) {
-      body = '<div class="hint-box">这一轮还没写计划。点「模型出 5 题」让它自己排；也可以自己排 5 个角度。</div>';
+      body = '<div class="hint-box">这一轮还没排题。点「模型出 5 题」让它自己排；也可以点「自己配 5 个题型」按题型铺开。</div>';
     } else {
-      body = '<div class="plan-head"><span>题号</span><span>考什么（写到错因）</span><span>题型</span><span>场景</span><span>考查层次</span><span>错项类型</span><span>挑错结果</span></div>' +
+      body = '<div class="plan-head"><span>题号</span><span>这道题考什么</span><span>题型</span><span>场景</span><span>考到哪一层</span><span>错项怎么设</span><span>检查结果</span></div>' +
         '<div class="plan-table">' + list.map(function (q, i) {
           const no = i + 1;
           const blocked = exclusion.isCellBlocked(q.cell);
@@ -446,7 +499,15 @@
     const blockedCount = list.filter(function (q) { return exclusion.isCellBlocked(q.cell); }).length;
     const note = state.round === 1
       ? (projection.remainingCount ? '错题待练 ' + projection.remainingCount + ' 个考点' : '暂无错题记录')
-      : '上轮占用 ' + exclusion.usedCells.size + ' 个角度 · 本轮撞车 ' + blockedCount + ' 道';
+      : '上一轮用过 ' + exclusion.usedCells.size + ' 种题型搭配' + (blockedCount ? '，这一轮有 ' + blockedCount + ' 道和它重复了' : '，这一轮没有重复');
+
+    // 检查标准的明细不进这一页：课程智能体的面板只放「这一轮考什么」，
+    // 为什么被退回是日志页的事。这里只留一行入口，出完题知道有没有全成。
+    const failN = (state.failures || []).length;
+    const failBrief = failN
+      ? '<div class="fail-brief">这一轮有 <strong>' + failN + '</strong> 条没出成 · ' +
+        '<button type="button" class="link-btn" data-action="goto-log">到 04 日志看原因</button></div>'
+      : '';
 
     $('agentPanel').innerHTML = '' +
       '<div class="panel-toolbar">' +
@@ -457,11 +518,11 @@
             ? '<span class="model-step">' + esc(state.llmStep || '跑着…') + '</span>' +
               '<button type="button" class="btn" data-action="stop-model">停</button>'
             : '<button type="button" class="btn btn-primary" data-action="model-round">模型出 5 题</button>' +
-              '<button type="button" class="btn" data-action="auto-quota">排 5 个角度</button>' +
-              '<button type="button" class="btn" data-action="fill-weakness">按薄弱点填</button>') +
+              '<button type="button" class="btn" data-action="auto-quota">自己配 5 个题型</button>' +
+              '<button type="button" class="btn" data-action="fill-weakness">用错题填</button>') +
         '</div>' +
       '</div>' +
-      kpFoldHtml() + quotaBarHtml() + body + failFeedHtml();
+      kpFoldHtml() + quotaBarHtml() + body + failBrief;
   }
 
   /* ---------- 01 执行智能体：单题九字段 ---------- */
@@ -788,6 +849,9 @@
       expectedIndex: ev.expectedIndex,
       correct: ev.correct,
       hintCount: p.hintUsed ? 1 : 0,
+      // 变体这一枪顺手记下诱饵有没有放进去：放不进说明两个考点跨度太大，
+      // 这条会进规划智能体的记忆，下一轮别跨这么远
+      bait: stage === 'variant' && p.pending ? (p.pending.__bait || '') : '',
       at: new Date().toISOString()
     });
     p.revealed = p.attempts[p.attempts.length - 1];
@@ -1004,41 +1068,46 @@
       const r = state.rounds[rn];
       if (!r.questions.length) return;
       const cells = new Set(r.questions.map(function (q) { return SHT.cellFingerprint(q.cell); })).size;
-      entries.push({ round: rn, kind: 'plan', title: '规划 ' + r.questions.length + ' 道', detail: cells + ' 个不重复角度' });
+      entries.push({ round: rn, kind: 'plan', at: r.startedAt || '', title: '排了 ' + r.questions.length + ' 道题', detail: cells + ' 个角度各不相同' });
       r.questions.forEach(function (q, i) {
         const v = verdictOf(q);
         const fails = Object.keys(q.checks || {}).filter(function (k) { return q.checks[k] === 'fail'; });
         if (v === '待检') {
-          entries.push({ round: rn, kind: '', title: '#' + (i + 1) + ' 待检', detail: esc(q.knowledgePoint || '未填写知识点') });
+          entries.push({ round: rn, kind: 'wait', at: q.createdAt || '', title: '第 ' + (i + 1) + ' 题 还没检查', detail: esc(q.knowledgePoint || '未填写知识点') });
         } else if (v === '通过') {
-          entries.push({ round: rn, kind: 'pass', title: '#' + (i + 1) + ' 通过', detail: esc(q.knowledgePoint || '') });
+          entries.push({ round: rn, kind: 'pass', at: q.createdAt || '', title: '第 ' + (i + 1) + ' 题 检查通过', detail: esc(q.knowledgePoint || '') });
         } else {
           entries.push({
-            round: rn, kind: 'reject', title: '#' + (i + 1) + ' 退回',
-            detail: fails.map(function (f) { return '<code>' + esc(f) + '</code>'; }).join('') + ' ' + esc(checkText(fails[0]))
+            round: rn, kind: 'reject', at: q.createdAt || '', title: '第 ' + (i + 1) + ' 题 被退回',
+            detail: esc(fails.map(codeText).join('、')) + (fails[0] ? '　' + esc(checkText(fails[0])) : '')
           });
         }
         // 这道题学生的作答紧跟在它后面，出题与作答在同一条线上，看得出因果
         (r.practice ? r.practice.attempts : []).filter(function (a) { return a.no === i + 1; })
           .forEach(function (a) {
             entries.push({
-              round: rn, kind: 'answer',
-              title: '#' + a.no + (a.stage === 'variant' ? ' 变体' : '') + (a.correct ? ' 答对' : ' 答错'),
-              detail: (a.correct ? '' : '选 ' + esc(a.picked) + ' / 对 ' + esc(a.expected)) + (a.hintCount ? '　用了提示' : '')
+              round: rn, kind: a.correct ? 'pass' : 'reject', at: a.at || '',
+              title: '第 ' + a.no + ' 题' + (a.stage === 'variant' ? ' 换个问法再考' : '') + (a.correct ? ' 答对' : ' 答错'),
+              detail: (a.correct ? '' : '选了「' + esc(a.picked) + '」，正确是「' + esc(a.expected) + '」') + (a.hintCount ? '　用了提示' : '')
             });
           });
       });
-      if (r.closed) entries.push({ round: rn, kind: 'close', title: '第 ' + rn + ' 轮结束', detail: '' });
+      if (r.closed) entries.push({ round: rn, kind: 'close', at: r.endedAt || '', title: '第 ' + rn + ' 轮结束', detail: '' });
     });
     $('logCount').textContent = entries.length ? entries.length + ' 条' : '';
     $('logFeed').innerHTML = entries.length ? entries.map(function (e) {
-      return '<div class="log-item">' +
-        '<span class="log-round">R' + e.round + '</span>' +
+      return '<div class="log-item is-' + e.kind + '">' +
+        '<span class="log-at">' + esc(e.at ? timeOf(e.at) : '') + '</span>' +
+        '<span class="log-round">第' + e.round + '轮</span>' +
         '<span class="log-dot' + (e.kind ? ' is-' + e.kind : '') + '"></span>' +
         '<div><div class="log-title">' + esc(e.title) + '</div>' +
           (e.detail ? '<div class="log-detail">' + e.detail + '</div>' : '') + '</div>' +
       '</div>';
     }).join('') : '<div class="chart-empty">暂无记录</div>';
+
+    // 没出成的题单独一块，按考点分组：哪一格、第几次、卡在哪一步、一句话原因
+    const failBox = $('failDetail');
+    if (failBox) failBox.innerHTML = failGroupsHtml();
   }
 
   function renderRejectChart() {
@@ -1061,14 +1130,25 @@
   }
 
   function renderUsedCells() {
-    const set = new Set();
+    // 原来这里显示的是指纹的末六位 hash（srwrtc / py4mqx），只有写代码的人知道那是什么。
+    // 换成「题型 · 层次」，人一眼能看出这个角度已经出过题了；完整四维放 title。
+    const seen = {};
+    const order = [];
     [1, 2].forEach(function (rn) {
-      state.rounds[rn].questions.forEach(function (q) { set.add(SHT.cellFingerprint(q.cell)); });
+      state.rounds[rn].questions.forEach(function (q) {
+        if (!q || !q.cell) return;
+        const key = SHT.cellFingerprint(q.cell);
+        if (!seen[key]) { seen[key] = q.cell; order.push(key); }
+      });
     });
-    $('usedCount').textContent = set.size ? set.size + ' 个' : '';
-    $('usedCells').innerHTML = set.size
-      ? Array.from(set).map(function (c) { return '<span class="used-cell">' + esc(c.slice(-6)) + '</span>'; }).join('')
-      : '<span class="chart-empty">暂无</span>';
+    $('usedCount').textContent = order.length ? order.length + ' 个' : '';
+    $('usedCells').innerHTML = order.length
+      ? order.map(function (k) {
+        const c = seen[k];
+        const full = [c.type, c.scene, c.level, c.distractor].join(' · ');
+        return '<span class="used-cell" title="' + esc(full) + '">' + esc(c.type + ' · ' + c.level) + '</span>';
+      }).join('')
+      : '<span class="chart-empty">这一轮还没出过题</span>';
   }
 
   /* ---------- 03 停止决策 ---------- */
@@ -1532,6 +1612,8 @@
     const token = (runToken += 1);
     state.llmBusy = true;
     state.llmStep = '准备';
+    // 这一轮什么时候开始的：日志按时间排，人要知道这批题是什么时候出的
+    currentRound().startedAt = new Date().toISOString();
     save();
     renderAll();
 
@@ -1670,6 +1752,7 @@
         const action = b.dataset.action;
         if (action === 'model-round') { runModelRound(false); return; }
         if (action === 'stop-model') { runToken += 1; state.llmBusy = false; save(); renderAll(); toast('已停止后续步骤，已经发出去的请求不会收回'); return; }
+        if (action === 'goto-log') { state.tab = 'loop'; save(); renderAll(); return; }
         if (action === 'auto-quota') { autoQuota(); return; }
         if (action === 'quota-inc') { bumpQuota(b.dataset.ability, 1); return; }
         if (action === 'quota-dec') { bumpQuota(b.dataset.ability, -1); return; }

@@ -399,6 +399,8 @@
           analysis: String(raw.analysis || '').trim(),
           nextIfWrong: plan.nextIfWrong,
           keyword: String(raw.keyword || '').trim(),
+          // 日志要显示「什么时候出的这道题」，生成时刻在这里落下
+          createdAt: now(),
           checks: {},
           source: 'model'
         };
@@ -523,7 +525,7 @@
       questions: questions,
       failures: failures,
       stage: 'done',
-      memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures }),
+      memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures, attempts: o.attempts || [] }),
       // 推进状态与自动停止建议：界面据此把停止条自动勾上，并把已会的考点从下一轮范围里去掉
       progressNext: SHT.progress.commit(progress, { questions: questions, attempts: o.attempts || [] }),
       stageHint: hint,

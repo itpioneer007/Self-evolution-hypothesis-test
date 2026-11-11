@@ -41,7 +41,7 @@
     // 空记忆：三个角色各一份
     blank: function () {
       return {
-        plan: { rounds: 0, cells: [], kps: [], backoff: {} },
+        plan: { rounds: 0, cells: [], kps: [], backoff: {}, lessons: [] },
         generate: { rounds: 0, fails: {} },
         verify: { rounds: 0, fails: {}, noCodeCount: 0 }
       };
@@ -65,6 +65,20 @@
       });
       failures.forEach(function (f) {
         if (f.stage === 'plan') (f.codes || []).forEach(function (c) { bump(next.plan.backoff, c); });
+      });
+
+      /*
+       * 诱饵放不进去，说明这一轮的考点跨度太大：上一题的答案在新题里根本说不通，
+       * 硬塞就是一个谁都不会选的废选项。这条要记住，下一轮排考点时别跨这么远。
+       * 记录的是「为什么放不进」，不是「放不进几次」——后者没用，前者能指导选题。
+       */
+      if (!next.plan.lessons) next.plan.lessons = [];
+      const attempts = (round && round.attempts) || [];
+      attempts.forEach(function (a) {
+        if (!a || a.stage !== 'variant' || !a.bait) return;
+        const why = String(a.bait).replace(/^dropped:\s*/, '');
+        if (why === a.bait || why === 'used') return;
+        uniqPush(next.plan.lessons, why, 6);
       });
 
       next.generate.rounds += 1;
@@ -114,6 +128,10 @@
         const backs = sortedCodes(m.backoff).slice(0, 3);
         if (backs.length) {
           lines.push('你上一轮被退回的条款：' + backs.map(function (b) { return b.code + '×' + b.n; }).join('、'));
+        }
+        if ((m.lessons || []).length) {
+          lines.push('上一轮有题目没把「学生上次的错答案」放进选项，原因：' + m.lessons.slice(-3).join('；') +
+            '。说明考点之间跨得太远。这一轮如果两个考点的语境差很多，就不要指望用上一题的错答案当诱饵。');
         }
       } else if (agentId === 'generate') {
         const fails = sortedCodes(m.fails).slice(0, 4);

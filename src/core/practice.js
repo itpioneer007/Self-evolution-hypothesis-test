@@ -286,25 +286,89 @@
     return v;
   }
 
+  // 本单元「学生学过的词」集合，只用于判断诱饵会不会自己变成超纲项。
+  // 中英都要收：听音选义这类题答案是中文，只收 en 会让所有中文诱饵被判超纲。
+  function knownWordSet(unit) {
+    const set = Object.create(null);
+    const u = unit || {};
+    (u.words || []).forEach(function (w) {
+      if (!w) return;
+      if (w.en) set[SHT.normAnswer(w.en)] = 1;
+      if (w.zh) set[SHT.normAnswer(w.zh)] = 1;
+    });
+    (u.allowedFunctionWords || []).forEach(function (w) { if (w) set[SHT.normAnswer(w)] = 1; });
+    const ph = u.phonics || {};
+    (ph.pairs || []).forEach(function (p) {
+      (p || []).forEach(function (w) { if (w) set[SHT.normAnswer(w)] = 1; });
+    });
+    (ph.extras || []).forEach(function (w) { if (w) set[SHT.normAnswer(w)] = 1; });
+    return set;
+  }
+
+  /**
+   * 上一题的错误答案能不能当这一题的诱饵。
+   *
+   * 只有「在新题里也说得通」才有价值。无条件塞进去会出事：上一题是数学式答案是 2，
+   * 下一题是英语问答，选项里放个 2，学生一眼就排掉了 —— 这个诱饵不但没用，
+   * 还把一个错误选项变成了免费送分项，题目难度反而降了。
+   *
+   * 四条判据，任何一条不满足就不放：
+   *   1 诱饵不能是纯数字/符号（新题里没有同类可比）
+   *   2 与变体答案的语言类型一致（中文只配中文，英文只配英文）
+   *   3 字数不差一个量级（2 字 vs 10 字，比长短就能排除）
+   *   4 必须是学生学过的词（否则它自己就是超纲项）
+   */
+  function baitJudge(question, v, unit) {
+    const oldRaw = String(question.answer || '').trim();
+    const oldAns = SHT.normAnswer(oldRaw);
+    const newAns = SHT.normAnswer(v && v.answer);
+    if (!oldAns || !newAns) return { ok: false, reason: '上一题没有可用的答案' };
+    if (oldAns === newAns) return { ok: false, reason: '新旧答案相同，放了也是重复项' };
+    if (!/[A-Za-z\u4e00-\u9fa5]/.test(oldRaw)) return { ok: false, reason: '上一题答案是数字或符号，放进这道题一眼能排除' };
+
+    const isEnglish = function (s) { return /^[A-Za-z'’\-\s]+$/.test(String(s).trim()); };
+    if (isEnglish(oldRaw) !== isEnglish(v.answer)) {
+      return { ok: false, reason: '上一题答案是' + (isEnglish(oldRaw) ? '英文' : '中文') + '，这道题选项是' + (isEnglish(v.answer) ? '英文' : '中文') + '，语言对不上' };
+    }
+
+    const lenA = oldRaw.replace(/\s/g, '').length;
+    const lenB = String(v.answer).replace(/\s/g, '').length;
+    const big = Math.max(lenA, lenB);
+    const small = Math.min(lenA, lenB);
+    if (small > 0 && big / small > 2.2) {
+      return { ok: false, reason: '字数差太多（' + lenA + ' 字 vs ' + lenB + ' 字），比长短就能排除' };
+    }
+
+    const known = knownWordSet(unit);
+    if (known[oldAns] !== 1 && known[SHT.normAnswer(oldRaw.replace(/\s+/g, ''))] !== 1) {
+      return { ok: false, reason: '上一题答案「' + oldRaw + '」不是本单元学过的词，放进去等于超纲' };
+    }
+    return { ok: true, reason: '' };
+  }
+
   /*
    * 原题答案降级为干扰项。这一步决定探针有没有牙：
    * 选项里没有旧答案，盲选的学生只是「找不到」，他会退回去重读题，
    * 答案惯性就测不出来。旧答案留在选项里，他才可能一头撞上去。
    */
   function withBait(question, v) {
-    const oldRaw = String(question.answer || '').trim();
-    const oldAns = SHT.normAnswer(oldRaw);
-    const newAns = SHT.normAnswer(v.answer);
-    if (!oldAns || !newAns || oldAns === newAns) return v;
-    const opts = (v.options || []).slice();
-    if (opts.some(function (o) { return SHT.normAnswer(o) === oldAns; })) return v;
-    for (let i = opts.length - 1; i >= 0; i -= 1) {
-      if (!String(opts[i] || '').trim()) continue;
-      if (SHT.normAnswer(opts[i]) === newAns) continue;
-      opts[i] = oldRaw;
-      v.options = opts;
+    const judge = baitJudge(question, v, SHT.curriculum);
+    if (!judge.ok) {
+      // 记下没放的原因：这条会进智能体记忆，下一轮规划时提醒换考点别跨语境太大
+      v.__bait = 'dropped: ' + judge.reason;
       return v;
     }
+    const oldRaw = String(question.answer || '').trim();
+    const opts = (v.options || []).slice();
+    for (let i = opts.length - 1; i >= 0; i -= 1) {
+      if (!String(opts[i] || '').trim()) continue;
+      if (SHT.normAnswer(opts[i]) === SHT.normAnswer(v.answer)) continue;
+      opts[i] = oldRaw;
+      v.options = opts;
+      v.__bait = 'used';
+      return v;
+    }
+    v.__bait = 'dropped: 没有可替换的干扰项';
     return v;
   }
 
@@ -329,6 +393,9 @@
     }
     return v;
   }
+
+  // 只给测试用：诱饵判定单独可测，不然只能靠拼一道变体间接观察
+  SHT.baitJudge = baitJudge;
 
   SHT.buildVariant = function (question, seedNo) {
     if (!question) return null;

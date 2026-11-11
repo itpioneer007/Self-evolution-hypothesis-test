@@ -86,9 +86,14 @@ assert('默认显示课程智能体的 5 行配额', count('agentPanel', 'class=
 assert('错题卡 3 张，每题带 6 行出题要点', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', 'class="brief-row"') === 18,
   count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="brief-row"'));
 assert('五个 KPI', count('metrics', 'class="kpi"') === 5, count('metrics', 'class="kpi"'));
-assert('出题日志有记录', count('logFeed', 'class="log-item"') >= 5, count('logFeed', 'class="log-item"'));
+assert('出题日志有记录', count('logFeed', 'class="log-item') >= 5, count('logFeed', 'class="log-item'));
 assert('打回缘由有渲染结果', nodes.rejectChart.innerHTML.length > 0);
-assert('已占用角度 5 个短码', count('usedCells', 'class="used-cell"') === 5, count('usedCells', 'class="used-cell"'));
+// 检查标准的明细不该出现在课程智能体的面板里，那是日志页的活
+assert('01 页不再放检查明细', count('agentPanel', 'class="fail-row') === 0, count('agentPanel', 'class="fail-row'));
+assert('出题日志每行带时间', count('logFeed', 'class="log-at"') >= 5, count('logFeed', 'class="log-at"'));
+assert('已出过的角度显示题型+层次，不是指纹短码',
+  count('usedCells', 'class="used-cell"') === 5 && /class="used-cell"[^>]*>[^<]*·/.test(nodes.usedCells.innerHTML),
+  nodes.usedCells.innerHTML.slice(0, 120));
 assert('停止决策两个信号', count('stopPanel', 'data-stop="') === 2, count('stopPanel', 'data-stop="'));
 assert('新增错题表单已渲染', count('addWrongForm', 'data-new="') === 8, count('addWrongForm', 'data-new="'));
 
@@ -130,7 +135,9 @@ click('practiceCard', { action: 'next-step' });
 assert('变体再错自动写进错题本', count('wrongList', 'class="wrong-card') === wrongBefore + 1,
   wrongBefore + ' → ' + count('wrongList', 'class="wrong-card'));
 assert('写进去的错题带知识点与作答', nodes.wrongList.innerHTML.indexOf('classroom') >= 0 && nodes.wrongList.innerHTML.indexOf('窗户') >= 0);
-assert('作答记录进了日志信息流', count('logFeed', 'is-answer') >= 2, count('logFeed', 'is-answer'));
+assert('作答记录进了日志信息流（答对/答错各有颜色）',
+  (nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length >= 2,
+  String((nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length));
 
 console.log('--- 教材知识库 ---');
 const BOOK = global.SHT_BOOK;
@@ -252,11 +259,15 @@ assert('五道变体的答案全部与原题不同（防答案惯性）',
   variants.every((v, i) => SHT.normAnswer(v.answer) !== SHT.normAnswer(SHT.sampleQuestions[i].answer)),
   variants.map((v, i) => v.answer + '≠' + SHT.sampleQuestions[i].answer).join(','));
 
-// 铁律 3：原答案留在选项里当诱饵，盲选上一次答案的学生才会被打中
-assert('原题答案全部留在变体选项里当诱饵',
-  variants.every((v, i) => v.options.some(o =>
-    SHT.normAnswer(o) === SHT.normAnswer(SHT.sampleQuestions[i].answer))),
-  variants.map(v => JSON.stringify(v.options)).join(' '));
+// 铁律 3：原答案留在选项里当诱饵 —— 但只在它在新题里也说得通的时候。
+// 语境差太远的题（上一题拼写 blackboard、下一题介词 near），塞进去就是一眼能排除的废选项，
+// 学生排掉它反而更省事，难度不升反降。
+assert('诱饵要么留在选项里，要么明确写了不放的理由',
+  variants.every((v, i) => {
+    const has = v.options.some(o => SHT.normAnswer(o) === SHT.normAnswer(SHT.sampleQuestions[i].answer));
+    return has || /^dropped: /.test(String(v.__bait || ''));
+  }),
+  variants.map(v => (v.__bait || '(无标记)') + JSON.stringify(v.options)).join(' | '));
 
 assert('变体选项不是原题选项的重排',
   variants.every((v, i) => v.options.map(SHT.normAnswer).sort().join('|') !==
@@ -310,13 +321,32 @@ SHT_BOOK.units.forEach(function (u) {
     variantTried += 1;
     const ansChanged = SHT.normAnswer(v.answer) !== SHT.normAnswer(base.answer);
     const baitIn = v.options.some(function (o) { return SHT.normAnswer(o) === SHT.normAnswer(base.answer); });
-    if (!ansChanged || !baitIn) variantBad.push(u.id + '/' + t);
+    const explained = /^dropped: /.test(String(v.__bait || ''));
+    if (!ansChanged || (!baitIn && !explained)) variantBad.push(u.id + '/' + t);
   });
 });
 SHT.setUnit('U1');
-assert('六单元所有接得出的变体都换了答案且留着诱饵',
+assert('六单元所有接得出的变体都换了答案，诱饵放不下时有理由',
   variantTried > 0 && variantBad.length === 0,
   variantTried + ' 例，异常：' + (variantBad.join(',') || '无'));
+
+// 诱饵判定本身：上一题的答案在新题里说不通时，一个都不许放
+const BU = SHT.curriculum;
+assert('上一题答案是数字，不当诱饵（放进英语题里一眼能排除）',
+  SHT.baitJudge({ answer: '2' }, { answer: 'Thank you.' }, BU).ok === false,
+  JSON.stringify(SHT.baitJudge({ answer: '2' }, { answer: 'Thank you.' }, BU)));
+assert('中英语言对不上，不当诱饵',
+  SHT.baitJudge({ answer: '风扇' }, { answer: 'near' }, BU).ok === false,
+  JSON.stringify(SHT.baitJudge({ answer: '风扇' }, { answer: 'near' }, BU)));
+assert('字数差一个量级，不当诱饵',
+  SHT.baitJudge({ answer: 'blackboard' }, { answer: 'news' }, BU).ok === false,
+  JSON.stringify(SHT.baitJudge({ answer: 'blackboard' }, { answer: 'news' }, BU)));
+assert('上一题答案不是本单元学过的词，不当诱饵',
+  SHT.baitJudge({ answer: 'chrysanthemum' }, { answer: 'near' }, BU).ok === false,
+  JSON.stringify(SHT.baitJudge({ answer: 'chrysanthemum' }, { answer: 'near' }, BU)));
+assert('同语言、学过的词、长度相近时才留作诱饵',
+  SHT.baitJudge({ answer: '教室' }, { answer: '墙' }, BU).ok === true,
+  JSON.stringify(SHT.baitJudge({ answer: '教室' }, { answer: '墙' }, BU)));
 
 assert('看图说词接不出变体就走错题（口语要语音证据，不硬编）',
   SHT.buildVariant({ no: 1, cell: { type: '看图说词' }, prompt: 'x', options: ['a', 'b', 'c'], answer: 'a' }, 1) === null);
