@@ -3,12 +3,12 @@
  *
  * 定位：给人手工出题用的模板，不是自动出题器，后面才「注入灵魂」。
  * 界面只自动做五件事：排不重复的出题角度、从静态候选清单确定性带出 4 项、记录检查结果、
- * 判学生的答案、按变化轴接一道同考点的变体；算指标也在这里。
+ * 判学生的答案、把错题写进错题本；算指标也在这里。
  * 题目内容由人按格子填写 —— 对应出题手册「最小测试全手工」的口径。
  *
  * 四个 tab 按流程切分：
  *   01 出题 = 环节 1/2/3（课程规划 / 执行生成 / 验证质检），一次只显示一个角色
- *   02 答题 = 学生侧：作答 → 判对错 → 对就换考点 / 错就换一道同考点的变体 → 还错写错题
+ *   02 答题 = 学生侧：作答 → 判对错 → 对就换考点 / 错就当场写进错题（下一轮由模型重出回练题）
  *   03 错题 = 出题侧回边：错因 → 出题要点 → 写入计划 → 回 01 出下一轮
  *   04 日志 = 环节 4/5，含跨轮事前排除、作答记录与停止决策
  *
@@ -51,8 +51,6 @@
       picked: null,
       hintUsed: false,
       hintGone: -1,
-      pending: null,
-      nextVariant: null,
       revealed: null,
       attempts: []
     };
@@ -636,22 +634,44 @@
   }
 
   function activePracticeQuestion() {
-    const p = practiceOf();
-    if (p.pending) return p.pending;
-    return practiceQuestions()[p.cursor] || null;
+    return practiceQuestions()[practiceOf().cursor] || null;
   }
 
-  function attemptsOf(no) {
-    return practiceOf().attempts.filter(function (a) { return a.no === no; });
+  function attemptsOf(no, round) {
+    const p = (round && round.practice) || practiceOf();
+    return p.attempts.filter(function (a) { return a.no === no; });
   }
 
-  function pointStateOf(q) { return SHT.judgePoint(attemptsOf(q.no)); }
+  function wrongCaseOf(q) {
+    if (!q || !q.probe) return null;
+    const key = q.probe.kpId;
+    return (state.wrongCases || []).filter(function (c) {
+      return key ? c.kpId === key : c.knowledgePoint === q.knowledgePoint;
+    })[0] || null;
+  }
+
+  // 一个考点现在算什么状态。
+  // 普通题：看这一轮的首答（judgePoint 需要 first 一枪，没有就是未测）。
+  // 回练题：这一轮只有「第二枪」，first 在上一轮，所以状态要读错题本里那条。
+  function pointStateOf(q, round) {
+    const list = attemptsOf(q.no, round);
+    if (!q || !q.probe) return SHT.judgePoint(list);
+    const c = wrongCaseOf(q);
+    if (!c) return SHT.judgePoint(list);
+    const last = list[list.length - 1];
+    const state = c.masteryState === 'mastered' ? 'mastered' : (last && last.correct ? 'passed' : 'wrong');
+    return {
+      state: state,
+      label: SHT.MASTERY_LABELS[c.masteryState] || SHT.POINT_STATES[state].label,
+      tone: SHT.POINT_STATES[state].tone
+    };
+  }
 
   function roundPracticeSummary(round) {
     const p = (round && round.practice) || blankPractice();
     const out = { total: 0, tested: 0, mastered: 0, passed: 0, assisted: 0, fragile: 0, wrong: 0, unseen: 0, attempts: (p.attempts || []).length };
     practiceQuestions(round).forEach(function (q) {
-      const st = SHT.judgePoint((p.attempts || []).filter(function (a) { return a.no === q.no; }));
+      const st = pointStateOf(q, round);
       out[st.state] = (out[st.state] || 0) + 1;
       if (st.state !== 'unseen') out.tested += 1;
       out.total += 1;
@@ -666,7 +686,9 @@
     const idx = Math.min(p.cursor + 1, list.length);
     return '<div class="practice-head">' +
       '<span class="practice-progress">第 ' + idx + ' 个考点 / 共 ' + list.length + ' 个' +
-        (p.pending ? '<span class="chip-variant">变体 · 同考点换答案</span>' : '') + '</span>' +
+        (q.probe
+          ? '<span class="chip-variant" title="' + esc(q.probe.prevPrompt || '') + '">错题回练 · 上一轮没过</span>'
+          : '') + '</span>' +
       '<span class="hint">' + esc(q.cell ? q.cell.type + ' / ' + q.cell.level : '') + '</span>' +
     '</div>';
   }
@@ -692,22 +714,21 @@
 
   function verdictHtml(q, p) {
     const r = p.revealed;
-    const isVariant = r.stage === 'variant';
+    // 这一题是上一轮错题的重出题（q.probe）时，结果直接决定那条错题的状态
+    const isProbe = !!q.probe;
     let next = '';
     if (r.correct) {
       next = '<button type="button" class="btn btn-primary" data-action="next-step">换下一个考点</button>' +
         '<span class="verdict-note">' +
-          (isVariant ? '换了答案还答对，这个考点算真会' : '这个考点算会用；换道题再答对才算真会') +
+          (isProbe ? '回练答对，记一次；下一轮再对一次才算真会'
+                   : '答对了；下一轮换道题再对一次，才算真会') +
         '</span>';
-    } else if (!isVariant && p.nextVariant) {
-      next = '<button type="button" class="btn btn-primary" data-action="next-step">换一道同考点的变体再考</button>' +
-        '<span class="verdict-note">' + esc(p.nextVariant.basis) + '</span>';
-    } else if (!isVariant) {
-      next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
-        '<span class="verdict-note">这种题型自动接不出变体，只能直接记错题</span>';
+    } else if (isProbe) {
+      next = '<button type="button" class="btn btn-primary" data-action="next-step">记下，换下一个考点</button>' +
+        '<span class="verdict-note">回练还是错，下一轮再出一次这个考点</span>';
     } else {
       next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
-        '<span class="verdict-note">换了答案还是错，这个考点不写 mastered</span>';
+        '<span class="verdict-note">下一轮会按这个考点重新出题</span>';
     }
     return '<div class="verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="verdict-top">' +
@@ -737,9 +758,7 @@
       practiceHeadHtml(q, p) +
       '<div class="q-card">' +
         '<div class="q-kp">' + esc(q.knowledgePoint || '（未填知识点）') +
-          (p.pending && p.pending.answerShift
-            ? '<span class="chip-shift">答案 ' + esc(p.pending.answerShift) + '</span>' : '') +
-          (r ? '　·　这个考点：' + esc(SHT.judgePoint(attemptsOf(q.no)).label) : '') + '</div>' +
+          (r ? '　·　这个考点：' + esc(pointStateOf(q).label) : '') + '</div>' +
         '<div class="q-prompt">' + esc(q.prompt) + '</div>' +
         (q.audioText
           ? '<div class="q-audio">' + (r ? '听力原文　' + esc(q.audioText) : '听力题 · 由测试者朗读，提交后显示原文') + '</div>'
@@ -766,7 +785,7 @@
     $('practiceCard').innerHTML = '<div class="done-card">' +
       '<div class="done-title">' + esc(title) + '</div>' +
       '<div class="done-grid">' +
-        cell('真会（原题 + 变体都对）', s.mastered, 'is-good') +
+        cell('真会（连对两次）', s.mastered, 'is-good') +
         cell('会用 / 看提示才会', s.passed + s.assisted, '') +
         cell('不会（已写进错题）', s.wrong, s.wrong ? 'is-bad' : '') +
         cell('没测到', s.unseen, '') +
@@ -837,11 +856,14 @@
     if (!q || p.revealed) return;
     const ev = SHT.evaluateAnswer(q, p.picked);
     if (!ev.ok) { toast(ev.reason); return; }
-    const stage = p.pending ? 'variant' : 'first';
+    // 这一题是「上一轮错过、这一轮由模型重出的回练题」时记成 variant，
+    // 它和上一轮的首答配成一对，才算得出「会不会」。一轮之内不再补第二枪。
+    const stage = q.probe ? 'variant' : 'first';
     const kp = SHT.kpByLabel(q.knowledgePoint);
     p.attempts.push({
       no: q.no,
       stage: stage,
+      probeOf: q.probe ? q.probe.kpId : '',
       kpId: kp ? kp.id : '',
       kpLabel: q.knowledgePoint || '',
       picked: ev.picked,
@@ -849,26 +871,16 @@
       expectedIndex: ev.expectedIndex,
       correct: ev.correct,
       hintCount: p.hintUsed ? 1 : 0,
-      // 变体这一枪顺手记下诱饵有没有放进去：放不进说明两个考点跨度太大，
-      // 这条会进规划智能体的记忆，下一轮别跨这么远
-      bait: stage === 'variant' && p.pending ? (p.pending.__bait || '') : '',
       at: new Date().toISOString()
     });
     p.revealed = p.attempts[p.attempts.length - 1];
-    if (!ev.correct && stage === 'first') p.nextVariant = SHT.buildVariant(q, q.no);
     save(); renderAll();
   }
 
-  function writeWrongFromPractice(q, first, last) {
+  // 首答就错 → 当场写进 03 错题；这一轮不再塞一道代码拼出来的变体。
+  // 回练题（上一轮错、这一轮模型重出）的结果不新建卡，只给原有那条追加一次证据。
+  function writeWrongFromPractice(q, ev) {
     const kp = SHT.kpByLabel(q.knowledgePoint);
-    // 首次错误证据冻结（主仓约定），变体那枪只写进错因说明，不覆盖首次作答
-    const tail = last && last.stage === 'variant'
-      ? '　换了一道同考点的变体还是错（选了「' + last.picked + '」，应为「' + last.expected + '」）。'
-      : '';
-    // 「只记住这道题」这一态：原题答对、换题面才错。这时还按首次作答记
-    // studentAnswer，卡片上会出现「作答 name / 正确 name」这种看不出错在哪的记录。
-    // 这种情况要把变体那枪的选择摆到台面上。
-    const onlyVariantWrong = first.correct && last && last.stage === 'variant' && !last.correct;
     const res = SHT.upsertWrongCase(state.wrongCases, {
       studentId: SHT.sampleStudent.id,
       unitId: SHT.curriculum.hostUnitId,
@@ -877,17 +889,35 @@
       knowledgePoint: q.knowledgePoint || (kp ? kp.label : '未填写知识点'),
       ability: q.ability || (kp ? kp.ability : 'vocab'),
       category: kp ? kp.cause : '未掌握',
-      errorCause: (onlyVariantWrong
-        ? '原题答对，换题面就错了——他记住的是这道题，不是这个考点。'
-        : (kp ? kp.why : '') + '　第一次选了「' + first.picked + '」，答案是「' + first.expected + '」。') + tail,
+      errorCause: (kp ? kp.why : '') + '　第一次选了「' + ev.picked + '」，答案是「' + ev.expected + '」。',
       questionSnapshot: q.prompt,
-      studentAnswer: onlyVariantWrong ? last.picked : first.picked,
-      correctAnswer: onlyVariantWrong ? last.expected : first.expected,
-      hintCount: first.hintCount,
-      at: first.at
+      studentAnswer: ev.picked,
+      correctAnswer: ev.expected,
+      hintCount: ev.hintCount,
+      at: ev.at
     });
     state.wrongCases = res.list;
-    toast(res.created ? '已写进 03 错题，出题要点和教材依据一起带过去' : '这个考点又错一次，错题状态已更新');
+    toast(res.created ? '已写进 03 错题，下一轮会按这条重新出题' : '这个考点又错一次，错题状态已更新');
+  }
+
+  // 回练结果记到错题本那条上：连对两次才算真会，答错就退回待订正，
+  // 下一轮还会再出一次同考点的题——升不升难度由模型的规划决定，不由代码写死。
+  function recordProbeResult(q, ev) {
+    const key = q.probe && q.probe.kpId;
+    const at = (state.wrongCases || []).findIndex(function (c) {
+      return key ? c.kpId === key : c.knowledgePoint === q.knowledgePoint;
+    });
+    if (at < 0) return null;
+    const next = SHT.appendVariantAttempt(state.wrongCases[at], {
+      correct: ev.correct,
+      hintCount: ev.hintCount,
+      retryCount: 0,
+      purpose: 'next-round-probe',
+      completedAt: ev.at
+    });
+    state.wrongCases = state.wrongCases.slice();
+    state.wrongCases[at] = next;
+    return next;
   }
 
   function practiceNext() {
@@ -895,22 +925,21 @@
     const r = p.revealed;
     if (!r) return;
     const q = activePracticeQuestion();
-    // 只在「原题错、且接得出变体」时留在原地换一道，其余都推进到下一个考点
-    const goVariant = !r.correct && r.stage === 'first' && !!p.nextVariant;
-    if (r.correct) {
-      toast(r.stage === 'variant' ? '换了答案也答对，这个考点算真会' : '答对了，换下一个考点');
-    } else if (goVariant) {
-      p.pending = p.nextVariant;
-      toast('换一道同考点的变体：' + p.nextVariant.basis);
+    if (q.probe) {
+      const after = recordProbeResult(q, r);
+      if (r.correct) {
+        toast(after && after.masteryState === 'mastered'
+          ? '连对两次，这个考点算真会，下一轮不再出'
+          : '回练答对，记一次；下一轮再对一次才算真会');
+      } else {
+        toast('回练还是错，已记为待订正，下一轮再出一次');
+      }
+    } else if (r.correct) {
+      toast('答对了，换下一个考点');
     } else {
-      const first = p.attempts.filter(function (a) { return a.stage === 'first'; })[0] || r;
-      writeWrongFromPractice(q, first, r);
+      writeWrongFromPractice(q, r);
     }
-    if (!goVariant) {
-      p.cursor += 1;
-      p.pending = null;
-      p.nextVariant = null;
-    }
+    p.cursor += 1;
     p.revealed = null;
     p.picked = null;
     p.hintUsed = false;

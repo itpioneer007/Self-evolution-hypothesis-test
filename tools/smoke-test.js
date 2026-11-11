@@ -120,23 +120,17 @@ click('practiceCard', { action: 'restart-practice' });
 assert('重测回到第 1 个考点', nodes.practiceCard.innerHTML.indexOf('第 1 个考点') >= 0);
 click('practiceCard', { action: 'pick-option', index: '1' });
 click('practiceCard', { action: 'submit-answer' });
-assert('答错给的是「换一道同考点的变体」', nodes.practiceCard.innerHTML.indexOf('换一道同考点的变体再考') >= 0);
-click('practiceCard', { action: 'next-step' });
-assert('变体题上屏且标注同考点换答案', nodes.practiceCard.innerHTML.indexOf('变体 · 同考点换答案') >= 0);
-
-const variant1 = SHT.buildVariant(q1, q1.no);
-const wrongIdx = variant1.options.findIndex(o => SHT.normAnswer(o) !== SHT.normAnswer(variant1.answer));
-click('practiceCard', { action: 'pick-option', index: String(wrongIdx) });
-click('practiceCard', { action: 'submit-answer' });
-assert('变体答错后判定条是失败态', count('practiceCard', 'class="verdict is-bad"') === 1);
-assert('变体答错写明不写 mastered', nodes.practiceCard.innerHTML.indexOf('这个考点不写 mastered') >= 0);
+assert('答错当场就说要写进错题，不再塞一道同轮变体',
+  nodes.practiceCard.innerHTML.indexOf('写进错题，换下一个考点') >= 0 &&
+  nodes.practiceCard.innerHTML.indexOf('换一道同考点的变体再考') < 0);
 const wrongBefore = count('wrongList', 'class="wrong-card');
 click('practiceCard', { action: 'next-step' });
-assert('变体再错自动写进错题本', count('wrongList', 'class="wrong-card') === wrongBefore + 1,
+assert('答错后直接进 03 错题本（不在本轮回练）',
+  count('wrongList', 'class="wrong-card') === wrongBefore + 1,
   wrongBefore + ' → ' + count('wrongList', 'class="wrong-card'));
 assert('写进去的错题带知识点与作答', nodes.wrongList.innerHTML.indexOf('classroom') >= 0 && nodes.wrongList.innerHTML.indexOf('窗户') >= 0);
 assert('作答记录进了日志信息流（答对/答错各有颜色）',
-  (nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length >= 2,
+  (nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length >= 1,
   String((nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length));
 
 console.log('--- 教材知识库 ---');
@@ -215,6 +209,13 @@ const cleaned = SHT.appendVariantAttempt(base, { correct: true, hintCount: 0, re
 assert('无提示答对 → corrected', cleaned.masteryState === 'corrected', cleaned.masteryState);
 const supported = SHT.appendVariantAttempt(base, { correct: true, hintCount: 1, retryCount: 0 });
 assert('用了提示的答对不算订正', supported.masteryState === 'wrong', supported.masteryState);
+// 跨轮真会：一轮一次机会，错过的考点要连对两次才升「已掌握」
+const once = SHT.appendVariantAttempt(base, { correct: true, hintCount: 0, retryCount: 0 });
+assert('回练第一次答对只到「已订正」，还不算真会', once.masteryState === 'corrected', once.masteryState);
+const twiceRight = SHT.appendVariantAttempt(once, { correct: true, hintCount: 0, retryCount: 0 });
+assert('第二轮再答对才升「已掌握」', twiceRight.masteryState === 'mastered', twiceRight.masteryState);
+const broken = SHT.appendVariantAttempt(once, { correct: false, hintCount: 0, retryCount: 0 });
+assert('中间又错一次就把连对数清零', broken.consecutiveClean === 0 && broken.masteryState !== 'corrected', broken.masteryState + '/' + broken.consecutiveClean);
 const twice = SHT.appendVariantAttempt(SHT.appendVariantAttempt(base, { correct: false }), { correct: false });
 assert('连续两轮不过 → 需教师介入', twice.masteryState === 'teacher-help', twice.masteryState);
 const mastered = Object.assign({}, base, { masteryState: 'mastered' });
@@ -542,6 +543,20 @@ const brief = SHT.pipeline.buildBrief({
 assert('brief 带着错题优先级', brief.priority.length >= 1 && brief.priority[0].kp === '错两次的考点',
   JSON.stringify(brief.priority.map(p => p.kp)));
 assert('brief 记下已真会的考点', brief.mastered.includes('真会考点'), brief.mastered.join(','));
+assert('错题本里已掌握的考点也进 mastered（跨轮的唯一真凭据）',
+  SHT.pipeline.buildBrief({
+    unitId: 'U1', rounds: [],
+    wrongCases: [{ knowledgePoint: '已掌握考点', kpId: 'kp-x', ability: 'vocab', masteryState: 'mastered', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 } }]
+  }).mastered.includes('已掌握考点'));
+assert('brief 把上一轮那道原题带给生成方当反例',
+  SHT.pipeline.buildBrief({
+    unitId: 'U1', rounds: [],
+    wrongCases: [{
+      knowledgePoint: '错题考点', kpId: 'kp-1', ability: 'vocab', category: '形近',
+      questionSnapshot: '选出「讲台」的英文。', masteryState: 'wrong',
+      variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0
+    }]
+  }).priority[0].prevPrompt === '选出「讲台」的英文。');
 assert('两枪都对的考点不会再被优先出', brief.priority.every(p => p.kp !== '真会考点'));
 assert('brief 是结构化字段，不是一段话', typeof brief.levelHint === 'string' && Array.isArray(brief.blockedCells));
 
@@ -889,6 +904,92 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
       assert('规划连续接口失败时整轮不抛异常', false, '抛了: ' + e.message);
     });
   })();
+
+  // 错题回练：上一轮错的考点，这一轮由模型换题面重出，并带上「上一轮那道题」当反例
+  console.log('--- 错题回练（跨轮） ---');
+  await (function () {
+    const REAL = SHT.llm.call;
+    const seen = [];
+    let n = 0;
+    const script = [
+      () => ({ ok: true, tokens: 10, ms: 1, json: { plans: [
+        { kp: 'spelling · blackboard · oa + ar', ability: 'spelling', level: '辨', nextIfWrong: '先认词义' }
+      ] } }),
+      (req) => { seen.push(req.user); return { ok: true, json: qJson({ prompt: '选出「黑板」的正确拼写。', options: ['blackboard', 'blackbord', 'blakboard'], answer: 'blackboard', analysis: 'black + board，oa 和 ar 都不能漏。' }), tokens: 10, ms: 1 }; },
+      () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })
+    ];
+    SHT.llm.call = async function (req) {
+      const f = script[Math.min(n, script.length - 1)];
+      n += 1;
+      return f(req);
+    };
+    return SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 1, existing: [],
+      quota: { source: 'manual', total: 1, byAbility: { spelling: 1 } },
+      brief: {
+        unitId: 'U1',
+        priority: [{
+          kp: 'spelling · blackboard · oa + ar', kpId: 'kp-9', missCount: 2,
+          ability: 'spelling', prevPrompt: '选出「黑板」的正确拼写。'
+        }],
+        mastered: [], blockedCells: []
+      }
+    }).then(function (out) {
+      SHT.llm.call = REAL;
+      assert('命中上一轮错题的考点被标成 probe',
+        !!out.plans[0] && out.plans[0].probe && out.plans[0].probe.kpId === 'kp-9',
+        JSON.stringify(out.plans[0] && out.plans[0].probe));
+      assert('题目上也带 probe，作答时据此记成第二枪',
+        !!out.questions[0] && !!out.questions[0].probe,
+        JSON.stringify(out.questions[0] && out.questions[0].probe));
+      assert('生成提示词里带着「错题回练」与上一轮原题',
+        seen.some(function (u) { return String(u).indexOf('错题回练') >= 0 && String(u).indexOf('选出「黑板」的正确拼写') >= 0; }),
+        (seen[0] || '').slice(0, 80));
+    }, function (e) {
+      SHT.llm.call = REAL;
+      assert('命中上一轮错题的考点被标成 probe', false, '抛了: ' + e.message);
+    });
+  })();
+
+  /* ================= 回练题在界面上长什么样 ================= */
+  console.log('--- 错题回练（界面） ---');
+  const pr = { cursor: 0, picked: null, hintUsed: false, hintGone: -1, revealed: null, attempts: [] };
+  store = {
+    'sht-minimal-test-v2': JSON.stringify({
+      bookId: 'PEP-G4A', unitId: 'U1', round: 2, activeNo: 1, tab: 'practice',
+      rounds: {
+        1: { questions: [], practice: Object.assign({}, pr) },
+        2: {
+          questions: [{
+            no: 1, knowledgePoint: 'spelling · blackboard · oa + ar', ability: 'spelling',
+            cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
+            prompt: '选出「黑板」的正确拼写。', options: ['blackboard', 'blackbord', 'blakboard'],
+            answer: 'blackboard', analysis: 'black 两个 a，ar 不能漏。', audioText: '',
+            probe: { kpId: 'kp-1', prevPrompt: '选出「讲台」的英文。', missCount: 1 },
+            checks: {}, source: 'model'
+          }],
+          practice: Object.assign({}, pr)
+        }
+      },
+      wrongCases: [{
+        id: 'wc-1', studentId: 'S-001', unitId: 'U1', kpId: 'kp-1',
+        knowledgePoint: 'spelling · blackboard · oa + ar', ability: 'spelling',
+        category: '形近', masteryState: 'wrong', variantAttempts: [],
+        firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0
+      }]
+    })
+  };
+  delete require.cache[require.resolve('../src/app.js')];
+  try {
+    require('../src/app.js');
+    assert('回练题在 02 页标成「错题回练」',
+      nodes.practiceCard.innerHTML.indexOf('错题回练') >= 0,
+      nodes.practiceCard.innerHTML.slice(0, 120));
+    assert('回练题把上一轮原题放在提示里',
+      nodes.practiceCard.innerHTML.indexOf('选出「讲台」的英文') >= 0);
+  } catch (err) {
+    assert('回练题在 02 页标成「错题回练」', false, err.message);
+  }
 
   SHT.llm.call = REAL_CALL;
 

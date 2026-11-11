@@ -30,15 +30,19 @@
 
   function lower(s) { return String(s == null ? '' : s).toLowerCase().trim(); }
 
-  // 本单元里带空格的多词项（mobile phone / living room / listen to）先整体保护起来，
-  // 否则会被拆成两个词分别判超纲
+  // 多词项（teacher's desk / turn on / put up）要整体保护，否则会被拆成两个词分别判超纲。
+  // 占位符必须用分词器认不出来的字符：早先写成 [[PHRASE]]，tokensOf 把 PHRASE
+  // 也当成一个英文单词，于是每道含多词项的题都被判「PHRASE 没教过」——
+  // 这不是题目的问题，是占位符自己变成了一个查不到的词。
+  const PHRASE_MARK = '\u0001';
+
   function protectPhrases(text, unit) {
     let s = String(text || '');
     const phrases = unit.words.map(function (w) { return w.en; })
       .filter(function (e) { return / /.test(e); })
       .sort(function (a, b) { return b.length - a.length; });
     phrases.forEach(function (p) {
-      s = s.replace(new RegExp(esc(p), 'gi'), ' [[PHRASE]] ');
+      s = s.replace(new RegExp(esc(p), 'gi'), ' ' + PHRASE_MARK + ' ');
     });
     return s;
   }
@@ -69,6 +73,41 @@
     return set;
   }
 
+  // 词形变化：题面里会出现 nears / desks / classes / playing / liked / taller 这类派生形。
+  // 词表只收原形，只按原形查表会把它们全判成超纲——near 明明在本册词表里，
+  // 它加个 s 就不认识，那不是学生超纲，是查表太死。
+  // 只认六类最常见后缀，且要求词干本身在表里、长度 ≥ 3：
+  // 这样 is → i、us → u 这种误配不会发生；teacher 也不会因为 teach 在表里被放过，
+  // 因为「原形命中」这一步先做，命中就返回，走不到这里。
+  const DERIVE = [
+    function (w) { return w.endsWith('ies') ? w.slice(0, -3) + 'y' : ''; },  // studies → study
+    function (w) { return w.endsWith('es') ? w.slice(0, -2) : ''; },         // classes → class
+    function (w) { return w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : ''; }, // nears → near
+    function (w) { return w.endsWith('ing') ? w.slice(0, -3) : ''; },        // playing → play
+    function (w) { return w.endsWith('ed') ? w.slice(0, -2) : ''; },         // played → play
+    function (w) { return w.endsWith('er') ? w.slice(0, -2) : ''; },         // taller → tall
+    function (w) { return w.endsWith('est') ? w.slice(0, -3) : ''; }         // tallest → tall
+  ];
+
+  function stemInTable(stem, set) {
+    if (stem.length < 3) return false;
+    if (set[stem]) return true;
+    // making → mak → make；liked → lik → like：去掉后缀时把结尾的 e 补回来
+    if (set[stem + 'e']) return true;
+    // running → runn → run：双写辅音
+    const n = stem.length;
+    if (n > 3 && stem[n - 1] === stem[n - 2] && set[stem.slice(0, -1)]) return true;
+    return false;
+  }
+
+  function derivedFrom(t, set) {
+    for (let i = 0; i < DERIVE.length; i += 1) {
+      const stem = DERIVE[i](t);
+      if (stem && stemInTable(stem, set)) return true;
+    }
+    return false;
+  }
+
   // It's / don't / isn't / T-shirt 这几类写法要能落到词表上
   function resolveToken(tok, set) {
     const t = lower(tok);
@@ -83,6 +122,7 @@
       if (abbr[1] === 'it' && abbr[2] === 's' && set['is']) return true;
       if (set[abbr[1] + abbr[2]]) return true;
     }
+    if (derivedFrom(t, set)) return true;
     return false;
   }
 
@@ -147,9 +187,14 @@
         scanFields.push({ name: '选项 ' + (i + 1), text: op });
       });
     }
+    // 同一个词可能在题干、选项、解析里各出现一次。按「字段逐个报」会得到
+    // 「选项 1 里有…；解析里出现了…」这种又长又重复的句子，人读着累还看不出重点。
+    // 改成按词归并：一个词只报一次，后面跟它出现的位置。
+    const unknownAt = Object.create(null);
     scanFields.forEach(function (f) {
-      const unknown = unknownWords(f.text, unit, set);
-      if (unknown.length) push('V1', f.name + '里有本单元没教过的词：' + unknown.join('、'));
+      unknownWords(f.text, unit, set).forEach(function (w) {
+        (unknownAt[w] = unknownAt[w] || []).push(f.name);
+      });
     });
 
     // 解析放宽：它天然会引用答案、对比错项、写字母组合（ir / oa / a-e），
@@ -167,7 +212,13 @@
       return true;
     });
     if (analysisUnknown.length) {
-      push('V1', '解析里出现了本单元没教过的词：' + analysisUnknown.join('、'));
+      analysisUnknown.forEach(function (w) { (unknownAt[w] = unknownAt[w] || []).push('解析'); });
+    }
+    const unknownWordsList = Object.keys(unknownAt);
+    if (unknownWordsList.length) {
+      push('V1', unknownWordsList.map(function (w) {
+        return w + '（' + unknownAt[w].join('、') + '）';
+      }).join('；') + ' 没学过');
     }
 
     // V2 答案必须落在选项里

@@ -65,7 +65,17 @@
       delete next.retry[q.knowledgePoint];
       const list = byNo[q.no] || [];
       if (!list.length) return;
-      const judged = SHT.judgePoint(list);
+      // 回练题（上一轮错过、这一轮重出）本轮只有第二枪，first 在上一轮，
+      // judgePoint 拿不到 first 会判成「未测」，层次就永远不动。
+      // 这里按这一枪的结果直接定：对就是会，错就是不会。
+      const judged = q.probe
+        ? (function () {
+            const last = list[list.length - 1];
+            return last && last.correct
+              ? { state: 'mastered' }
+              : { state: 'wrong' };
+          })()
+        : SHT.judgePoint(list);
       const e = entryOf(next, q.knowledgePoint);
       if (judged.state === 'mastered') {
         e.mastered += 1;

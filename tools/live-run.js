@@ -154,66 +154,40 @@ function wrongIndex(q) {
     });
   }
 
-  // ---------- 4 模拟作答 + 变体探针 ----------
-  hr('4 作答判定 + 同考点变体探针（模拟学生）');
+  // ---------- 4 模拟作答 ----------
+  hr('4 作答（模拟学生，答错当场进错题，本轮回练已取消）');
   const attempts = [];
   let wrongCases = [];
   const report = [];
   r1.questions.forEach(function (q, i) {
-    // 确定性「学生」：第 1 题真会，第 2 题只记住原题，第 3 题换角度才会，其余不会
-    const mode = i === 0 ? 'wrong' : i === 1 ? 'fragile' : i === 2 ? 'passed' : 'mastered';
-    const firstIdx = mode === 'mastered' || mode === 'fragile' ? indexOfAnswer(q) : wrongIndex(q);
-    const first = SHT.evaluateAnswer(q, firstIdx);
+    // 确定性「学生」：前两题不会，其余会。一轮只答一枪。
+    const willMiss = i < 2;
+    const first = SHT.evaluateAnswer(q, willMiss ? wrongIndex(q) : indexOfAnswer(q));
     attempts.push({ no: q.no, stage: 'first', kpLabel: q.knowledgePoint, correct: first.correct, hintCount: 0 });
-
-    const variant = SHT.buildVariant(q, q.no);
-    let vCorrect = false;
-    if (variant) {
-      const vIdx = mode === 'mastered' || mode === 'passed' ? indexOfAnswer(variant) : wrongIndex(variant);
-      vCorrect = SHT.evaluateAnswer(variant, vIdx).correct;
-      attempts.push({ no: q.no, stage: 'variant', kpLabel: q.knowledgePoint, correct: vCorrect, hintCount: 0 });
-    }
-    const state = SHT.judgePoint(attempts.filter(function (a) { return a.no === q.no; }));
-    line('第 ' + q.no + ' 题', '原题' + (first.correct ? '对' : '错（选 ' + first.picked + '）') +
-      '　变体' + (variant ? (vCorrect ? '对' : '错（选 ' + (variant.options[wrongIndex(variant)] || '') + '）') : '接不出') +
-      '　→ ' + state.label);
-
-    if (variant) {
-      line('  变体', '[' + variant.cell.type + '] ' + variant.prompt + '　' + JSON.stringify(variant.options) +
-        '　答案 ' + variant.answer + '（' + (variant.answerShift || '') + '）');
-    }
-    if (state.state === 'wrong' || state.state === 'fragile') {
-      // 只记住这道题：原题对、变体错。错题卡的「作答 vs 正确」要摆变体那一枪，
-      // 否则会写成「name / name」，看不出错在哪。
-      const onlyVariant = first.correct && variant && !vCorrect;
-      const up = SHT.upsertWrongCase(wrongCases, {
-        unitId: 'U1',
-        kpId: q.knowledgePoint,
-        knowledgePoint: q.knowledgePoint,
-        ability: q.ability,
-        category: (q.cell && q.cell.distractor) || '未掌握',
-        errorCause: onlyVariant
-          ? '原题答对，换题面就错了——记住的是这道题，不是这个考点。'
-          : '原题错，变体也错；变体答案 ' + (variant ? variant.answer : '接不出'),
-        questionSnapshot: q.prompt,
-        studentAnswer: onlyVariant ? variant.options[wrongIndex(variant)] : first.picked,
-        correctAnswer: onlyVariant ? variant.answer : q.answer,
-        originalQuestionId: 'live-q' + q.no,
-        hintCount: 0
-      });
-      wrongCases = up.list;
-    }
-    report.push({ no: q.no, kp: q.knowledgePoint, state: state.state, label: state.label });
+    line('第 ' + q.no + ' 题', (first.correct ? '对' : '错（选 ' + first.picked + '）') +
+      '　[' + q.cell.type + '] ' + q.prompt);
+    if (first.correct) return;
+    const up = SHT.upsertWrongCase(wrongCases, {
+      unitId: 'U1',
+      kpId: q.knowledgePoint,
+      knowledgePoint: q.knowledgePoint,
+      ability: q.ability,
+      category: (q.cell && q.cell.distractor) || '未掌握',
+      errorCause: '第一次选了「' + first.picked + '」，答案是「' + first.expected + '」。',
+      questionSnapshot: q.prompt,
+      studentAnswer: first.picked,
+      correctAnswer: first.expected,
+      originalQuestionId: 'live-q' + q.no,
+      hintCount: 0
+    });
+    wrongCases = up.list;
+    report.push({ no: q.no, kp: q.knowledgePoint });
   });
-  const judged = report.map(function (r) { return r.label; });
-  const distinct = new Set(judged).size;
-  assert(r1.questions.length >= 3
-      ? '四态判据都判出来了（真会 / 只记住这道题 / 会用 / 不会）'
-      : '题量不足时判据仍能给出确定状态',
-    r1.questions.length >= 3 ? distinct >= 3 : distinct >= 1, judged.join(' '));
-  assert('变体全部接得出（接不出要明说是哪类）',
-    r1.questions.every(function (q) { return SHT.buildVariant(q, q.no); }),
-    r1.questions.filter(function (q) { return !SHT.buildVariant(q, q.no); }).map(function (q) { return q.cell.type; }).join(','));
+  assert('答错的题当场进了错题日志', wrongCases.length === Math.min(2, r1.questions.length),
+    wrongCases.length + ' 条 / 共 ' + r1.questions.length + ' 题');
+  assert('这一轮没有同轮变体那一枪（一轮只答一次）',
+    attempts.every(function (a) { return a.stage === 'first'; }),
+    attempts.map(function (a) { return a.stage; }).join(','));
 
   hr('5 错题进日志');
   wrongCases.forEach(function (c) {
@@ -268,6 +242,17 @@ function wrongIndex(q) {
     r2.plans.every(function (p) { return !cell1.has(SHT.cellKey(p.cell)); }),
     r2.plans.map(function (p) { return SHT.cellKey(p.cell); }).join(' | '));
   assert('第二轮出了题', r2.questions.length >= 1, String(r2.questions.length));
+  // 这一条是用户最关心的：错题不是当轮补一道，而是下一轮由模型重新出
+  const probes = r2.questions.filter(function (q) { return q.probe; });
+  assert('第二轮把上一轮的错题标成回练题（probe）', probes.length >= 1,
+    r2.questions.map(function (q) { return (q.probe ? '[回练]' : '') + q.knowledgePoint; }).join(' | '));
+  probes.forEach(function (q) {
+    line('回练题', q.prompt + '　' + JSON.stringify(q.options) + '　答案 ' + q.answer);
+    if (q.probe.prevPrompt) line('  上一轮那道', q.probe.prevPrompt);
+  });
+  assert('回练题的题面确实和上一轮不同',
+    probes.every(function (q) { return !q.probe.prevPrompt || q.prompt !== q.probe.prevPrompt; }),
+    probes.map(function (q) { return q.prompt; }).slice(0, 2).join(' | '));
 
   // ---------- 收尾 ----------
   hr('汇总');

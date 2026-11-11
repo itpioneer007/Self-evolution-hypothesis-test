@@ -112,11 +112,14 @@
     const priority = (proj.queue || []).slice(0, 3).map(function (i) {
       return {
         kp: i.label,
+        kpId: i.kpId || '',
         missCount: i.errorCount,
         ability: i.ability,
         cause: i.topCause,
         stage: i.errorCount >= 2 ? 'variant-failed' : '',
-        cell: i.suggestedCell || null
+        cell: i.suggestedCell || null,
+        // 上一轮那道原题。生成时当反例用：同一考点、换题面，但别照着这一版改字。
+        prevPrompt: i.snapshot || ''
       };
     });
 
@@ -128,9 +131,17 @@
         (byKp[a.kpLabel] = byKp[a.kpLabel] || []).push(a);
       });
     });
-    const mastered = Object.keys(byKp).filter(function (k) {
+    const masteredInRound = Object.keys(byKp).filter(function (k) {
       return SHT.judgePoint(byKp[k]).state === 'mastered';
     });
+    // 一轮里只答一枪，「真会」现在主要落在错题本上：错过、下一轮回练连对两次才算。
+    // 只看轮内作答的话，这份清单永远空，规划就不知道哪些考点不用再出。
+    const masteredInCases = wrongCases.filter(function (c) {
+      return c.masteryState === 'mastered';
+    }).map(function (c) { return c.knowledgePoint; });
+    const mastered = masteredInRound.concat(masteredInCases.filter(function (k) {
+      return masteredInRound.indexOf(k) < 0;
+    }));
 
     const blockedCells = [];
     rounds.forEach(function (r) {
@@ -340,6 +351,26 @@
       onEvent({ phase: 'planned', plans: plans, text: '考点去重后剩 ' + plans.length + ' 条' });
     }
 
+    // 上一轮错的考点：这一轮请模型换题面重出，标记成 probe。
+    // 这一枪和上一轮的首答配成一对，才判得出是真会还是只记住那道题。
+    // 用代码标记而不是让模型自己声明：模型会把「我觉得相关」也算进去。
+    const prio = (o.brief && o.brief.priority) || [];
+    plans.forEach(function (p) {
+      const n = normKp(p.kp);
+      const exact = prio.filter(function (x) { return normKp(x.kp) === n; })[0];
+      const near = exact || prio.filter(function (x) {
+        const a = normKp(x.kp);
+        return a && n && (a.indexOf(n) >= 0 || n.indexOf(a) >= 0);
+      })[0];
+      if (near) {
+        p.probe = {
+          kpId: near.kpId || '',
+          prevPrompt: near.prevPrompt || '',
+          missCount: near.missCount || 1
+        };
+      }
+    });
+
     // ---------- 分格（代码，不让模型碰） ----------
     const used = (o.existing || []).map(function (q) { return q.cell; }).filter(Boolean);
     plans.forEach(function (p, i) {
@@ -399,6 +430,8 @@
           analysis: String(raw.analysis || '').trim(),
           nextIfWrong: plan.nextIfWrong,
           keyword: String(raw.keyword || '').trim(),
+          // 上一轮错过、这一轮重出的题：作答时和上一轮首答配一对
+          probe: plan.probe || null,
           // 日志要显示「什么时候出的这道题」，生成时刻在这里落下
           createdAt: now(),
           checks: {},

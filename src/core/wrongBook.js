@@ -107,6 +107,10 @@
 
       return {
         key: g.key, label: g.label, ability: g.ability,
+        // 下一轮要按这条重新出题，得知道「哪一条错题」和「上一轮那道题长什么样」：
+        // kpId 用来回写结果，snapshot 交给模型当「别再写这一版」的反例
+        kpId: (g.cases[0] || {}).kpId || '',
+        snapshot: (g.cases[0] || {}).questionSnapshot || '',
         status: status, priorityScore: score, errorCount: g.errorCount,
         supportCount: g.supportCount, caseCount: g.cases.length,
         topCause: topCause,
@@ -149,10 +153,15 @@
     const clean = SHT.isQualifiedEvidence(record) && !isSupportOnly(record) && record.correct;
     if (!record.correct) {
       next.masteryState = 'wrong';
+      next.consecutiveClean = 0;
       next.remediationLoopCount = (next.remediationLoopCount || 0) + 1;
       if (next.remediationLoopCount >= 2) next.masteryState = 'teacher-help';
     } else if (clean) {
-      next.masteryState = 'corrected';
+      // 一次答对只能算「已订正」。错过的考点要连对两次才升「已掌握」：
+      // 一次可能是蒙对，或只是记住了上一轮那道题。这条规则让「真会」有成本，
+      // 也是下一轮还会不会再出这道题的依据（mastered 不再出，corrected 还要再验一次）。
+      next.consecutiveClean = (next.consecutiveClean || 0) + 1;
+      next.masteryState = next.consecutiveClean >= 2 ? 'mastered' : 'corrected';
     }
     return next;
   };
