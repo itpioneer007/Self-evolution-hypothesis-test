@@ -423,14 +423,16 @@
           const cls = (no === state.activeNo ? ' is-active' : '') + (verdictOf(list[i]) === '退回' ? ' is-failed' : '');
           return '<button type="button" data-action="q-nav" data-no="' + no + '" class="' + cls.trim() + '">' + no + '</button>';
         }).join('') + '</div>' +
-        '<span class="hint">第 ' + state.activeNo + ' / ' + list.length + ' 题 · ' + esc(c.type) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span>' +
+        '<div class="toolbar-actions">' +
+          '<span class="hint">第 ' + state.activeNo + ' / ' + list.length + ' 题 · ' + esc(c.type) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span>' +
+          '<button type="button" class="btn btn-primary" data-action="save-changes">保存修改</button>' +
+        '</div>' +
       '</div>' +
       '<div class="field-grid">' +
         '<div class="field-row is-wide"><label>出题角度</label><span class="cell-badge">' +
           esc(c.type) + ' / ' + esc(c.scene) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span></div>' +
-        '<div class="field-row"><label>知识点</label><div class="kp-inline">' +
-          '<input data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '" placeholder="细到错因">' +
-          '<select data-kp-pick>' + kpSelectHtml() + '</select></div></div>' +
+        '<div class="field-row is-wide"><label>知识点</label><span class="cell-badge">' +
+          esc(q.knowledgePoint || '（未填知识点）') + '</span></div>' +
         '<div class="field-row"><label>能力</label><input data-field="ability" value="' + esc(q.ability) + '"></div>' +
         '<div class="field-row is-wide"><label>题目</label><textarea data-field="prompt" placeholder="只用本单元词表与句型">' + esc(q.prompt) + '</textarea></div>' +
         '<div class="field-row is-wide"><label>听力原文</label><input data-field="audioText" value="' + esc(q.audioText) + '" placeholder="非听力题留空"></div>' +
@@ -1562,6 +1564,7 @@
         if (action === 'toggle-scope') { toggleScope(b.dataset.id); return; }
         if (action === 'clear-scope') { state.kpScope = []; save(); renderAll(); toast('本轮不限知识点范围'); return; }
         if (action === 'q-nav') { state.activeNo = Number(b.dataset.no); save(); renderAll(); return; }
+        if (action === 'save-changes') { save(); renderAll(); toast('已保存本页修改'); return; }
         if (action === 'layer') { state.checkLayer = Number(b.dataset.index); save(); renderAll(); return; }
         if (action === 'check') {
           const q = currentQuestion();
@@ -1585,24 +1588,22 @@
 
     $('agentPanel').addEventListener('change', function (e) {
       const el = e.target;
-      if (el.dataset.kpPick !== undefined) {
-        if (el.value) applyKnowledgePoint(el.value, state.activeNo, false);
-        return;
-      }
       const field = el.dataset.field;
       if (!field) return;
+      // 课程智能体计划表（带 data-no）：即时保存
       if (el.dataset.no) {
         const q = currentRound().questions[Number(el.dataset.no) - 1];
         if (!q) return;
         if (field === 'knowledgePoint') q[field] = el.value;
         else if (q.cell) q.cell[field] = el.value;
-      } else {
-        const q = currentQuestion();
-        if (!q) return;
-        if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
-        else q[field] = el.value;
+        save(); renderAll();
+        return;
       }
-      save(); renderAll();
+      // 执行智能体九字段（不带 data-no）：只写内存，等「保存修改」按钮
+      const q = currentQuestion();
+      if (!q) return;
+      if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
+      else q[field] = el.value;
     });
 
     $('agentPanel').addEventListener('input', function (e) {
@@ -1613,7 +1614,6 @@
       if (!q) return;
       if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
       else q[field] = el.value;
-      save();
     });
 
     $('wrongList').addEventListener('click', function (e) {
