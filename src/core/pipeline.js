@@ -14,6 +14,22 @@
 
   const MAX_ATTEMPTS = 3;
 
+  /**
+   * llm.call 失败时返回的是扁平结构 { ok:false, errorType, message }，
+   * 不是 { error:{ type, message } }。以前整条链路都按后者读，
+   * 于是任何接口层失败（key 无效 / 超时 / 限流 / 返回非 JSON）都会在这里
+   * 抛 TypeError，被上层 catch 吞成一句「出错了」，连通性测试更是永远停在
+   * 「正在测试…」——真实错误全被一个字段名挡住了。这两个函数是唯一的读法。
+   */
+  function shtErrType(r) {
+    if (!r) return 'unknown';
+    return r.errorType || (r.error && r.error.type) || 'unknown';
+  }
+  function shtErrMsg(r) {
+    if (!r) return '未知错误';
+    return r.message || (r.error && r.error.message) || '未知错误';
+  }
+
   function now() { return new Date().toISOString(); }
 
   function cellList() {
@@ -289,8 +305,8 @@
       }
       if (!plans) {
         failures.push(failEntry({
-          stage: 'plan', attempt: i + 1, codes: res.ok ? ['PLAN_EMPTY'] : [res.error.type],
-          reason: res.ok ? '返回里没有可用的 plans' : res.error.message,
+          stage: 'plan', attempt: i + 1, codes: res.ok ? ['PLAN_EMPTY'] : [shtErrType(res)],
+          reason: res.ok ? '返回里没有可用的 plans' : shtErrMsg(res),
           detail: res.text ? String(res.text).slice(0, 300) : ''
         }));
         onEvent({ phase: 'retry', text: '规划没成，重试一次' });
@@ -363,10 +379,10 @@
         if (!generated.ok) {
           failures.push(failEntry({
             stage: 'generate', planKp: plan.kp, attempt: attempt,
-            codes: [generated.error.type], reason: generated.error.message,
+            codes: [shtErrType(generated)], reason: shtErrMsg(generated),
             detail: generated.text ? String(generated.text).slice(0, 300) : ''
           }));
-          feedback = '接口层面失败：' + generated.error.message + '（保持 JSON 合法、字段齐全）';
+          feedback = '接口层面失败：' + shtErrMsg(generated) + '（保持 JSON 合法、字段齐全）';
           continue;
         }
 
@@ -428,7 +444,7 @@
           // 质检本身失败不能把题废掉：记一笔，按「仅代码闸通过」采纳，界面标未复核
           failures.push(failEntry({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
-            codes: [verdict.error.type], reason: '质检没跑成，按代码闸通过采纳：' + verdict.error.message,
+            codes: [shtErrType(verdict)], reason: '质检没跑成，按代码闸通过采纳：' + shtErrMsg(verdict),
             detail: ''
           }));
           question.modelVerdict = 'unverified';
@@ -527,7 +543,7 @@
       maxTokens: 40,
       temperature: 0
     });
-    if (!res.ok) return { ok: false, message: res.error.message, type: res.error.type };
+    if (!res.ok) return { ok: false, message: shtErrMsg(res), type: shtErrType(res) };
     return { ok: true, ms: res.ms, model: SHT.llm.config().model, tokens: res.tokens };
   };
 })(window);

@@ -1477,14 +1477,39 @@
 
   async function testModel() {
     const box = $('modelStatus');
-    if (box) box.textContent = '正在测试…';
-    const res = await SHT.pipeline.selfCheck();
+    const get = function (k) {
+      const el = document.querySelector('[data-model="' + k + '"]');
+      return el ? el.value.trim() : '';
+    };
+    // 测试用的就是输入框里现在这份值：填完直接点测试，不必先点保存。
+    // 以前只读已保存的配置，填了没保存会走「还没填 API Key」那条，
+    // 表现就是点了按钮什么都没发生——这条也是「一直不出结果」的常见来源。
+    const typedKey = get('key');
+    if (typedKey) {
+      SHT.llm.save({
+        baseUrl: get('baseUrl') || SHT.llm.defaults.baseUrl,
+        model: get('model') || SHT.llm.defaults.model,
+        key: typedKey
+      });
+    }
+
+    const cfg = SHT.llm.config();
+    const wait = Math.round((cfg.timeoutMs || 90000) / 1000);
+    if (box) {
+      box.textContent = '正在用 ' + SHT.llm.maskedKey() + ' 测试…（最长等 ' + wait + ' 秒）';
+    }
+    let res;
+    try {
+      res = await SHT.pipeline.selfCheck();
+    } catch (err) {
+      // 兜底：任何没预料到的异常都要落到状态栏，不能让这里静默停在「正在测试…」
+      res = { ok: false, type: 'exception', message: String(err && err.message || err) };
+    }
     if (box) {
       box.innerHTML = res.ok
         ? '连通正常 · ' + esc(res.model) + ' · ' + res.ms + ' ms · ' + (res.tokens || 0) + ' tokens'
         : '失败：<code>' + esc(res.type) + '</code> ' + esc(res.message);
     }
-    renderAll();
   }
 
   /* ---------- 模型出题 ---------- */

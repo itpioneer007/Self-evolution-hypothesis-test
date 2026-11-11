@@ -819,6 +819,47 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
     });
   })();
 
+  /* ================= 接口层失败不能抛异常 ================= */
+  // llm.call 失败时返回 { ok:false, errorType, message }，调用方一律按 res.error.message 读是错的：
+  // 任何接口层失败（key 无效 / 超时 / 限流）都会抛 TypeError，被上层吞成「出错了」，
+  // 连通性测试更会永远停在「正在测试…」。这条断言锁住读法。
+  console.log('--- 接口层失败 ---');
+  await (function () {
+    const REAL = SHT.llm.call;
+    SHT.llm.call = async function () {
+      return { ok: false, ms: 12, errorType: 'auth', message: 'Authentication Fails, Your api key is invalid', tokens: 0 };
+    };
+    return SHT.pipeline.selfCheck().then(function (r) {
+      SHT.llm.call = REAL;
+      assert('连通性测试遇到接口失败时给出原因，不抛异常',
+        r.ok === false && r.type === 'auth' && String(r.message).indexOf('Authentication') >= 0,
+        JSON.stringify(r));
+    }, function (e) {
+      SHT.llm.call = REAL;
+      assert('连通性测试遇到接口失败时给出原因，不抛异常', false, '抛了: ' + e.message);
+    });
+  })();
+
+  await (function () {
+    const REAL = SHT.llm.call;
+    SHT.llm.call = async function () {
+      return { ok: false, ms: 10, errorType: 'rate', message: '请求太频繁', tokens: 0 };
+    };
+    return SHT.pipeline.runRound({ unit: SHT.curriculum, count: 1, brief: {}, existing: [] }).then(function (out) {
+      SHT.llm.call = REAL;
+      assert('规划连续接口失败时整轮不抛异常', out.ok === false, JSON.stringify(out.ok));
+      assert('接口失败的类型被记进失败记录',
+        out.failures.some(function (f) { return f.codes.indexOf('rate') >= 0; }),
+        JSON.stringify(out.failures.map(function (f) { return f.codes; })));
+      assert('接口失败的原因写成人能读的话',
+        out.failures.every(function (f) { return String(f.reason || '').indexOf('undefined') < 0; }),
+        JSON.stringify(out.failures.map(function (f) { return f.reason; })));
+    }, function (e) {
+      SHT.llm.call = REAL;
+      assert('规划连续接口失败时整轮不抛异常', false, '抛了: ' + e.message);
+    });
+  })();
+
   SHT.llm.call = REAL_CALL;
 
   console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
