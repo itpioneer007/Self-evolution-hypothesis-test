@@ -386,22 +386,43 @@
     }
   ];
 
-  // 候选清单只属于 PEP 四上（33 条全部从那一册的词句错因推出来）。
-  // 换到冀教版、湘少版时返回空数组：那些书的考点由模型现场提，不借用别册的候选。
+  /*
+   * 每本书自己的候选清单，键是教材 id。
+   * 为什么不共用一份：换考点（pipeline.nearKpFor）与配额自动分配都读它，
+   * 借别册的考点等于跨册出题，出来就是超纲题；而超纲是验证角色唯一
+   * 有硬证据能拦的问题，喂它一道本来就是外册词的题，等于让它白拦。
+   *
+   * 本文件注册 PEP；冀教版与湘少版在各自的数据文件里注册（kps-hebei-g4a.js /
+   * kps-xiangshao-g4a.js），因为它们的内容来自各自的教材，不跟 PEP 混在一处改。
+   */
+  SHT.KPS_BY_BOOK = SHT.KPS_BY_BOOK || {};
+  SHT.KPS_BY_BOOK['PEP-G4A'] = SHT.KNOWLEDGE_POINTS;
+
+  // 所有册的合集：按 id / 按 label 反查时用（跨册查找，不用于出题）
+  SHT.ALL_KPS = function () {
+    const out = [];
+    Object.keys(SHT.KPS_BY_BOOK || {}).forEach(function (bookId) {
+      out.push.apply(out, SHT.KPS_BY_BOOK[bookId] || []);
+    });
+    return out;
+  };
+
+  // 只返回「当前这本书 + 这个单元」的候选。没建清单的册子返回空数组，
+  // 不借别册——宁可这一轮没有候选（由模型现场提），也不跨册出题。
   SHT.kpsOf = function (unitId) {
     const bookId = (SHT.BOOKS && SHT.BOOKS.current) ? SHT.BOOKS.current().meta.id : 'PEP-G4A';
-    if (bookId !== 'PEP-G4A') return [];
-    return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.unit === unitId; });
+    const list = (SHT.KPS_BY_BOOK && SHT.KPS_BY_BOOK[bookId]) || [];
+    return list.filter(function (k) { return k.unit === unitId; });
   };
 
   SHT.kpById = function (id) {
-    return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.id === id; })[0] || null;
+    return SHT.ALL_KPS().filter(function (k) { return k.id === id; })[0] || null;
   };
 
   // 作答侧只拿得到题上写的知识点中文，靠它倒查回候选条目（错因 / 教材依据 / 建议角度）
   SHT.kpByLabel = function (label) {
     const key = String(label == null ? '' : label).trim();
     if (!key) return null;
-    return SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.label === key; })[0] || null;
+    return SHT.ALL_KPS().filter(function (k) { return k.label === key; })[0] || null;
   };
 })(window);

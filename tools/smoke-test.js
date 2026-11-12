@@ -50,6 +50,8 @@ require('../src/data/books.js');
 require('../src/data/textbook.js');
 require('../src/data/books/hebei-g4a.js');
 require('../src/data/books/xiangshao-g4a.js');
+require('../src/data/kps-hebei-g4a.js');
+require('../src/data/kps-xiangshao-g4a.js');
 require('../src/data/curriculum.js');
 require('../src/data/knowledgePoints.js');
 require('../src/data/wrongCases.js');
@@ -548,7 +550,10 @@ assert('登记时没有结构错误', BOOKS.all().every(b => (b.meta.warnings ||
 SHT.setBook('HEB-G4A');
 assert('切到冀教：切片换成 The Clothes We Wear', SHT.curriculum.bookId === 'HEB-G4A' && SHT.curriculum.title === 'The Clothes We Wear');
 assert('切书时功能词白名单跟着换', SHT.curriculum.allowedFunctionWords.includes('straight') === true);
-assert('切书后候选知识点为空（PEP 的 33 条不外借）', SHT.kpsOf(SHT.curriculum.id).length === 0);
+assert('切书后候选换成冀教自己的清单（PEP 的 33 条不外借）',
+  SHT.kpsOf(SHT.curriculum.id).length === 6 &&
+  SHT.kpsOf(SHT.curriculum.id).every(k => k.id.indexOf('hb-') === 0),
+  SHT.kpsOf(SHT.curriculum.id).length + ' 条');
 assert('超纲判定用冀教的边界：shirt 过、blackboard 拦',
   SHT.validateQuestion({ knowledgePoint: 'x', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' },
     prompt: '选出「衬衫」的英文。', audioText: '', options: ['shirt', 'skirt', 'coat'], answer: 'shirt', analysis: 'shirt 是衬衫。' },
@@ -556,6 +561,34 @@ assert('超纲判定用冀教的边界：shirt 过、blackboard 拦',
   SHT.validateQuestion({ knowledgePoint: 'x', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' },
     prompt: '选出「衬衫」的英文。', audioText: '', options: ['shirt', 'skirt', 'blackboard'], answer: 'shirt', analysis: 'shirt 是衬衫。' },
     SHT.curriculum, {}).pass === false);
+
+/* ================= 另两册的候选清单 ================= */
+// 清单是「换考点」与「自动配额」的输入。这里只查清单本身合不合规，不动当前教材——
+// 上面的用例已经把当前书切到冀教，后面还有用例依赖它。
+console.log('--- 另两册的候选清单 ---');
+const HB_BOOK = SHT.BOOKS.get('HEB-G4A');
+const XS_BOOK = SHT.BOOKS.get('XS-G4A');
+const HB_ALL = SHT.KPS_BY_BOOK['HEB-G4A'];
+const XS_ALL = SHT.KPS_BY_BOOK['XS-G4A'];
+const sceneOfUnit = (book, unitId) => SHT.SCENE_OF_DOMAIN[book.getUnit(unitId).topicDomain];
+assert('冀教 4 单元 × 6 条 = 24 条候选', HB_ALL.length === 24, HB_ALL.length + ' 条');
+assert('湘少 12 单元 × 3 条 = 36 条候选', XS_ALL.length === 36, XS_ALL.length + ' 条');
+assert('两册每条的四维、错因、依据都在枚举内',
+  HB_ALL.concat(XS_ALL).every(k => typeIds.includes(k.cell.type) && SHT.SCENES.includes(k.cell.scene) &&
+    SHT.LEVELS.includes(k.cell.level) && SHT.DISTRACTORS.includes(k.cell.distractor) &&
+    causeIds.includes(k.cause) && k.source && k.example && k.why && k.nextIfWrong));
+assert('两册都没有语音板块 → 一条 phonics / 辨音都不排',
+  HB_ALL.concat(XS_ALL).every(k => k.ability !== 'phonics' && k.cell.type !== '字母组合辨音'));
+assert('两册候选的情境落在各自单元话题域',
+  HB_ALL.every(k => k.cell.scene === sceneOfUnit(HB_BOOK, k.unit)) &&
+  XS_ALL.every(k => k.cell.scene === sceneOfUnit(XS_BOOK, k.unit)));
+assert('每条候选的 unit 都属于这本书', HB_ALL.every(k => !!HB_BOOK.getUnit(k.unit)) &&
+  XS_ALL.every(k => !!XS_BOOK.getUnit(k.unit)));
+const allKpIds = SHT.ALL_KPS().map(k => k.id);
+assert('三册 93 条候选的 id 不重复', allKpIds.length === 93 && allKpIds.length === new Set(allKpIds).size, allKpIds.length);
+assert('按 id / 按 label 都能跨册反查到', !!SHT.kpById('hb-U1-01') && !!SHT.kpByLabel(XS_ALL[0].label));
+assert('没建清单的册子返回空，不借别册', SHT.kpsOf !== undefined &&
+  (SHT.KPS_BY_BOOK['NOPE-G4A'] || []).length === 0);
 
 /* ================= 代码闸八条 ================= */
 console.log('--- 代码闸 ---');
@@ -843,7 +876,11 @@ async function runCase(name, script, expect) {
     }).indexOf('最后 2 条是替补') >= 0);
 
   await (function () {
-    // 配额 2 条，规划给了 4 条：后两条当替补，第一格三次都出不成时由替补顶上
+    // 配额 2 条，规划给了 4 条：后两条当替补，第一格三次都出不成时由替补顶上。
+    // 这里把冀教的候选清单临时清空：有清单时系统会先换考点（那一路由下一个用例覆盖），
+    // 清空后才是「换不了，只能靠替补」——也正是这本册子刚接入清单之前的真实处境。
+    const savedKps = SHT.KPS_BY_BOOK['HEB-G4A'];
+    SHT.KPS_BY_BOOK['HEB-G4A'] = [];
     let n = 0;
     const four = { ok: true, tokens: 10, ms: 1, json: { plans: [
       { kp: 'vocab · A · 甲', ability: 'vocab', level: '认' },
@@ -870,7 +907,7 @@ async function runCase(name, script, expect) {
       assert('替补顶上要留痕（BENCH_UP）', out.failures.some(f => f.codes.includes('BENCH_UP')),
         JSON.stringify(out.failures.map(f => f.codes)));
       assert('顶上来的题也有自己的格子', !!out.questions[0].cell && out.questions[0].cell.type);
-    });
+    }).finally(function () { SHT.KPS_BY_BOOK['HEB-G4A'] = savedKps; });
   })();
 
   await (function () {
