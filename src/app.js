@@ -427,6 +427,7 @@
     P5: '放在这个位置不合适',
     L1: '解析没讲清楚', L2: '归不到具体知识点', L3: '缺出题角度标记', L4: '说不出下一轮该出什么',
     PLAN_SCOPE: '超出本轮范围', PLAN_DUP: '考点重复', PLAN_RETIRED: '考点已掌握',
+    PLAN_SWITCH_KP: '诱饵造不出，换了相近考点', BENCH_UP: '替补顶上',
     PLAN_LEVEL_CAP: '层次超过上限', PLAN_EMPTY: '没提到可用考点',
     QUOTA_OVER: '超出能力配额', QUOTA_SHORT: '配额没排满', QUOTA_OFF: '不在配额内',
     GIVE_UP: '三次都没过', VERIFY_NO_CODE: '验证没说清理由', EXCEPTION: '程序出错'
@@ -2211,9 +2212,13 @@
         round.practice = blankPractice();
         state.activeNo = 1;
         state.agent = 'execute';
-        toast('出了 ' + res.questions.length + ' 题，' + (res.plans.length - res.questions.length) + ' 个格子没成，原因在失败记录里');
+        const left = res.plans.length - res.questions.length;
+        toast('出了 ' + res.questions.length + ' 题' +
+          (res.benchUsed ? '（替补顶上 ' + res.benchUsed + ' 次）' : '') +
+          (left ? '，' + left + ' 个格子没成，原因在失败记录里' : ''));
       } else if (res.ok && planOnly) {
-        toast('规划好了 ' + res.plans.length + ' 条，格子已分配');
+        toast('规划好了 ' + res.plans.length + ' 条，格子已分配' +
+          (res.bench && res.bench.length ? '，另备 ' + res.bench.length + ' 条替补' : ''));
       } else {
         toast('这一轮没出成，看失败记录里的原因');
         state.agent = 'course';

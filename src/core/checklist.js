@@ -87,6 +87,8 @@
     PLAN_LEVEL_CAP: '层次超过了学生当前的上限，已降回',
     PLAN_RETIRED: '这个考点已经真会到顶，不用再考',
     PLAN_DUP: '考点与前面重复',
+    PLAN_SWITCH_KP: '这个考点造不出可信的干扰项，换成了相近的考点',
+    BENCH_UP: '这一格没出成，替补顶上',
     PLAN_EMPTY: '规划返回里没有能用的考点',
     QUOTA_OVER: '超出这一轮的能力配额',
     QUOTA_SHORT: '配额里的这一类没给够',

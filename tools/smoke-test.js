@@ -835,6 +835,73 @@ async function runCase(name, script, expect) {
     });
   })();
 
+  // 替补与换考点：两种「这一格出不成」的补救，都不许静默留空
+  assert('规划提示词说明哪些是替补',
+    SHT.ROLES.plan.user({
+      bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 },
+      unit: SHT.curriculum, brief: {}, blockedCells: [], count: 4, bench: 2
+    }).indexOf('最后 2 条是替补') >= 0);
+
+  await (function () {
+    // 配额 2 条，规划给了 4 条：后两条当替补，第一格三次都出不成时由替补顶上
+    let n = 0;
+    const four = { ok: true, tokens: 10, ms: 1, json: { plans: [
+      { kp: 'vocab · A · 甲', ability: 'vocab', level: '认' },
+      { kp: 'vocab · B · 乙', ability: 'vocab', level: '认' },
+      { kp: 'vocab · C · 丙', ability: 'vocab', level: '认' },
+      { kp: 'vocab · D · 丁', ability: 'vocab', level: '认' }
+    ] } };
+    const bad = () => ({ ok: true, json: qJson({ options: ['shirt', 'shirt', 'coat'] }), tokens: 10, ms: 1 });
+    const ok = () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 });
+    const pass = () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 });
+    const script = [() => four, bad, bad, bad, ok, pass, ok, pass];
+    SHT.llm.call = async function () { const f = script[Math.min(n, script.length - 1)]; n += 1; return f(); };
+    return SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 2, brief: {}, existing: [],
+      quota: { source: 'manual', total: 2, byAbility: { vocab: 2 } }
+    }).then(function (out) {
+      assert('多排的考点留作替补，不占正取', out.plans.length === 2 && out.bench.length === 2,
+        out.plans.length + ' / ' + out.bench.length);
+      assert('某一格没出成时替补顶上', out.questions.length === 2 && out.benchUsed === 1,
+        out.questions.length + ' / ' + out.benchUsed);
+      assert('顶上来的那题记的是替补的考点', out.questions[0].knowledgePoint === 'vocab · C · 丙' ||
+        out.questions[1].knowledgePoint === 'vocab · C · 丙',
+        JSON.stringify(out.questions.map(q => q.question ? q.knowledgePoint : q.knowledgePoint)));
+      assert('替补顶上要留痕（BENCH_UP）', out.failures.some(f => f.codes.includes('BENCH_UP')),
+        JSON.stringify(out.failures.map(f => f.codes)));
+      assert('顶上来的题也有自己的格子', !!out.questions[0].cell && out.questions[0].cell.type);
+    });
+  })();
+
+  await (function () {
+    // 诱饵造不出来：连着两次 V3（选项重复）就换相近考点，不把第三次机会耗完
+    const S2 = [
+      { id: 'a', label: 'vocab · A · 甲', ability: 'vocab', cell: { type: '中英匹配', level: '认' } },
+      { id: 'b', label: 'vocab · B · 乙', ability: 'vocab', cell: { type: '中英匹配', level: '认' } }
+    ];
+    let n = 0;
+    const one = { ok: true, tokens: 10, ms: 1, json: { plans: [
+      { kp: 'vocab · A · 甲', ability: 'vocab', level: '认', cause: '形近', nextIfWrong: '先配对' }
+    ] } };
+    const dup = () => ({ ok: true, json: qJson({ options: ['shirt', 'shirt', 'coat'] }), tokens: 10, ms: 1 });
+    const ok = () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 });
+    const pass = () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 });
+    const script = [() => one, dup, dup, ok, pass];
+    SHT.llm.call = async function () { const f = script[Math.min(n, script.length - 1)]; n += 1; return f(); };
+    return SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 1, brief: {}, existing: [], scope: S2,
+      quota: { source: 'manual', total: 1, byAbility: { vocab: 1 } }
+    }).then(function (out) {
+      assert('只退回两次就换考点，不耗第三次', out.failures.filter(f => f.stage === 'validate').length === 2,
+        String(out.failures.filter(f => f.stage === 'validate').length));
+      assert('换考点留痕（PLAN_SWITCH_KP）', out.failures.some(f => f.codes.includes('PLAN_SWITCH_KP')),
+        JSON.stringify(out.failures.map(f => f.codes)));
+      assert('换出来的题记的是新考点', out.questions.length === 1 &&
+        out.questions[0].knowledgePoint === 'vocab · B · 乙', JSON.stringify(out.plans.map(p => p.kp)));
+      assert('plans 里的那一格跟着换成新考点', out.plans[0].kp === 'vocab · B · 乙', out.plans[0].kp);
+    });
+  })();
+
   // 听力题漏填 audioText：用答案补上并留痕，不整题作废
   await runCase('听力题漏填原文 → 兜底补上', [
     () => ({ ok: true, tokens: 10, ms: 1, json: { plans: [{ kp: 'vocab · shirt · 音义联结', ability: 'listening', cause: '形近', nextIfWrong: '先配对', level: '认' }] } }),
