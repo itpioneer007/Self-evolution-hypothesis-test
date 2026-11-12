@@ -9,3 +9,6 @@ sht-minimal-test-*.json
 
 # 页面分享打包产物（每次导出都会变，不进版本库）
 .trae-html-share-packages/
+
+# 截图产物（tools/shot-audit.js 的输出），不进版本库
+.tmp-shot/
