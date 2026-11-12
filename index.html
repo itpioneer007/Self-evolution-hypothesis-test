@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>出题工作台 · Self-Evolution Hypothesis Test</title>
 <link rel="stylesheet" href="styles.css">
-<link rel="stylesheet" href="src/dev/audit.css">
 </head>
 <body>
 <div class="app">
@@ -93,9 +92,9 @@
     </section>
 
     <!--
-      05 审计台：给开发者与评审用，不是给学生用。
-      内容由 src/dev/audit.js 渲染，样式在 src/dev/audit.css（深色赛博朋克，
-      全部类名带 audit- 前缀，不污染上面四个浅色页签）。
+      05 审计台：给开发者与评审看角色流水用的，不是给学生用。
+      内容由 src/dev/audit.js 渲染（左侧导航 + 右侧详情），
+      样式在 styles.css 末尾的「05 审计台」区块，与上面四个浅色页签同一套变量。
     -->
     <section class="stage-page" id="page-audit">
       <div class="audit-root" id="auditRoot"></div>

@@ -78,7 +78,16 @@
   }
 
   function blankRound() {
-    return { questions: [], stopSignals: [], endReason: '', closed: false, practice: blankPractice(), progressCommitted: false };
+    return {
+      questions: [], stopSignals: [], endReason: '', closed: false,
+      practice: blankPractice(), progressCommitted: false,
+      /*
+       * 这一轮课程角色给的原始考点（不是题）。审计要看「课程给了什么、
+       * 执行角色怎么理解它」，光有题上的知识点标签看不出来——
+       * 标签是题生成完才有的，课程原本的错因设计意图（cause）与理由（whyThisOne）会丢。
+       */
+      plans: []
+    };
   }
 
   function defaultState() {
@@ -118,6 +127,8 @@
        */
       // 日志按天分组后，哪些天是展开的（键是 YYYY-MM-DD，缺省只展开最近一天）
       logOpenDays: {},
+      // 审计台当前停在左侧哪一段（plan/execute/verify/diagnose/reuse/trace）
+      auditPane: 'plan',
       traces: [],
       traceLastId: 0,
       // 拦截演练记录：人为混入超纲题/错答案题，看验证角色拦不拦得住
@@ -139,6 +150,7 @@
     if (!Array.isArray(parsed.auditDrills)) parsed.auditDrills = [];
     if (typeof parsed.traceLastId !== 'number') parsed.traceLastId = 0;
     if (!parsed.logOpenDays || typeof parsed.logOpenDays !== 'object') parsed.logOpenDays = {};
+    if (!parsed.auditPane) parsed.auditPane = 'plan';
     parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
@@ -157,6 +169,7 @@
       if (!Array.isArray(r.practice.attempts)) r.practice.attempts = [];
       if (!r.practice.shownAt) r.practice.shownAt = 0;
       if (r.progressCommitted == null) r.progressCommitted = false;
+      if (!Array.isArray(r.plans)) r.plans = [];
     });
     if (!parsed.learningLayer) parsed.learningLayer = SHT.sampleLearningLayer || 'B';
     if (!parsed.tab) parsed.tab = 'agents';
@@ -2443,6 +2456,15 @@
       }
 
       if (res.ok && res.questions.length) {
+        // 课程给点的快照：审计台按它展示「课程给了什么、有没有被执行角色改掉」
+        round.plans = (res.plans || []).map(function (p) {
+          return {
+            no: p.no, kp: p.kp, ability: p.ability, cause: p.cause,
+            whyThisOne: p.whyThisOne, level: p.level, cell: p.cell,
+            switchedFrom: p.switchedFrom || '', fromBench: !!p.fromBench,
+            probe: p.probe ? { parentQid: p.probe.parentQid, prevPrompt: p.probe.prevPrompt, missCount: p.probe.missCount } : null
+          };
+        });
         round.questions = res.questions.map(function (q, i) {
           return Object.assign({}, q, { no: i + 1 });
         });
@@ -2455,6 +2477,13 @@
           (res.benchUsed ? '（替补顶上 ' + res.benchUsed + ' 次）' : '') +
           (left ? '，' + left + ' 个格子没成，原因在失败记录里' : ''));
       } else if (res.ok && planOnly) {
+        round.plans = (res.plans || []).map(function (p) {
+          return {
+            no: p.no, kp: p.kp, ability: p.ability, cause: p.cause,
+            whyThisOne: p.whyThisOne, level: p.level, cell: p.cell,
+            switchedFrom: p.switchedFrom || '', fromBench: !!p.fromBench, probe: p.probe || null
+          };
+        });
         toast('规划好了 ' + res.plans.length + ' 条，格子已分配' +
           (res.bench && res.bench.length ? '，另备 ' + res.bench.length + ' 条替补' : ''));
       } else {

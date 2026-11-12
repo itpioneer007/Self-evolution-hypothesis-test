@@ -247,11 +247,22 @@ assert('计划面板有候选折叠区且默认收起', count('agentPanel', 'cla
 
 console.log('--- 审计台页签 ---');
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'audit' } }) });
-assert('切到审计台渲染出总判条与四张指标卡',
-  count('auditRoot', 'class="audit-verdict"') === 1 && count('auditRoot', 'class="audit-card"') === 4,
-  'verdict ' + count('auditRoot', 'class="audit-verdict"') + ' / 卡 ' + count('auditRoot', 'class="audit-card"'));
-assert('审计台有空态文案（没跑过不能显示成达标）',
-  nodes.auditRoot.innerHTML.indexOf('还没跑够') >= 0 || nodes.auditRoot.innerHTML.indexOf('还没有') >= 0);
+assert('审计台是左侧六段导航（课程/执行/验证/诊断/复用/留痕）',
+  count('auditRoot', 'class="audit-nav-item') === 6, String(count('auditRoot', 'class="audit-nav-item')));
+assert('默认停在「课程给点」，右侧有标题与说明',
+  nodes.auditRoot.innerHTML.indexOf('课程给点') >= 0 &&
+  count('auditRoot', 'class="audit-pane-head"') === 1);
+assert('切到「验证拦截」右侧内容跟着换',
+  (function () {
+    fire('auditRoot', 'click', {
+      closest: () => ({ dataset: { action: 'audit-pane', pane: 'verify' } })
+    });
+    return nodes.auditRoot.innerHTML.indexOf('验证拦截') >= 0 &&
+      nodes.auditRoot.innerHTML.indexOf('最终进这一轮的') >= 0;
+  })());
+assert('没数据时给的是人话空态，不是空白',
+  nodes.auditRoot.innerHTML.indexOf('这一轮没有被它拦下的题') >= 0 ||
+  nodes.auditRoot.innerHTML.indexOf('还没有') >= 0);
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'agents' } }) });
 console.log('--- tab / 角色切换 ---');
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'wrongbook' } }) });
