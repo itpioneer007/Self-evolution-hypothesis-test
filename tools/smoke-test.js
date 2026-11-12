@@ -70,6 +70,8 @@ require('../src/core/bkt.js');
 require('../src/core/progress.js');
 require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
+require('../src/core/audit.js');
+require('../src/dev/audit.js');
 require('../src/app.js');
 
 const SHT = global.SHT;
@@ -236,6 +238,14 @@ assert('每单元候选 ≥ 5 条，且至少 3 条带真实错例', BOOK.units.
 }), BOOK.units.map(u => SHT.kpsOf(u.id).length).join(','));
 assert('计划面板有候选折叠区且默认收起', count('agentPanel', 'class="kp-fold"') === 1 && count('agentPanel', 'data-action="pick-kp"') === 8);
 
+console.log('--- 审计台页签 ---');
+fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'audit' } }) });
+assert('切到审计台渲染出总判条与四张指标卡',
+  count('auditRoot', 'class="audit-verdict"') === 1 && count('auditRoot', 'class="audit-card"') === 4,
+  'verdict ' + count('auditRoot', 'class="audit-verdict"') + ' / 卡 ' + count('auditRoot', 'class="audit-card"'));
+assert('审计台有空态文案（没跑过不能显示成达标）',
+  nodes.auditRoot.innerHTML.indexOf('还没跑够') >= 0 || nodes.auditRoot.innerHTML.indexOf('还没有') >= 0);
+fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'agents' } }) });
 console.log('--- tab / 角色切换 ---');
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'wrongbook' } }) });
 assert('切到错题记录 tab 不抛错', true);
@@ -1089,6 +1099,77 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
       assert('返回这一轮实际用的配额', !!out.quota && out.quota.byAbility.vocab === 1, JSON.stringify(out.quota));
     });
   })();
+
+  /* ================= 审计：四条达标线 ================= */
+  console.log('--- 审计台 ---');
+  {
+    // ① 变体：答案必换 / 考点必同 / 伪变体
+    const r1q = [
+      { qid: 'q-a', no: 1, knowledgePoint: 'phonics · a / a-e · 长短音', prompt: '听录音，选出你听到的单词。（cake）', options: ['cake', 'cat', 'hat'], answer: 'cake', cell: { level: '辨' } },
+      { qid: 'q-b', no: 2, knowledgePoint: 'vocab · coat · 同类不同物', prompt: '选出「大衣」的英文。', options: ['coat', 'cap', 'dress'], answer: 'coat', cell: { level: '认' } }
+    ];
+    const r2q = [
+      // 答案换了、题面换了 → 合格变体
+      { qid: 'q-c', no: 1, parentQid: 'q-a', knowledgePoint: 'phonics · a / a-e · 长短音', prompt: '听录音，选出与 gate 中 a 同音的词。（name）', options: ['name', 'map', 'bag'], answer: 'name', cell: { level: '辨' } },
+      // 答案没换 → 不合规
+      { qid: 'q-d', no: 2, parentQid: 'q-b', knowledgePoint: 'vocab · coat · 同类不同物', prompt: '选出「大衣」的英文。', options: ['coat', 'cap', 'dress'], answer: 'coat', cell: { level: '认' } },
+      // 没挂来源 → orphan
+      { qid: 'q-e', no: 3, parentQid: '', knowledgePoint: 'vocab · shirt · 音义联结', prompt: '选出「衬衫」的英文。', options: ['shirt', 'skirt', 'sock'], answer: 'shirt', cell: { level: '认' } }
+    ];
+    const vm = SHT.audit.variantRows([{ questions: r1q }, { questions: r2q }]);
+    assert('变体只数挂了 parent 的题', vm.stats.total === 2 && vm.orphan.length === 1, vm.stats.total + ' / orphan ' + vm.orphan.length);
+    assert('答案换了算合规，没换算不合规', vm.stats.answerChanged === 1 && vm.stats.total === 2, String(vm.stats.answerChanged));
+    assert('考点相同才认变体', vm.stats.sameKp === 2, String(vm.stats.sameKp));
+    assert('只换指代、骨架不动 → 判伪变体', vm.rows.filter(r => r.fake).length === 1,
+      JSON.stringify(vm.rows.map(r => ({ q: r.childQid, fake: r.fake }))));
+    assert('挂了不存在的 parent 单独标出来',
+      SHT.audit.variantRows([{ questions: r1q }, { questions: [{ qid: 'q-x', parentQid: 'q-nope', knowledgePoint: 'x', prompt: 'p', answer: 'a' }] }])
+        .rows[0].missingParent === true);
+
+    // ② 隔离：学情词必须被扫出来
+    const leakA = SHT.audit.scanLeak('待检的题：题型 中英匹配\n题干 "选出..."\n选项 [...]\n答案 coat\n本单元词表：coat=大衣');
+    assert('干净上下文不误报', leakA.ok === true && leakA.hits.length === 0);
+    const leakB = SHT.audit.scanLeak('错题画像：掌握概率 0.31（低），上次他选的是 cap');
+    assert('学情词一条不漏地扫出来', !leakB.ok && leakB.hits.length >= 2,
+      JSON.stringify(leakB.hits.map(h => h.word)));
+    const vf = SHT.audit.verifyFields('题型：中英匹配 题干："x" 选项 [] 答案 coat 解析 ... 词表 ...');
+    assert('能认出验证上下文里带了哪些字段', vf.length >= 4, vf.join('/'));
+
+    // ③ 进化：焦点与难度
+    const stat1 = { rounds: [{ questions: r1q, practice: { attempts: [{ correct: true }, { correct: false }] } },
+      { questions: r2q, practice: { attempts: [] } }], wrongCases: [{ knowledgePoint: 'phonics · a / a-e · 长短音' }], traces: [] };
+    const em = SHT.audit.metrics(stat1);
+    assert('焦点考点取第一轮错最多的那个', em.evolve.focusKp === 'phonics · a / a-e · 长短音', em.evolve.focusKp);
+    assert('焦点命中数算得对（第二轮同考点 1 道）', em.evolve.focusHit === 1, String(em.evolve.focusHit));
+    assert('难度档按层次均值算（R1 0.5 / R2 0.33）',
+      Math.abs(em.evolve.levelFrom.avgLevel - 0.5) < 0.01 && Math.abs(em.evolve.levelTo.avgLevel - 1 / 3) < 0.01,
+      JSON.stringify([em.evolve.levelFrom.avgLevel, em.evolve.levelTo.avgLevel]));
+
+    // ④ 复现：台账重判一致 / 不一致要报冲突
+    const qq = { qid: 'q-a', prompt: 'p', options: ['coat', 'cap', 'dress'], answer: 'coat', open: false };
+    const frozen = SHT.grade.remember({}, qq, 'coat', { correct: true, via: 'exact' });
+    const good = SHT.audit.freezeAudit({ rounds: [{ questions: [qq] }], gradeLedger: frozen });
+    assert('同一题同一答案能离线复算且一致', good.recomputed === 1 && good.conflicts.length === 0, JSON.stringify(good));
+    const tampered = Object.assign({}, frozen);
+    const k = Object.keys(tampered)[0];
+    tampered[k] = Object.assign({}, tampered[k], { correct: false });
+    const badFreeze = SHT.audit.freezeAudit({ rounds: [{ questions: [qq] }], gradeLedger: tampered });
+    assert('台账被改过一定要报冲突（防悄悄改口）', badFreeze.conflicts.length === 1, JSON.stringify(badFreeze.conflicts));
+
+    // 总判：一项没过就是未达标，跑得少不能报达标
+    // 真实存档里 rounds 是 { 1: {...}, 2: {...} }，不是数组：形状没归一化过会整页渲染失败
+    assert('存档的 rounds 是对象也能算',
+      SHT.audit.metrics({ rounds: { 1: { questions: [] }, 2: { questions: [] } }, traces: [] }).verdict === 'nodata');
+    assert('四项都没数据时判「还没跑够」', SHT.audit.metrics({ rounds: [], traces: [] }).verdict === 'nodata');
+    const allRoles = ['plan', 'generate', 'verify', 'diagnose'].map(function (role) {
+      return { role: role, ok: true, guard: { ok: true, hits: [] }, fields: ['题干'] };
+    });
+    const partial = SHT.audit.metrics({ rounds: [], traces: allRoles });
+    assert('四角色都上了但还没判分 → 待验，不报达标', partial.verdict === 'wait', partial.verdict);
+    const lacking = SHT.audit.metrics({ rounds: [], traces: [{ role: 'verify', ok: true, guard: { ok: true, hits: [] }, fields: ['题干'] }] });
+    assert('有一类角色没留痕 → 复现判未达标', lacking.reproduce.ok === false, String(lacking.reproduce.ok));
+    assert('任一项没过 → 未达标', em.verdict === 'fail' || em.verdict === 'wait', em.verdict);
+  }
 
   /* ================= 接口层失败不能抛异常 ================= */
   // llm.call 失败时返回 { ok:false, errorType, message }，调用方一律按 res.error.message 读是错的：

@@ -37,8 +37,13 @@
     return config;
   }
 
+  // 自增编号：审计台按它增量取「这次又发生了哪些调用」。
+  // 用下标不行——日志超过 200 条会 shift，下标会往前漂，取重或取漏。
+  let seq = 0;
+
   function record(entry) {
-    log.push(Object.assign({ at: new Date().toISOString() }, entry));
+    seq += 1;
+    log.push(Object.assign({ id: seq, at: new Date().toISOString() }, entry));
     if (log.length > 200) log.shift();
     return entry;
   }
@@ -76,11 +81,25 @@
     const o = opts || {};
     const started = Date.now();
 
+    /*
+     * 审计要能回答「这次调用，模型到底看到了什么」——尤其是验证角色有没有
+     * 看到学情。所以把这轮发的 system / user 留在内存日志里（各截 4000 字），
+     * 只在本次会话内可读，不写 localStorage、不进导出 JSON。
+     * 为什么截断：一整轮的提示词加起来有几十 KB，全留会把日志区拖垮；
+     * 4000 字足够覆盖「待检的题」与「错题画像」这两个关键段落。
+     */
+    function trace(entry) {
+      return record(Object.assign({
+        system: String(o.system || '').slice(0, 4000),
+        user: String(o.user || '').slice(0, 4000)
+      }, entry));
+    }
+
     if (!cfg.key) {
-      return record({ role: o.role || '', ok: false, ms: 0, errorType: 'no_key', message: '还没填 API Key', tokens: 0 });
+      return trace({ role: o.role || '', ok: false, ms: 0, errorType: 'no_key', message: '还没填 API Key', tokens: 0 });
     }
     if (typeof root.fetch !== 'function') {
-      return record({ role: o.role || '', ok: false, ms: 0, errorType: 'no_fetch', message: '当前环境没有 fetch', tokens: 0 });
+      return trace({ role: o.role || '', ok: false, ms: 0, errorType: 'no_fetch', message: '当前环境没有 fetch', tokens: 0 });
     }
 
     const body = {
@@ -113,7 +132,7 @@
       clearTimeout(timer);
       const aborted = e && (e.name === 'AbortError' || String(e.message).indexOf('abort') >= 0);
       const ms = Date.now() - started;
-      return record({
+      return trace({
         role: o.role || '', ok: false, ms: ms,
         errorType: aborted ? 'timeout' : 'network',
         message: aborted ? '超过 ' + Math.round((o.timeoutMs || cfg.timeoutMs) / 1000) + ' 秒没返回'
@@ -131,13 +150,13 @@
 
     if (!res.ok) {
       const err = classify(res, text);
-      return record({ role: o.role || '', ok: false, ms: Date.now() - started, errorType: err.type, message: err.message, tokens: 0 });
+      return trace({ role: o.role || '', ok: false, ms: Date.now() - started, errorType: err.type, message: err.message, tokens: 0 });
     }
 
     let payload = null;
     try { payload = JSON.parse(text); } catch (e) { payload = null; }
     if (!payload || !payload.choices || !payload.choices[0]) {
-      return record({ role: o.role || '', ok: false, ms: Date.now() - started, errorType: 'empty', message: '返回里没有 choices', tokens: 0 });
+      return trace({ role: o.role || '', ok: false, ms: Date.now() - started, errorType: 'empty', message: '返回里没有 choices', tokens: 0 });
     }
 
     const content = payload.choices[0].message ? payload.choices[0].message.content : '';
@@ -145,19 +164,19 @@
     const ms = Date.now() - started;
 
     if (o.json === false) {
-      return record({ role: o.role || '', ok: true, ms: ms, text: String(content || ''), usage: usage, tokens: usage.total_tokens || 0 });
+      return trace({ role: o.role || '', ok: true, ms: ms, text: String(content || ''), usage: usage, tokens: usage.total_tokens || 0 });
     }
 
     const parsed = parseJsonLoose(content);
     if (!parsed) {
-      return record({
+      return trace({
         role: o.role || '', ok: false, ms: ms, errorType: 'json',
         message: '返回的不是合法 JSON：' + String(content || '').slice(0, 120),
         text: String(content || ''), tokens: usage.total_tokens || 0
       });
     }
 
-    return record({ role: o.role || '', ok: true, ms: ms, json: parsed, text: String(content || ''), usage: usage, tokens: usage.total_tokens || 0 });
+    return trace({ role: o.role || '', ok: true, ms: ms, json: parsed, text: String(content || ''), usage: usage, tokens: usage.total_tokens || 0 });
   }
 
   SHT.llm = {
@@ -177,6 +196,8 @@
     },
     call: call,
     log: function () { return log.slice(); },
+    // 审计台读这个：每条都带 system / user 原文（截断 4000 字）、返回 json、耗时
+    trace: function () { return log.slice(); },
     clearLog: function () { log.length = 0; },
     lastError: function () {
       for (let i = log.length - 1; i >= 0; i -= 1) {

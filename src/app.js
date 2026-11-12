@@ -109,7 +109,17 @@
       gradeLedger: {},
       // 诊断台账：键与判分台账相同（题目 + 归一化答案）。一次诊断、落库冻结，
       // 错题本、课程角色、日志都只读这一份，不各自重算。见 core/diagnose.js。
-      diagnoses: {}
+      diagnoses: {},
+      /*
+       * 审计留痕：每次模型调用压成一行，四角色各留各的。
+       * 只存「谁、什么时候、说了什么结论、多久」，不存提示词原文——
+       * 原文里有学生作答，落进 localStorage 等于又存了一份学情。
+       * 界面展示与导出 JSON 都读这一份，不只是读内存日志。
+       */
+      traces: [],
+      traceLastId: 0,
+      // 拦截演练记录：人为混入超纲题/错答案题，看验证角色拦不拦得住
+      auditDrills: []
     };
   }
 
@@ -122,6 +132,10 @@
     // 老数据没有判分台账：给个空表，已有作答记录不受影响（它们自带 correct）
     if (!parsed.gradeLedger || typeof parsed.gradeLedger !== 'object') parsed.gradeLedger = {};
     if (!parsed.diagnoses || typeof parsed.diagnoses !== 'object') parsed.diagnoses = {};
+    // 审计数据：老存档没有这两个数组，补空；游标补 0 表示「从头开始收」
+    if (!Array.isArray(parsed.traces)) parsed.traces = [];
+    if (!Array.isArray(parsed.auditDrills)) parsed.auditDrills = [];
+    if (typeof parsed.traceLastId !== 'number') parsed.traceLastId = 0;
     parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
@@ -1297,6 +1311,7 @@
       state.diagnoses = SHT.diagnose.appendModel(state.diagnoses, q, at, roundNo, view);
       at.diag = SHT.diagnose.read(state.diagnoses, q, at, roundNo);
       syncDiagToWrong(at);
+      collectTraces();
       save();
       toast(known ? '诊断角色补了一条：' + view.causeId : '诊断角色也说证据不足，保持原结论');
     } catch (err) {
@@ -1701,6 +1716,25 @@
     }).join('');
   }
 
+  /*
+   * 把新增的模型调用收进审计留痕。
+   * 为什么不能直接读 llm.log：那份日志在内存里、最多 200 条，刷新就没了；
+   * 而审计要回答的是「这一轮四个角色各自干了什么」，得跟存档一起留下来。
+   * 每条只留结论与耗时，不留提示词原文（原文里有学生作答，不该再存一份）。
+   */
+  function collectTraces() {
+    const all = (SHT.llm && SHT.llm.trace) ? SHT.llm.trace() : [];
+    let n = 0;
+    all.forEach(function (e) {
+      if ((e.id || 0) <= state.traceLastId) return;
+      state.traces.push(SHT.audit.summarizeCall(e));
+      state.traceLastId = Math.max(state.traceLastId, e.id || 0);
+      n += 1;
+    });
+    if (state.traces.length > 300) state.traces = state.traces.slice(-300);
+    return n;
+  }
+
   function renderAll() {
     document.querySelectorAll('#tabbar .tab').forEach(function (b) {
       b.classList.toggle('is-active', b.dataset.tab === state.tab);
@@ -1723,6 +1757,8 @@
     renderRejectChart();
     renderUsedCells();
     renderStop();
+    // 审计台只在选中时才重绘：它要算台账复算与变体对照，代价比别的页签高
+    if (state.tab === 'audit' && SHT.devAudit) SHT.devAudit.render();
     $('brandSub').textContent = SHT.sampleStudent.id + ' · ' + SHT.curriculum.bookName + ' · ' +
       SHT.curriculum.id + ' ' + SHT.curriculum.title + ' · 第 ' + state.round + ' 轮';
     $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.curriculum.hostUnitId +
@@ -2232,6 +2268,7 @@
     } finally {
       if (token === runToken) {
         state.llmBusy = false;
+        collectTraces();
         save();
         renderAll();
       }
@@ -2462,6 +2499,15 @@
   // 而不是一片 0/0 等着人去点
   if (SHT.quota.sum(state.quota) === 0) {
     state.quota = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: quotaLimit() });
+  }
+
+  // 审计台需要读存档、写存档、弹提示、收留痕：四个回调一次性交给它，
+  // 免得它反过来依赖 app.js 的内部函数（那样换界面就得改两处）。
+  if (SHT.devAudit) {
+    SHT.devAudit.state = function () { return state; };
+    SHT.devAudit.save = save;
+    SHT.devAudit.toast = toast;
+    SHT.devAudit.collectTraces = collectTraces;
   }
 
   bind();

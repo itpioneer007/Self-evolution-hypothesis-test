@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>审计台 · 静态样张（人工目检用）</title>
+<!--
+  这是样张，不是应用入口：数据全是手写的假数据，只为把 audit.css 的每一种
+  视觉状态都摆出来（四张卡四种状态 / 坏表行 / 展开的两版原文 / 坏日志行 /
+  时间线展开）。真实页面在 index.html 的 05 审计台，由 src/dev/audit.js 渲染。
+
+  下面这段 <style> 只模拟宿主页（浅色学生端）的页底与页头，不属于审计台样式，
+  不要搬进 audit.css。
+-->
+<style>
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: #f4f6f5;
+    color: #2a3833;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .demo-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    background: #fbfcfb;
+    border-bottom: 1px solid #e2e8e5;
+    color: #5c7069;
+    font-size: 12.5px;
+  }
+  .demo-bar b { color: #2a3833; font-weight: 650; }
+  .demo-stage { padding: 16px; }
+  .demo-note {
+    margin: 0 auto 16px;
+    max-width: 1160px;
+    padding: 8px 12px;
+    background: #eef2f0;
+    border: 1px dashed #cfd9d5;
+    border-radius: 4px;
+    color: #5c7069;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .demo-foot {
+    padding: 14px 16px 28px;
+    color: #7b8d86;
+    font-size: 12px;
+    text-align: center;
+  }
+  .demo-foot code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+</style>
+<link rel="stylesheet" href="./audit.css">
+</head>
+<body>
+
+<div class="demo-bar">
+  <span><b>出题工作台</b> · 05 审计台 · 样张</span>
+  <span>S-001 · U1 My classroom · 第 1 轮 → 第 2 轮</span>
+</div>
+
+<div class="demo-stage">
+  <p class="demo-note">
+    样张说明：四张卡分别是 <code>fail / pass / wait / nodata</code> 四态。卡 ① 故意放满 4 条证据
+    （与 <code>audit.js</code> 实际输出一致）用来验证 156px 高度够不够；表 01 行已展开，02–05 行点一下才展开；
+    时间线第 1 行已展开返回摘要。
+  </p>
+
+  <div class="audit-root" data-verdict="fail">
+
+    <!-- ========== 总判条 ========== -->
+    <section class="audit-top">
+      <div class="audit-verdict" data-state="fail">
+        <span class="audit-verdict-text">未达标 · 1/4</span>
+        <span class="audit-verdict-sub">变体质量没过，进化机制待验，工程可复现还没跑，依据在下面</span>
+      </div>
+      <span class="audit-vbadges">
+        <span class="audit-vbadge" data-state="fail">变体质量 未达标</span>
+        <span class="audit-vbadge" data-state="pass">信息隔离 达标</span>
+        <span class="audit-vbadge" data-state="none">进化机制 无数据</span>
+        <span class="audit-vbadge" data-state="none">工程可复现 无数据</span>
+      </span>
+      <div class="audit-tools">
+        <button type="button" class="audit-btn is-primary" data-action="audit-export">导出 JSON</button>
+        <button type="button" class="audit-btn" data-action="audit-refresh">刷新重算</button>
+        <button type="button" class="audit-btn is-danger" data-action="audit-drill">跑一次拦截演练</button>
+      </div>
+      <p class="audit-live" aria-live="polite">正在跑拦截演练：塞了 2 道坏题，等验证回话…（已 3s）</p>
+    </section>
+
+    <!-- ========== 四张卡 ========== -->
+    <div class="audit-grid">
+
+      <!-- ① 变体质量 · 未达标 -->
+      <section class="audit-card" id="audit-variant" data-state="fail">
+        <div class="audit-card-head">
+          <span class="audit-no">①</span>
+          <h3 class="audit-card-title">变体质量</h3>
+          <span class="audit-badge" data-state="fail">未达标</span>
+        </div>
+        <p class="audit-conclusion">5 道变体 · 答案换 3/5 · 伪变体 2/5（40%）</p>
+        <dl class="audit-evidence">
+          <div class="audit-ev"><dt>答案必换</dt><dd>3/5</dd></div>
+          <div class="audit-ev"><dt>考点必同</dt><dd>5/5</dd></div>
+          <div class="audit-ev"><dt>拦截演练</dt><dd>2/2 拦住</dd></div>
+          <div class="audit-ev is-gap"><dt>差在哪</dt><dd>2 道复用原答案，伪变体 40% 超 20%</dd></div>
+        </dl>
+        <a class="audit-more" href="#audit-variant-detail">看证据 ↓ 5 行</a>
+      </section>
+
+      <!-- ② 信息隔离 · 达标 -->
+      <section class="audit-card" id="audit-isolation" data-state="pass">
+        <div class="audit-card-head">
+          <span class="audit-no">②</span>
+          <h3 class="audit-card-title">信息隔离</h3>
+          <span class="audit-badge" data-state="pass">达标</span>
+        </div>
+        <p class="audit-conclusion">6 次验证 · 泄漏 0 次</p>
+        <dl class="audit-evidence">
+          <div class="audit-ev"><dt>看到字段</dt><dd>题干 / 选项 / 词表</dd></div>
+          <div class="audit-ev"><dt>命中词</dt><dd>无</dd></div>
+          <div class="audit-ev"><dt>说明</dt><dd>验证只看题目本身，不碰学情</dd></div>
+        </dl>
+        <a class="audit-more" href="#audit-isolation">看每次调用的字段</a>
+      </section>
+
+      <!-- ③ 进化机制 · 待验 -->
+      <section class="audit-card" id="audit-evolve" data-state="wait">
+        <div class="audit-card-head">
+          <span class="audit-no">③</span>
+          <h3 class="audit-card-title">进化机制</h3>
+          <span class="audit-badge" data-state="wait">待验</span>
+        </div>
+        <p class="audit-conclusion">5 道挂了来源 · 焦点 2/3 · 难度待作答</p>
+        <dl class="audit-evidence">
+          <div class="audit-ev"><dt>挂上来源</dt><dd>5/5</dd></div>
+          <div class="audit-ev"><dt>焦点考点</dt><dd>phonics · a / a-e</dd></div>
+          <div class="audit-ev"><dt>难度档</dt><dd>R1 2.4 → R2 2.8</dd></div>
+          <div class="audit-ev"><dt>差在哪</dt><dd>等两轮跑完</dd></div>
+        </dl>
+        <a class="audit-more" href="#audit-evolve">看演化链</a>
+      </section>
+
+      <!-- ④ 工程可复现 · 无数据 -->
+      <section class="audit-card" id="audit-reproduce" data-state="nodata">
+        <div class="audit-card-head">
+          <span class="audit-no">④</span>
+          <h3 class="audit-card-title">工程可复现</h3>
+          <span class="audit-badge" data-state="nodata">无数据</span>
+        </div>
+        <p class="audit-conclusion">还没有调用记录</p>
+        <dl class="audit-evidence">
+          <div class="audit-ev"><dt>判分台账</dt><dd>0 条（能复算 0）</dd></div>
+          <div class="audit-ev"><dt>结论一致</dt><dd>—</dd></div>
+          <div class="audit-ev"><dt>依赖模型</dt><dd>0 条（开放题）</dd></div>
+          <div class="audit-ev"><dt>差在哪</dt><dd>等跑一轮</dd></div>
+        </dl>
+        <a class="audit-more" href="#audit-reproduce">看台账与留痕</a>
+      </section>
+
+    </div>
+
+    <!-- ========== ① 逐条对照表 ========== -->
+    <section class="audit-block" id="audit-variant-detail">
+      <div class="audit-block-head">
+        <h3>① 变体质量 · 逐条对照</h3>
+        <span class="audit-block-note">5 道变体 · 点一行展开两版原文</span>
+      </div>
+      <div class="audit-block-body">
+        <table class="audit-table">
+          <caption class="audit-sr">第二轮变体与第一轮原题逐条对照</caption>
+          <thead>
+            <tr>
+              <th scope="col">#</th><th scope="col">考点</th>
+              <th scope="col" class="audit-col-qid">上一轮</th><th scope="col" class="audit-col-qid">这一轮</th>
+              <th scope="col" class="audit-col-answer">原答案</th><th scope="col" class="audit-col-answer">新答案</th>
+              <th scope="col">答案换</th><th scope="col">考点同</th><th scope="col">伪变体</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="audit-row" data-state="bad" tabindex="0" aria-expanded="true">
+              <td class="audit-num">01</td>
+              <td class="audit-kp" title="phonics · a / a-e · cake 与 cat 长短音">phonics · a / a-e · cake 与 cat 长短音</td>
+              <td class="audit-num audit-col-qid">q-8f2a</td><td class="audit-num audit-col-qid">q-b71c</td>
+              <td class="audit-clip audit-col-answer">cake</td><td class="audit-clip audit-col-answer">cake</td>
+              <td><span class="audit-chip" data-tone="bad">没换</span></td>
+              <td><span class="audit-chip" data-tone="ok">同</span></td>
+              <td><span class="audit-chip" data-tone="bad">伪</span></td>
+            </tr>
+            <tr class="audit-row-detail">
+              <td colspan="9">
+                <div class="audit-diff">
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第一轮</span>听录音，选出你听到的单词。（cake）　cake / cat / hat</p>
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第二轮</span>听录音，选出你听到的单词。（cake）　cake / cat / hat</p>
+                  <p class="audit-diff-line is-warn">骨架与上一轮完全相同：只换了人名地名，句子结构没动。</p>
+                </div>
+              </td>
+            </tr>
+
+            <tr class="audit-row" data-state="ok" tabindex="0" aria-expanded="false">
+              <td class="audit-num">02</td>
+              <td class="audit-kp" title="phonics · i / i-e · kite 与 kit 长短音">phonics · i / i-e · kite 与 kit 长短音</td>
+              <td class="audit-num audit-col-qid">q-3c19</td><td class="audit-num audit-col-qid">q-d4e2</td>
+              <td class="audit-clip audit-col-answer">kit</td><td class="audit-clip audit-col-answer">kite</td>
+              <td><span class="audit-chip" data-tone="ok">换了</span></td>
+              <td><span class="audit-chip" data-tone="ok">同</span></td>
+              <td><span class="audit-chip" data-tone="ok">真</span></td>
+            </tr>
+            <tr class="audit-row-detail" hidden>
+              <td colspan="9">
+                <div class="audit-diff">
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第一轮</span>图片是风筝，选出正确拼写。　kit / kite / kitty</p>
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第二轮</span>听录音，选出你听到的单词。（kite）　kit / kite / kitten</p>
+                </div>
+              </td>
+            </tr>
+
+            <tr class="audit-row" data-state="bad" tabindex="0" aria-expanded="false">
+              <td class="audit-num">03</td>
+              <td class="audit-kp" title="phonics · o / o-e · note 与 not 长短音">phonics · o / o-e · note 与 not 长短音</td>
+              <td class="audit-num audit-col-qid">q-77ab</td><td class="audit-num audit-col-qid">q-9f01</td>
+              <td class="audit-clip audit-col-answer">note</td><td class="audit-clip audit-col-answer">late</td>
+              <td><span class="audit-chip" data-tone="ok">换了</span></td>
+              <td><span class="audit-chip" data-tone="bad">不同</span></td>
+              <td><span class="audit-chip" data-tone="bad">伪</span></td>
+            </tr>
+            <tr class="audit-row-detail" hidden>
+              <td colspan="9">
+                <div class="audit-diff">
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第一轮</span>听录音，选出你听到的单词。（note）　note / not / nod</p>
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第二轮</span>听录音，选出你听到的单词。（late）　late / lat / let</p>
+                  <p class="audit-diff-line is-warn">考点从 o / o-e 变成了 a / a-e，这道变体跑到别的考点上去了。</p>
+                </div>
+              </td>
+            </tr>
+
+            <tr class="audit-row" data-state="bad" tabindex="0" aria-expanded="false">
+              <td class="audit-num">04</td>
+              <td class="audit-kp" title="phonics · u / u-e · cube 与 cub 长短音">phonics · u / u-e · cube 与 cub 长短音</td>
+              <td class="audit-num audit-col-qid">q-0e53</td><td class="audit-num audit-col-qid">q-2a77</td>
+              <td class="audit-clip audit-col-answer">cube</td><td class="audit-clip audit-col-answer">tube</td>
+              <td><span class="audit-chip" data-tone="ok">换了</span></td>
+              <td><span class="audit-chip" data-tone="ok">同</span></td>
+              <td><span class="audit-chip" data-tone="bad">伪</span></td>
+            </tr>
+            <tr class="audit-row-detail" hidden>
+              <td colspan="9">
+                <div class="audit-diff">
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第一轮</span>听录音，选出你听到的单词。（cube）　cube / cub / cup</p>
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第二轮</span>看图片，选出正确的单词。　tube / cube / cub</p>
+                </div>
+              </td>
+            </tr>
+
+            <tr class="audit-row" data-state="ok" tabindex="0" aria-expanded="false">
+              <td class="audit-num">05</td>
+              <td class="audit-kp" title="phonics · a / a-e · cake 与 cat 长短音">phonics · a / a-e · cake 与 cat 长短音</td>
+              <td class="audit-num audit-col-qid">q-1b6d</td><td class="audit-num audit-col-qid">q-5e90</td>
+              <td class="audit-clip audit-col-answer">cat</td><td class="audit-clip audit-col-answer">cake</td>
+              <td><span class="audit-chip" data-tone="ok">换了</span></td>
+              <td><span class="audit-chip" data-tone="ok">同</span></td>
+              <td><span class="audit-chip" data-tone="ok">真</span></td>
+            </tr>
+            <tr class="audit-row-detail" hidden>
+              <td colspan="9">
+                <div class="audit-diff">
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第一轮</span>听录音，选出你听到的单词。（cat）　cake / cat / hat</p>
+                  <p class="audit-diff-line"><span class="audit-diff-tag">第二轮</span>听录音，选出你听到的单词。（cake）　cat / cake / Kate</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== ② 信息隔离（展开） ========== -->
+    <section class="audit-block" id="audit-isolation">
+      <details class="audit-fold" open>
+        <summary class="audit-block-head">
+          <h3>② 信息隔离 · 验证角色看到了什么</h3>
+          <span class="audit-block-note">6 次调用 · 泄漏 0 次</span>
+        </summary>
+        <div class="audit-block-body">
+          <ul class="audit-lines">
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">12:31:12</span><span class="audit-line-main">验证 · 题干 / 选项 / 词表 · 第 4 题</span><span class="audit-line-note">干净</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">12:31:04</span><span class="audit-line-main">验证 · 题干 / 选项 / 词表 · 第 3 题</span><span class="audit-line-note">干净</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">12:30:57</span><span class="audit-line-main">验证 · 题干 / 选项 / 词表 · 第 2 题</span><span class="audit-line-note">干净</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">12:30:49</span><span class="audit-line-main">验证 · 题干 / 选项 / 朗读稿 · 第 1 题</span><span class="audit-line-note">干净</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">12:30:31</span><span class="audit-line-main">验证 · 题干 / 选项 · 第 5 题</span><span class="audit-line-note">干净</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">12:30:18</span><span class="audit-line-main">验证 · 题干 / 选项 · 第 6 题</span><span class="audit-line-note">干净</span></li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== ③ 进化机制（样张里展开，便于看日志行样式） ========== -->
+    <section class="audit-block" id="audit-evolve">
+      <details class="audit-fold" open>
+        <summary class="audit-block-head">
+          <h3>③ 进化机制 · 谁从谁演化来</h3>
+          <span class="audit-block-note">5 道变体 · 焦点 2/3</span>
+        </summary>
+        <div class="audit-block-body">
+          <ul class="audit-lines">
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">q-b71c</span><span class="audit-line-main">同考点 · 从 q-8f2a 演化来</span><span class="audit-line-note">a / a-e · 答案 cake → cake</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">q-d4e2</span><span class="audit-line-main">同考点 · 从 q-3c19 演化来</span><span class="audit-line-note">i / i-e · 答案 kit → kite</span></li>
+            <li class="audit-line" data-state="bad"><span class="audit-line-time">q-9f01</span><span class="audit-line-main">考点变了 · 从 q-77ab 演化来</span><span class="audit-line-note">o / o-e → a / a-e · 答案 note → late</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">q-2a77</span><span class="audit-line-main">同考点 · 从 q-0e53 演化来</span><span class="audit-line-note">u / u-e · 答案 cube → tube</span></li>
+            <li class="audit-line" data-state="ok"><span class="audit-line-time">q-5e90</span><span class="audit-line-main">同考点 · 从 q-1b6d 演化来</span><span class="audit-line-note">a / a-e · 答案 cat → cake</span></li>
+            <li class="audit-line" data-state="warn"><span class="audit-line-time">难度</span><span class="audit-line-main">R1 2.4 → R2 2.8</span><span class="audit-line-note">第二次还没作答 · 实际升 / 降还判不了</span></li>
+            <li class="audit-line" data-state="warn"><span class="audit-line-time">焦点</span><span class="audit-line-main">第一轮错最多的是「phonics · a / a-e」</span><span class="audit-line-note">第二轮命中 2/3（5 道题）</span></li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== ④ 工程可复现（折叠 · 空状态） ========== -->
+    <section class="audit-block" id="audit-reproduce">
+      <details class="audit-fold">
+        <summary class="audit-block-head">
+          <h3>④ 工程可复现 · 台账与留痕</h3>
+          <span class="audit-block-note">还没有调用记录</span>
+        </summary>
+        <div class="audit-block-body">
+          <p class="audit-empty">还没调过模型。跑一轮之后，四个角色每次调用都会留一行。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== 时间线 ========== -->
+    <section class="audit-block" id="audit-timeline">
+      <div class="audit-block-head">
+        <h3>角色调用时间线</h3>
+        <div class="audit-chips">
+          <button type="button" class="audit-chip-btn is-active" data-action="audit-filter" data-role="all">全部 17</button>
+          <button type="button" class="audit-chip-btn" data-action="audit-filter" data-role="plan">课程 2</button>
+          <button type="button" class="audit-chip-btn" data-action="audit-filter" data-role="generate">生成 6</button>
+          <button type="button" class="audit-chip-btn" data-action="audit-filter" data-role="verify">验证 6</button>
+          <button type="button" class="audit-chip-btn" data-action="audit-filter" data-role="diagnose">诊断 3</button>
+        </div>
+        <button type="button" class="audit-more-btn" data-action="audit-more-rows">再看 5 条（共 11）</button>
+      </div>
+      <ul class="audit-timeline">
+        <li class="audit-tl" data-state="fail" tabindex="0" aria-expanded="true">
+          <span class="audit-tl-time">12:31:04</span>
+          <span class="audit-tl-role" data-role="verify">验证</span>
+          <span class="audit-tl-line">否决 · 第 3 题 · 条款 C3 答案不唯一</span>
+          <span class="audit-tl-ms">1840ms</span>
+          <span class="audit-tl-codes"><span class="audit-chip">C3</span><span class="audit-chip">V3c</span></span>
+          <div class="audit-tl-detail">{ "ok": false, "codes": ["C3", "V3c"], "reason": "选项 cake / cat 都符合录音里能听到的区别，答案不唯一" }</div>
+        </li>
+        <li class="audit-tl" data-state="ok" tabindex="0" aria-expanded="false">
+          <span class="audit-tl-time">12:31:12</span>
+          <span class="audit-tl-role" data-role="verify">验证</span>
+          <span class="audit-tl-line">通过 · 第 4 题 · 长短音对照成立</span>
+          <span class="audit-tl-ms">620ms</span>
+          <span class="audit-tl-codes"><span class="audit-chip">V3c</span></span>
+          <div class="audit-tl-detail" hidden>{ "ok": true, "codes": ["V3c"] }</div>
+        </li>
+        <li class="audit-tl" data-state="ok" tabindex="0" aria-expanded="false">
+          <span class="audit-tl-time">12:30:52</span>
+          <span class="audit-tl-role" data-role="generate">生成</span>
+          <span class="audit-tl-line">出第 3 题 · phonics · a / a-e</span>
+          <span class="audit-tl-ms">2410ms</span>
+          <span class="audit-tl-codes"><span class="audit-chip">G1</span></span>
+          <div class="audit-tl-detail" hidden>{ "ok": true, "qid": "q-b71c", "kp": "phonics · a / a-e" }</div>
+        </li>
+        <li class="audit-tl" data-state="ok" tabindex="0" aria-expanded="false">
+          <span class="audit-tl-time">12:30:41</span>
+          <span class="audit-tl-role" data-role="generate">生成</span>
+          <span class="audit-tl-line">出第 2 题 · 挂着 q-3c19 演化</span>
+          <span class="audit-tl-ms">1980ms</span>
+          <span class="audit-tl-codes"><span class="audit-chip">G1</span></span>
+          <div class="audit-tl-detail" hidden>{ "ok": true, "qid": "q-d4e2", "parent": "q-3c19" }</div>
+        </li>
+        <li class="audit-tl" data-state="ok" tabindex="0" aria-expanded="false">
+          <span class="audit-tl-time">12:29:58</span>
+          <span class="audit-tl-role" data-role="plan">课程</span>
+          <span class="audit-tl-line">定 U1 目标 · 长短音对比</span>
+          <span class="audit-tl-ms">480ms</span>
+          <span class="audit-tl-codes"></span>
+          <div class="audit-tl-detail" hidden>{ "ok": true, "unit": "U1 My classroom" }</div>
+        </li>
+        <li class="audit-tl" data-state="ok" tabindex="0" aria-expanded="false">
+          <span class="audit-tl-time">12:32:03</span>
+          <span class="audit-tl-role" data-role="diagnose">诊断</span>
+          <span class="audit-tl-line">记错题 · 第 1 题选了 cat</span>
+          <span class="audit-tl-ms">760ms</span>
+          <span class="audit-tl-codes"><span class="audit-chip">D2</span></span>
+          <div class="audit-tl-detail" hidden>{ "ok": true, "wrong": "q-1b6d", "chose": "cat" }</div>
+        </li>
+      </ul>
+    </section>
+
+  </div>
+</div>
+
+<p class="demo-foot">
+  样张 · 静态假数据 · 样式文件 <code>src/dev/audit.css</code> · 真实渲染 <code>src/dev/audit.js</code>
+</p>
+
+</body>
+</html>

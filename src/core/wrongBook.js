@@ -130,6 +130,9 @@
         // 下一轮要按这条重新出题，得知道「哪一条错题」和「上一轮那道题长什么样」：
         // kpId 用来回写结果，snapshot 交给模型当「别再写这一版」的反例
         kpId: (g.cases[0] || {}).kpId || '',
+        // 第一轮那道题的 id：第二轮出的变体要挂上它，审计台才能回答
+        // 「这道新题是从哪一道错题演化来的」。只留错题本里的原题 id，不留整题。
+        qid: (g.cases[0] || {}).originalQuestionId || '',
         snapshot: (g.cases[0] || {}).questionSnapshot || '',
         status: status, priorityScore: score, errorCount: g.errorCount,
         supportCount: g.supportCount, caseCount: g.cases.length,

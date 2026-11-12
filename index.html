@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>出题工作台 · Self-Evolution Hypothesis Test</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="src/dev/audit.css">
 </head>
 <body>
 <div class="app">
@@ -32,6 +33,7 @@
     <button type="button" data-tab="practice" class="tab"><span class="tab-no">02</span>答题</button>
     <button type="button" data-tab="wrongbook" class="tab"><span class="tab-no">03</span>错题</button>
     <button type="button" data-tab="loop" class="tab"><span class="tab-no">04</span>日志</button>
+    <button type="button" data-tab="audit" class="tab"><span class="tab-no">05</span>审计台</button>
   </nav>
 
   <main class="stage">
@@ -90,6 +92,15 @@
       </div>
     </section>
 
+    <!--
+      05 审计台：给开发者与评审用，不是给学生用。
+      内容由 src/dev/audit.js 渲染，样式在 src/dev/audit.css（深色赛博朋克，
+      全部类名带 audit- 前缀，不污染上面四个浅色页签）。
+    -->
+    <section class="stage-page" id="page-audit">
+      <div class="audit-root" id="auditRoot"></div>
+    </section>
+
   </main>
 
   <footer class="footbar">
@@ -133,6 +144,8 @@
 <script src="src/core/progress.js"></script>
 <script src="src/core/agentMemory.js"></script>
 <script src="src/core/pipeline.js"></script>
+<script src="src/core/audit.js"></script>
+<script src="src/dev/audit.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

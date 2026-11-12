@@ -144,6 +144,8 @@
         cell: i.suggestedCell || null,
         // 上一轮那道原题。生成时当反例用：同一考点、换题面，但别照着这一版改字。
         prevPrompt: i.snapshot || '',
+        // 上一轮那道题的 id：变体题要挂上它，审计时才能画出「谁从谁演化来」
+        prevQid: i.qid || '',
         // 以下四项是「作答证据」，不是「出题意图」：
         //   诊断角色说他错在哪一维、上次选了什么、花了多久、有没有用提示
         // 课程角色要据此决定下一轮往哪个方向压，而不是只看「错了几次」。
@@ -448,6 +450,9 @@
       if (near) {
         p.probe = {
           kpId: near.kpId || '',
+          // 变体挂在错题本里那道原题的 id 上（不是题干）。审计台靠它回答
+          // 「第二轮的这道题，是不是从第一轮那道错题演化来的」。
+          parentQid: near.prevQid || '',
           prevPrompt: near.prevPrompt || '',
           missCount: near.missCount || 1
         };
@@ -656,6 +661,8 @@
           keyword: String(raw.keyword || '').trim(),
           // 上一轮错过、这一轮重出的题：作答时和上一轮首答配一对
           probe: plan.probe || null,
+          // 审计用：这道题从第一轮哪道错题演化来。空 = 不是变体（广度探索那一轮）
+          parentQid: (plan.probe && plan.probe.parentQid) || '',
           // 日志要显示「什么时候出的这道题」，生成时刻在这里落下
           createdAt: now(),
           checks: {},
