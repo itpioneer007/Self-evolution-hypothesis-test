@@ -48,13 +48,49 @@
     return base.slice(0, n);
   }
 
+  /*
+   * 示例错题：只在用户主动点「导入示例错题」时调用。
+   * 每条都带 demo:true，card 上标「示例」，并且 planningWrongCases 会把它从排题输入里滤掉——
+   * 否则编出来的错因会一路喂进课程角色，下一轮按假错题出题，学生永远在补自己没犯过的错。
+   */
   function cloneWrongCases(unitId) {
     return SHT.buildWrongCases(unitId || SHT.curriculum.id).map(function (c) {
       return Object.assign({}, c, {
+        demo: true,
         firstAttemptEvidence: Object.assign({}, c.firstAttemptEvidence),
         variantAttempts: c.variantAttempts.map(function (a) { return Object.assign({}, a); })
       });
     });
+  }
+
+  /*
+   * 认出「按知识点预生成的那条示例」。
+   * 三处特征同时成立才算，避免误删真实记录：
+   *   id 是业务键且末段就是 kpId（真实写入的末段是 qid）；
+   *   时间是生成脚本写死的 2026-11-04/05/06；
+   *   没有诊断结论（示例从不跑诊断）。
+   */
+  function looksLikeSeedCase(c) {
+    if (!c) return false;
+    if (c.demo === true) return true;
+    if (!c.id || !c.kpId) return false;
+    if (c.id.indexOf('wq:S-001:') !== 0) return false;
+    if (c.id.slice(-(c.kpId.length + 1)) !== ':' + c.kpId) return false;
+    if (c.diagnosis) return false;
+    const at = String((c.firstAttemptEvidence || {}).completedAt || c.createdAt || '');
+    return /^2026-11-0[456]T/.test(at);
+  }
+
+  // 03 页的显示范围：只列当前单元的错题。错题跟着学生走，切单元是换视角，不是换一份数据。
+  function unitWrongCaseEntries() {
+    const hostId = SHT.curriculum.hostUnitId;
+    return (state.wrongCases || []).map(function (c, i) { return { c: c, i: i }; })
+      .filter(function (x) { return !x.c.unitId || x.c.unitId === hostId; });
+  }
+
+  // 喂给规划/配额的错题：示例不算数
+  function planningWrongCases() {
+    return (state.wrongCases || []).filter(function (c) { return !c.demo; });
   }
 
   function blankPractice() {
@@ -92,7 +128,8 @@
 
   function defaultState() {
     return {
-      version: 2,
+      // v3：错题本不再预置示例数据，老存档在 normalizeState 里一次性清洗
+      version: 3,
       bookId: SHT.BOOKS.current().meta.id,
       unitId: SHT.curriculum.id,
       tab: 'agents',
@@ -103,7 +140,12 @@
       learningLayer: SHT.sampleLearningLayer || 'B',
       rounds: { 1: blankRound(), 2: blankRound() },
       questionCounts: { 1: 5, 2: 5 },
-      wrongCases: cloneWrongCases(),
+      /*
+       * 错题只能由真实作答产生（首答写错 → writeWrongFromPractice，回练结果 → recordProbeResult）。
+       * 这里必须是空数组：以前填的是按知识点预生成的示例错题，等于替学生答了 3 道错题，
+       * 一进 03 页就有「作答 He is doctor. / 正确 He is a doctor.」，而他根本没答过。
+       */
+      wrongCases: [],
       failures: [],
       llmBusy: false,
       // 本轮要考察的知识点范围（候选清单里的 id）。空数组 = 不限制，交规划环节现场提
@@ -137,8 +179,7 @@
   }
 
   function normalizeState(parsed) {
-    if (!parsed.bookId) parsed.bookId = 'PEP-G4A';
-    if (!Array.isArray(parsed.failures)) parsed.failures = [];
+    if (!parsed.bookId) parsed.bookId = 'PEP-G4A';    if (!Array.isArray(parsed.failures)) parsed.failures = [];
     if (!Array.isArray(parsed.kpScope)) parsed.kpScope = [];
     if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
@@ -156,7 +197,19 @@
     if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
     parsed.questionCounts[1] = clampCount(parsed.questionCounts[1]);
     parsed.questionCounts[2] = clampCount(parsed.questionCounts[2]);
-    if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
+    // 老存档没有这个字段（或早期版本存的是示例数据）才补空表；
+    // 有字段就一律按存档走，不再往里面塞示例。
+    if (!Array.isArray(parsed.wrongCases)) parsed.wrongCases = [];
+    /*
+     * v2 → v3 一次性清洗：v2 的存档里，错题本是启动时按知识点预生成的示例，
+     * 学生一题没答就已经有 3 条「作答 X / 正确 Y」。升级后若不清掉，
+     * 改完代码刷新页面还是那三条，看起来就像没修。
+     * 只删带示例特征的，真实作答写入的（带 qid / diagnosis，时间是当天）保留。
+     */
+    if ((parsed.version || 0) < 3) {
+      parsed.wrongCases = parsed.wrongCases.filter(function (c) { return !looksLikeSeedCase(c); });
+      parsed.version = 3;
+    }
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
     ['1', '2'].forEach(function (k) {
       const r = parsed.rounds[k] = Object.assign(blankRound(), parsed.rounds[k] || {});
@@ -277,7 +330,7 @@
 
   function exclusionForCurrentRound() { return SHT.buildExclusionList(historicalRounds()); }
   function weaknessProjection() {
-    return SHT.projectWeaknesses(state.wrongCases, SHT.curriculum.topicDomain);
+    return SHT.projectWeaknesses(planningWrongCases(), SHT.curriculum.topicDomain);
   }
 
   /* ---------- 角色定义：同一个模型，四套提示词 / 上下文 ----------
@@ -972,7 +1025,7 @@
     if (!q || !q.probe) return null;
     const key = q.probe.kpId;
     return (state.wrongCases || []).filter(function (c) {
-      return key ? c.kpId === key : c.knowledgePoint === q.knowledgePoint;
+      return !c.demo && (key ? c.kpId === key : c.knowledgePoint === q.knowledgePoint);
     })[0] || null;
   }
 
@@ -1422,7 +1475,16 @@
           ? '。排掉了 ' + diag.eliminated.map(function (e) { return e.letter + '「' + e.option + '」'; }).join('、')
           : '')
       : '第一次选了「' + ev.picked + '」，答案是「' + ev.expected + '」，诊断证据不足';
-    const res = SHT.upsertWrongCase(state.wrongCases, {
+    /*
+     * 同一个考点上如果还躺着一条示例卡，先把它摘掉再 upsert。
+     * upsertWrongCase 只按 kpId/知识点 认人，示例卡会被当成「以前错过的那一条」，
+     * 于是真实的这次作答被合并进示例卡：作答对了、诊断对了，但用时/时间/证据全是编出来的。
+     */
+    const kpKey = kp ? kp.id : q.knowledgePoint;
+    const kept = (state.wrongCases || []).filter(function (c) {
+      return !(c.demo && (c.kpId || c.knowledgePoint) === kpKey);
+    });
+    const res = SHT.upsertWrongCase(kept, {
       studentId: SHT.sampleStudent.id,
       unitId: SHT.curriculum.hostUnitId,
       originalQuestionId: q.qid || ('q' + q.no),
@@ -1500,7 +1562,7 @@
   // 模型补诊之后，把 03 错题本里那条的错因一起更新，别让两个面板说两套话
   function syncDiagToWrong(at) {
     const idx = (state.wrongCases || []).findIndex(function (c) {
-      return c.knowledgePoint === at.kpLabel && c.studentAnswer === at.picked;
+      return !c.demo && c.knowledgePoint === at.kpLabel && c.studentAnswer === at.picked;
     });
     if (idx < 0) return;
     const prev = state.wrongCases[idx];
@@ -1519,7 +1581,7 @@
   function recordProbeResult(q, ev) {
     const key = q.probe && q.probe.kpId;
     const at = (state.wrongCases || []).findIndex(function (c) {
-      return key ? c.kpId === key : c.knowledgePoint === q.knowledgePoint;
+      return !c.demo && (key ? c.kpId === key : c.knowledgePoint === q.knowledgePoint);
     });
     if (at < 0) return null;
     const next = SHT.appendVariantAttempt(state.wrongCases[at], {
@@ -1593,16 +1655,32 @@
   ];
 
   function renderWrongList() {
-    const list = state.wrongCases || [];
-    const pending = list.filter(function (c) { return c.masteryState !== 'mastered'; }).length;
+    const entries = unitWrongCaseEntries();
+    const list = entries.map(function (x) { return x.c; });
+    const real = list.filter(function (c) { return !c.demo; });
+    const demoCount = list.length - real.length;
+    const pending = real.filter(function (c) { return c.masteryState !== 'mastered'; }).length;
     $('wrongSummary').textContent = list.length
-      ? '共 ' + list.length + ' 条 · 待掌握 ' + pending + ' 条'
+      ? '共 ' + real.length + ' 条 · 待掌握 ' + pending + ' 条' + (demoCount ? ' · 另有 ' + demoCount + ' 条示例' : '')
       : '';
     if (!list.length) {
-      $('wrongList').innerHTML = '<div class="hint-box">暂无错题</div>';
+      /*
+       * 空态必须说清楚「为什么空」：错题本没有内容不是坏了，是还没答错。
+       * 顺带给一个人口明确的示例入口，免得为了看界面只能去编数据。
+       */
+      $('wrongList').innerHTML = '<div class="empty-box">' +
+        '<div class="empty-title">还没有错题</div>' +
+        '<p>这一页只记真实发生的事：在 02 页首答答错，系统会当场把这道题、他选了什么、错在哪一维写进来；' +
+        '下一轮回练的结果也追加在原来那条上。</p>' +
+        '<p>所以刚开一轮、还没作答时，这里是空的——这是对的。</p>' +
+        '<button type="button" class="btn btn-mini" data-action="seed-demo-wrong">导入示例错题（只看界面用）</button>' +
+        '<span class="empty-note">示例带「示例」标记，不参与下一轮排题；看完点卡片上的「删除」即可清掉。</span>' +
+        '</div>';
       return;
     }
-    $('wrongList').innerHTML = list.map(function (c, idx) {
+    $('wrongList').innerHTML = entries.map(function (entry) {
+      const c = entry.c;
+      const idx = entry.i;
       const kp = kpForWrong(c);
       const cell = kp ? kp.cell : SHT.suggestCell(c.category, SHT.curriculum.topicDomain);
       const attempts = c.variantAttempts || [];
@@ -1610,14 +1688,16 @@
       const statusLabel = SHT.MASTERY_LABELS[c.masteryState] || c.masteryState;
       const statusCls = c.masteryState === 'mastered' ? ' is-mastered' : (c.masteryState === 'teacher-help' ? ' is-alert' : '');
       const ev = c.firstAttemptEvidence || {};
-      return '<article class="wrong-card" data-index="' + idx + '">' +
+      return '<article class="wrong-card' + (c.demo ? ' is-demo' : '') + '" data-index="' + idx + '">' +
         '<div class="wrong-main">' +
           '<div class="wrong-kp">' + esc(c.knowledgePoint) + '</div>' +
           '<div class="wrong-tags">' +
+            (c.demo ? '<span class="chip is-demo" title="预置的示例，不是这个学生答的">示例</span>' : '') +
             '<span class="chip">' + esc(c.ability) + '</span>' +
             '<span class="chip">' + esc(c.category) +
               (c.causeConfidence ? ' · ' + Math.round(c.causeConfidence * 100) + '%' : '') + '</span>' +
             '<span class="chip is-status' + statusCls + '">' + esc(statusLabel) + '</span>' +
+            '<button type="button" class="chip is-remove" data-action="remove-wrong" data-index="' + idx + '">删除</button>' +
           '</div>' +
           '<div class="wrong-q">' + esc(c.questionSnapshot) + '</div>' +
           '<div class="wrong-ans">' +
@@ -1648,9 +1728,13 @@
           '<div class="brief-row"><span>教材依据</span><span>' + esc(kp ? kp.source : c.unitId) + '</span></div>' +
           '<div class="brief-actions">' +
             '<button type="button" class="btn btn-mini" data-action="apply-weak" data-key="' + esc(c.knowledgePoint) + '" data-index="' + idx + '">写入计划</button>' +
-            '<select data-attempt-field="next" data-index="' + idx + '">' + NEXT_ACTIONS.map(function (a) {
-              return '<option value="' + a.value + '">' + esc(a.label) + '</option>';
-            }).join('') + '</select>' +
+            '<select data-attempt-field="next" data-index="' + idx + '">' +
+              // 不再默认「又做错了」：默认选项等于把「没选」当「答错」，点一下记录就白记一次错
+              '<option value="">选择这次的结果…</option>' +
+              NEXT_ACTIONS.map(function (a) {
+                return '<option value="' + a.value + '">' + esc(a.label) + '</option>';
+              }).join('') +
+            '</select>' +
             '<button type="button" class="btn btn-mini" data-action="record-attempt" data-index="' + idx + '">记录</button>' +
           '</div>' +
         '</div>' +
@@ -2044,7 +2128,7 @@
   // 重算：有勾选范围按范围分，没有按错题画像分，都没有按本册铺开
   function recalcQuota() {
     const rounds = state.round === 2 ? [state.rounds[1], state.rounds[2]] : [state.rounds[1]];
-    const brief = SHT.pipeline.buildBrief({ unitId: state.unitId, rounds: rounds, wrongCases: state.wrongCases });
+    const brief = SHT.pipeline.buildBrief({ unitId: state.unitId, rounds: rounds, wrongCases: planningWrongCases() });
     state.quota = SHT.quota.auto({ scope: kpScopePayload(), brief: brief, kps: unitKps(), total: quotaLimit() });
     save(); renderAll();
     toast('配额已重算：' + (state.quota.note || '') + '　' + SHT.quota.text(state.quota));
@@ -2085,6 +2169,8 @@
   function recordAttempt(index, action) {
     const c = state.wrongCases[index];
     if (!c) return;
+    // 下拉是占位项时不许直接记账：默认值不能替用户表达「又做错了」
+    if (!action) { toast('先在下拉里选这次的结果：又错了 / 看提示做对 / 独立做对 / 5 题认证'); return; }
     const now = new Date().toISOString();
     if (action.indexOf('cert-') === 0) {
       const n = action === 'cert-5' ? 5 : action === 'cert-4' ? 4 : 3;
@@ -2115,8 +2201,33 @@
     save(); renderAll();
   }
 
-  function addWrongCase() {
-    const get = function (name) {
+  /*
+   * 示例错题：显式导入，带 demo:true。
+   * 为什么还要留这条入口：评审/演示时需要看到一张填满的 03 页，
+   * 但绝不能让人误以为那是他答错过的题——所以打了标、排题时不读、可单条删除。
+   */
+  function seedDemoWrong() {
+    const exist = (state.wrongCases || []).some(function (c) { return c.demo; });
+    if (exist) { toast('已经有示例错题了'); return; }
+    // buildWrongCases 收的是册内 id（U1），不是教材单元 id（G4-上-U1）；
+    // 传错一个的话它取不到单元，直接返回空数组。
+    const seeded = cloneWrongCases(SHT.curriculum.id);
+    if (!seeded.length) { toast('这个单元没有示例数据'); return; }
+    state.wrongCases = (state.wrongCases || []).concat(seeded);
+    save(); renderAll();
+    toast('导入了 ' + seeded.length + ' 条示例错题（标了「示例」，不参与排题）');
+  }
+
+  function removeWrongCase(index) {
+    const c = state.wrongCases[index];
+    if (!c) return;
+    if (!window.confirm('删掉这条错题？\n' + (c.knowledgePoint || '') + '\n删除后下一轮不会再按它排题。')) { renderAll(); return; }
+    state.wrongCases = state.wrongCases.filter(function (x, i) { return i !== index; });
+    save(); renderAll();
+    toast('已删除这条错题');
+  }
+
+  function addWrongCase() {    const get = function (name) {
       const el = document.querySelector('[data-new="' + name + '"]');
       return el ? el.value.trim() : '';
     };
@@ -2238,7 +2349,8 @@
     state.agent = 'course';
     state.rounds = { 1: blankRound(), 2: blankRound() };
     state.rounds[1].questions = cloneSample(state.unitId, countFor(1));
-    state.wrongCases = cloneWrongCases(state.unitId);
+    // 错题跟着学生走，不跟着单元走：切单元只是换一个显示/出题的视角。
+    // 以前这里会整表重建，等于把他在上一个单元真实答错的记录直接抹掉。
     state.failures = [];
     // 候选清单是跟着单元走的，换书换单元后旧的 id 全部失效，范围必须清空
     state.kpScope = [];
@@ -2255,7 +2367,7 @@
     const b = SHT.BOOKS.get(bookId);
     if (!b) { renderAll(); return; }
     resetFor(bookId, b.units[0].id,
-      '切到「' + b.meta.shortName + '」？两轮题目、出题计划与错题记录会按新教材重建。');
+      '切到「' + b.meta.shortName + '」？两轮题目与出题计划会按新教材重建，错题记录保留。');
   }
 
   function switchUnit(unitId) {
@@ -2263,7 +2375,7 @@
     const unit = SHT.BOOKS.current().getUnit(unitId);
     if (!unit) { renderAll(); return; }
     resetFor(SHT.curriculum.bookId, unitId,
-      '切到 ' + unitId + ' ' + unit.title + '？两轮题目、出题计划与错题记录会按新单元重建。');
+      '切到 ' + unitId + ' ' + unit.title + '？两轮题目与出题计划会按新单元重建，错题记录保留。');
   }
 
   /* ---------- 模型设置 ---------- */
@@ -2400,7 +2512,7 @@
     const brief = SHT.pipeline.buildBrief({
       unitId: state.unitId,
       rounds: rounds,
-      wrongCases: state.wrongCases,
+      wrongCases: planningWrongCases(),
       // 验证角色上一轮判了哪些不过：课程角色要读这个才知道「为什么没出成」
       failures: state.failures
     });
@@ -2656,13 +2768,17 @@
     });
 
     $('wrongList').addEventListener('click', function (e) {
+      const seedBtn = e.target.closest('[data-action="seed-demo-wrong"]');
+      if (seedBtn) { seedDemoWrong(); return; }
+      const delBtn = e.target.closest('[data-action="remove-wrong"]');
+      if (delBtn) { removeWrongCase(Number(delBtn.dataset.index)); return; }
       const applyBtn = e.target.closest('[data-action="apply-weak"]');
       if (applyBtn) { applyWeak(applyBtn.dataset.key, Number(applyBtn.dataset.index)); return; }
       const b = e.target.closest('[data-action="record-attempt"]');
       if (!b) return;
       const idx = Number(b.dataset.index);
       const sel = document.querySelector('[data-attempt-field="next"][data-index="' + idx + '"]');
-      recordAttempt(idx, sel ? sel.value : 'wrong');
+      recordAttempt(idx, sel ? sel.value : '');
     });
 
     $('practiceCard').addEventListener('click', function (e) {

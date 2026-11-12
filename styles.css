@@ -580,6 +580,37 @@ select { cursor: pointer; }
 .chip.is-status.is-mastered { color: var(--blue-deep); background: #dbeafe; }
 .chip.is-status.is-alert { color: var(--red); background: var(--red-soft); }
 
+/* 示例错题：一眼看出「这不是他答的」，别让它看起来像真实记录 */
+.chip.is-demo {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border: 1px solid #f0dcb4;
+  font-weight: 600;
+}
+.wrong-card.is-demo { border-style: dashed; border-color: #e3d3b6; }
+.chip.is-remove {
+  cursor: pointer;
+  border: 0;
+  font-family: inherit;
+  color: var(--ink-hint);
+  background: transparent;
+  padding: 2px 4px;
+}
+.chip.is-remove:hover { color: var(--red); background: var(--red-soft); }
+
+/* 03 页空态：说清「为什么是空的」，不是一句「暂无」 */
+.empty-box {
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 22px 20px;
+  max-width: 660px;
+}
+.empty-title { font-size: 14px; font-weight: 650; margin-bottom: 8px; }
+.empty-box p { font-size: 12.5px; line-height: 1.75; color: var(--ink-soft); margin: 0 0 6px; }
+.empty-box .btn { margin-top: 10px; }
+.empty-note { display: block; margin-top: 8px; font-size: 11.5px; color: var(--ink-hint); }
+
 .wrong-q {
   font-size: 13.5px;
   color: var(--ink);

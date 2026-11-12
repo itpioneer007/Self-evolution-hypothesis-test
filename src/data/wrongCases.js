@@ -14,6 +14,12 @@
  *
  * 本文件不再手写错题，而是从 knowledgePoints.js 里带 missedCase 的候选确定性生成，
  * 单元一换，错题跟着换，不会出现「词表是 U5、错题还是 U1」的错位。
+ *
+ * 重要：这里是**示例数据**，不是学生的真实作答记录。
+ * 以前 app 启动时直接拿它填 state.wrongCases，结果学生一题没答，03 页就已经有 3 条错题，
+ * 卡片上还写着「作答 X / 正确 Y」——那是编出来的，不是他答的。
+ * 现在只有显式点「导入示例错题」才会用到这里，且每条都带 demo:true，
+ * 既不参与排题（planningWrongCases 会滤掉），卡片上也会标「示例」。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
@@ -36,6 +42,8 @@
     const allRight = variant.length > 0 && variant.every(function (v) { return v.correct; });
 
     return {
+      // 示例标记：真实的错题由作答直接写入，没有这个字段
+      demo: true,
       id: 'wq:S-001:' + unit.hostUnitId + ':' + kp.id,
       studentId: 'S-001',
       unitId: unit.hostUnitId,

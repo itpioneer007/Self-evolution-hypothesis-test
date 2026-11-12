@@ -130,7 +130,17 @@
     const o = opts || {};
     const unitId = o.unitId || (SHT.curriculum && SHT.curriculum.id);
     const rounds = o.rounds || [];
-    const wrongCases = (o.wrongCases || []).filter(function (c) { return !c.unitId || c.unitId === unitId; });
+    /*
+     * 错题里存的是教材单元 id（G4-上-U1），这里传进来的是册内 id（U1）。
+     * 以前只比 unitId，一条都命中不了 —— 结果课程角色永远读不到「他上次错在哪」，
+     * 「错题 → 下一轮」这条闭环是断的，而界面上看不出来（错题本照常显示）。
+     * 两个 id 都认，另外空 unitId 的老记录照旧放行。
+     */
+    const unit = root.SHT_BOOK && root.SHT_BOOK.getUnit ? root.SHT_BOOK.getUnit(unitId) : null;
+    const hostId = unit ? unit.hostUnitId : '';
+    const wrongCases = (o.wrongCases || []).filter(function (c) {
+      return !c.unitId || c.unitId === unitId || (hostId && c.unitId === hostId);
+    });
     const proj = SHT.projectWeaknesses(wrongCases, SHT.curriculum && SHT.curriculum.topicDomain);
 
     const priority = (proj.queue || []).slice(0, 3).map(function (i) {

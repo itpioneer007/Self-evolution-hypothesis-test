@@ -95,8 +95,14 @@ assert('日志时间按本地时区显示，不是 UTC',
   SHT.timeOf(localIso) === '16:13', SHT.timeOf(localIso));
 assert('四个角色卡片 = 4', count('agentRail', 'data-role="') === 4, count('agentRail', 'data-role="'));
 assert('默认显示课程角色的 5 行配额', count('agentPanel', 'class="plan-row') === 5, count('agentPanel', 'class="plan-row'));
-assert('错题卡 3 张，每题带 6 行出题要点', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', 'class="brief-row"') === 18,
-  count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="brief-row"'));
+/*
+ * 刚开一轮、还没答错时，03 页必须是空的。
+ * 以前这里预填 3 张示例卡，等于替学生答了 3 道错题，卡片上还写着「作答 X / 正确 Y」，
+ * 而 X 和 Y 只差一个冠词/一个 be 动词，看起来就像「一样的答案被判错」。
+ */
+assert('没答错时 03 页是空的，并说明错题从哪来',
+  count('wrongList', 'class="wrong-card') === 0 && count('wrongList', 'class="empty-box') === 1,
+  count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="empty-box'));
 assert('五个 KPI', count('metrics', 'class="kpi"') === 5, count('metrics', 'class="kpi"'));
 assert('出题日志有记录', count('logFeed', 'class="log-item') >= 5, count('logFeed', 'class="log-item'));
 assert('打回缘由有渲染结果', nodes.rejectChart.innerHTML.length > 0);
@@ -299,6 +305,27 @@ fire('wrongList', 'click', {
   matches() { return false; }
 });
 assert('错题「写入计划」把知识点带回 01', count('agentPanel', 'value="spelling · blackboard · oa + ar 双字母组合"') >= 1);
+
+console.log('--- 示例错题（只看界面用）---');
+// 示例数据要能看，但不能冒充真实记录：卡上有「示例」标，卡片虚线边框，可单条删
+fire('wrongList', 'click', {
+  closest(sel) { return sel === '[data-action="seed-demo-wrong"]' ? { dataset: {} } : null; },
+  matches() { return false; }
+});
+assert('导入示例：3 张示例卡，每张都标「示例」',
+  count('wrongList', 'class="wrong-card is-demo') === 3 && count('wrongList', 'class="chip is-demo"') === 3,
+  count('wrongList', 'class="wrong-card is-demo') + ' / ' + count('wrongList', 'class="chip is-demo"'));
+assert('示例卡不混进真实记录的尾部标记（真实那条没有示例标）',
+  count('wrongList', 'class="wrong-card"') === 1);
+[3, 2, 1].forEach(function (i) {
+  fire('wrongList', 'click', {
+    closest(sel) { return sel === '[data-action="remove-wrong"]' ? { dataset: { index: String(i) } } : null; },
+    matches() { return false; }
+  });
+});
+assert('示例可单条删除，删完只剩真实记录',
+  count('wrongList', 'class="wrong-card') === 1 && count('wrongList', 'class="chip is-demo"') === 0,
+  count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="chip is-demo"'));
 
 console.log('--- 核心纯函数 ---');
 const projection = SHT.projectWeaknesses(SHT.sampleWrongCases, '学校');
@@ -535,11 +562,15 @@ assert('切到 U5：情境域跟着变食物饮料', SHT.curriculum.topicDomain 
 assert('切到 U5：词表换成本单元 22 词', SHT.curriculum.words.length === 22, SHT.curriculum.words.length);
 assert('切到 U5：候选只剩本单元 5 条', SHT.kpsOf('U5').length === 5 && count('agentPanel', 'data-action="pick-kp"') === 5,
   SHT.kpsOf('U5').length + ' / ' + count('agentPanel', 'data-action="pick-kp"'));
-assert('错题跟着换成本单元 3 条', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', '"Fork"') === 0,
+assert('切单元不再重建错题：U5 页不显示别的单元的错题，也不再造示例',
+  count('wrongList', 'class="wrong-card') === 0 && count('wrongList', 'class="empty-box') === 1,
   count('wrongList', 'class="wrong-card'));
 assert('切回来后仍是同一份教材', SHT_BOOK.units.every(u => u.hostUnitId.indexOf('G4-上-') === 0));
 fire('unitSelect', 'change', { value: 'U1' });
 assert('切回 U1：候选恢复 8 条', SHT.kpsOf('U1').length === 8 && SHT.curriculum.id === 'U1');
+// 以前换单元会把整张错题表按新单元重建，学生在别的单元真实答错的记录直接消失
+assert('切回 U1：刚才真实答错的那条还在（切单元不抹记录）',
+  count('wrongList', 'class="wrong-card') === 1, count('wrongList', 'class="wrong-card'));
 
 console.log('--- v1 迁移 ---');
 store = {
@@ -557,6 +588,39 @@ try {
   assert('v1 数据可迁移且 endedEarly 转成 SATURATED', count('stopPanel', 'data-stop="SATURATED"') === 1);
 } catch (err) {
   assert('v1 数据可迁移且 endedEarly 转成 SATURATED', false, err.message);
+}
+
+console.log('--- v2 → v3 迁移：清掉预置的示例错题 ---');
+/*
+ * v2 的存档里，错题本是启动时按知识点预生成的示例，学生一题没答就有 3 条。
+ * 光改 defaultState 不够：老存档里那三条还躺着，用户刷新页面看起来就像没修。
+ * 迁移必须只删示例、留住真实作答写入的记录，否则等于把真错题一起清了。
+ */
+store = {
+  'sht-minimal-test-v2': JSON.stringify({
+    version: 2, bookId: 'PEP-G4A', unitId: 'U1', tab: 'wrongbook', agent: 'course',
+    round: 1, activeNo: 1, learningLayer: 'B',
+    rounds: {
+      1: { questions: SHT.sampleQuestions.map(x => Object.assign({}, x, { checks: {} })), practice: { attempts: [] } },
+      2: { questions: [], practice: { attempts: [] } }
+    },
+    wrongCases: [
+      // 预生成的示例：id 末段是 kpId，时间写死在 11-04，没有诊断结论
+      { id: 'wq:S-001:G4-上-U1:kp-U1-01', kpId: 'kp-U1-01', unitId: 'G4-上-U1', knowledgePoint: 'spelling · blackboard', ability: 'spelling', category: '形近混淆', variantAttempts: [], firstAttemptEvidence: { completedAt: '2026-11-04T09:10:00' }, masteryState: 'wrong', createdAt: '2026-11-04T09:10:00' },
+      // 真实作答写入的：id 末段是 qid，带诊断，时间在当天
+      { id: 'wq:S-001:G4-上-U1:q3', kpId: 'kp-U1-02', unitId: 'G4-上-U1', knowledgePoint: 'vocab · window', ability: 'vocab', category: '近义混淆', diagnosis: { causeId: '近义混淆', confidence: .6 }, variantAttempts: [], firstAttemptEvidence: { completedAt: '2026-11-12T10:00:00Z' }, masteryState: 'wrong', createdAt: '2026-11-12T10:00:00Z' }
+    ]
+  })
+};
+delete require.cache[require.resolve('../src/app.js')];
+try {
+  require('../src/app.js');
+  assert('v2 存档里的预置示例被清掉，真实记录留下',
+    count('wrongList', 'class="wrong-card') === 1 && nodes.wrongList.innerHTML.indexOf('vocab · window') >= 0 &&
+    nodes.wrongList.innerHTML.indexOf('spelling · blackboard') < 0,
+    count('wrongList', 'class="wrong-card') + ' / ' + nodes.wrongList.innerHTML.slice(0, 80));
+} catch (err) {
+  assert('v2 存档里的预置示例被清掉，真实记录留下', false, err.message);
 }
 
 /* ================= 多版本教材 ================= */
@@ -742,6 +806,24 @@ assert('brief 把上一轮那道原题带给生成方当反例',
   }).priority[0].prevPrompt === '选出「讲台」的英文。');
 assert('两枪都对的考点不会再被优先出', brief.priority.every(p => p.kp !== '真会考点'));
 assert('brief 是结构化字段，不是一段话', typeof brief.levelHint === 'string' && Array.isArray(brief.blockedCells));
+/*
+ * 错题落库时 unitId 存的是教材单元 id（G4-上-U1），brief 传的是册内 id（U1）。
+ * 只比一个的话所有错题都会被滤掉，课程角色读不到任何错题 ——
+ * 界面照常显示错题，但「根据错题出下一轮」这件事悄悄失效。
+ */
+const briefUnitId = SHT.pipeline.buildBrief({
+  unitId: 'U1', rounds: [],
+  wrongCases: [{ knowledgePoint: '按教材单元 id 存的错题', kpId: 'kp-u', ability: 'vocab', unitId: 'G4-上-U1', masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }]
+});
+assert('错题按教材单元 id 存，也要能被 brief 认出来',
+  briefUnitId.priority.length === 1 && briefUnitId.priority[0].kp === '按教材单元 id 存的错题',
+  JSON.stringify(briefUnitId.priority.map(p => p.kp)));
+const briefOtherUnit = SHT.pipeline.buildBrief({
+  unitId: 'U1', rounds: [],
+  wrongCases: [{ knowledgePoint: '别的单元的错题', kpId: 'kp-o', ability: 'vocab', unitId: 'G4-上-U5', masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }]
+});
+assert('别的单元的错题不会串进本单元 brief', briefOtherUnit.priority.length === 0,
+  JSON.stringify(briefOtherUnit.priority.map(p => p.kp)));
 
 /* ================= 三个角色各自的记忆 ================= */
 console.log('--- 角色记忆 ---');

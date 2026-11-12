@@ -340,7 +340,7 @@
       example: '— What\'s your father\'s job?　— ___　He\'s a doctor. / He\'s doctor. / He doctor.',
       cell: { type: '句子判断', scene: '家庭', level: '用', distractor: '语法错形' },
       nextIfWrong: '退回选词填空，把 a 单独挖空再练',
-      missedCase: { studentAnswer: 'He is doctor.', correctAnswer: 'He is a doctor.', snapshot: '— What is your father job? — ___', durationMs: 14900, hintCount: 0, retryCount: 1, variant: [false] },
+      missedCase: { studentAnswer: 'He is doctor.', correctAnswer: 'He is a doctor.', snapshot: "— What's your father's job? — ___", durationMs: 14900, hintCount: 0, retryCount: 1, variant: [false] },
     },
     {
       id: 'kp-U6-02', unit: 'U6', group: 'missed',
@@ -362,7 +362,7 @@
       example: 'My father\'s brother is my ___.　uncle / aunt / cousin',
       cell: { type: '中英匹配', scene: '家庭', level: '辨', distractor: '语义近' },
       nextIfWrong: '用 This is my aunt. 做听音选义',
-      missedCase: { studentAnswer: 'aunt', correctAnswer: 'uncle', snapshot: 'My father brother is my ___.', durationMs: 11600, hintCount: 0, retryCount: 1, variant: [false, true] },
+      missedCase: { studentAnswer: 'aunt', correctAnswer: 'uncle', snapshot: "My father's brother is my ___.", durationMs: 11600, hintCount: 0, retryCount: 1, variant: [false, true] },
     },
     {
       id: 'kp-U6-04', unit: 'U6', group: 'angle',

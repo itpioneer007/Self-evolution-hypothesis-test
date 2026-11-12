@@ -336,7 +336,9 @@
     };
 
     // ---- 三 进化机制 ----
+    // 示例错题不算数：审计台统计的是这个学生真实错在哪
     const topKp = (s.wrongCases || [])
+      .filter(function (c) { return !c.demo; })
       .map(function (c) { return { kp: c.knowledgePoint, n: 1 }; })
       .reduce(function (acc, x) {
         const hit = acc.filter(function (a) { return normText(a.kp) === normText(x.kp); })[0];
