@@ -175,7 +175,7 @@ fire('agentPanel', 'click', {
 assert('点「用这个」把候选写进第 1 题', nodes.agentPanel.innerHTML.indexOf('value="spelling · blackboard · oa + ar 双字母组合"') >= 0);
 fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'execute' } }) });
 assert('执行智能体渲染单题表单', count('agentPanel', 'class="field-grid"') === 1 && count('agentPanel', 'data-field="prompt"') === 1);
-assert('单题卡有候选下拉且列出 8 条', count('agentPanel', 'data-kp-pick') === 1 && count('agentPanel', '<option value="kp-') === 8);
+assert('执行智能体知识点为只读展示（无候选下拉）', count('agentPanel', 'data-kp-pick') === 0 && count('agentPanel', 'cell-badge') >= 2);
 fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'verify' } }) });
 assert('验证智能体渲染层切换', count('agentPanel', 'class="layer-switch"') === 1 && count('agentPanel', 'data-action="layer"') === SHT.CHECK_LAYERS.length);
 fire('agentPanel', 'click', {
@@ -226,7 +226,6 @@ assert('内容指纹与选项顺序无关', SHT.contentFingerprint(q) === SHT.co
 const ex = SHT.buildExclusionList([{ questions: SHT.sampleQuestions }]);
 assert('历史格子 5 个且全部可排除', ex.usedCells.size === 5 && SHT.sampleQuestions.every(x => ex.isCellBlocked(x.cell)));
 assert('四层检查共 23 条', SHT.ALL_CHECKS.length === 23, SHT.ALL_CHECKS.length);
-assert('自检十问 = 10', SHT.SELF_CHECK_TEN.length === 10);
 
 console.log('--- 判对错与变体（纯函数） ---');
 assert('答案比对忽略大小写与句点', SHT.normAnswer(' Thank you. ') === 'thank you');

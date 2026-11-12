@@ -26,14 +26,25 @@
     });
   }
 
-  function cloneSample(unitId) {
-    return SHT.sampleQuestionsFor(unitId || SHT.curriculum.id).map(function (q) {
+  function blankQuestionShape(no) {
+    return {
+      no: no, knowledgePoint: '', ability: '',
+      cell: { type: '听音选义', scene: SHT.curriculum.topicDomain, level: '认', distractor: '同类不同物' },
+      prompt: '', audioText: '', options: ['', '', ''], answer: '', analysis: '', nextIfWrong: '', checks: {}
+    };
+  }
+
+  function cloneSample(unitId, count) {
+    const base = SHT.sampleQuestionsFor(unitId || SHT.curriculum.id).map(function (q) {
       return Object.assign({}, q, {
         cell: Object.assign({}, q.cell),
         options: (q.options || []).slice(),
         checks: {}
       });
     });
+    const n = clampCount(count || base.length);
+    while (base.length < n) base.push(blankQuestionShape(base.length + 1));
+    return base.slice(0, n);
   }
 
   function cloneWrongCases(unitId) {
@@ -74,6 +85,7 @@
       activeNo: 1,
       learningLayer: SHT.sampleLearningLayer || 'B',
       rounds: { 1: blankRound(), 2: blankRound() },
+      questionCounts: { 1: 5, 2: 5 },
       wrongCases: cloneWrongCases(),
       failures: [],
       llmBusy: false,
@@ -92,6 +104,9 @@
     if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
+    if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
+    parsed.questionCounts[1] = clampCount(parsed.questionCounts[1]);
+    parsed.questionCounts[2] = clampCount(parsed.questionCounts[2]);
     if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
     ['1', '2'].forEach(function (k) {
@@ -139,7 +154,7 @@
   let state = loadState();
   // 先按存过的书切，再切单元；只切单元会拿错词表边界
   SHT.setBook(state.bookId, state.unitId);
-  if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample(state.unitId);
+  if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample(state.unitId, countFor(1));
 
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* 隐私模式下忽略 */ }
@@ -147,6 +162,23 @@
 
   function currentRound() { return state.rounds[state.round]; }
   function currentQuestion() { return currentRound().questions[state.activeNo - 1] || null; }
+  function clampCount(v) {
+    const n = Math.round(Number(v));
+    if (!isFinite(n)) return 5;
+    return Math.max(1, Math.min(15, n));
+  }
+  function countFor(roundNo) {
+    return clampCount((state.questionCounts && state.questionCounts[roundNo]) || 5);
+  }
+
+  // 题量变化时立即增删题目：多了补空题，少了截断，并重排题号
+  function resizeQuestions(round, count) {
+    const n = clampCount(count);
+    const list = round.questions;
+    while (list.length < n) list.push(blankQuestionShape(list.length + 1));
+    if (list.length > n) list.length = n;
+    list.forEach(function (q, i) { q.no = i + 1; });
+  }
 
   function verdictOf(q) {
     if (!q) return '待检';
@@ -200,7 +232,7 @@
   const ROLES = [
     {
       id: 'course', no: '环节 1', name: '课程智能体', stage: '规划',
-      prompt: '命题规划 · 5 题配额',
+      prompt: '命题规划 · 按题量配额',
       memory: '上轮角度 · 薄弱画像',
       skill: '变化轴 · 配额约束'
     },
@@ -368,7 +400,7 @@
     const projection = weaknessProjection();
     let body;
     if (!list.length) {
-      body = '<div class="hint-box">这一轮还没写计划。点「模型出 5 题」让它自己排；也可以自己排 5 个角度。</div>';
+      body = '<div class="hint-box">这一轮还没写计划。点「模型出 ' + countFor(state.round) + ' 题」让它自己排；也可以自己排 ' + countFor(state.round) + ' 个角度。</div>';
     } else {
       body = '<div class="plan-head"><span>题号</span><span>考什么（写到错因）</span><span>题型</span><span>场景</span><span>考查层次</span><span>错项类型</span><span>挑错结果</span></div>' +
         '<div class="plan-table">' + list.map(function (q, i) {
@@ -395,12 +427,13 @@
       '<div class="panel-toolbar">' +
         '<span class="hint">' + esc(note) + '</span>' +
         '<div class="toolbar-actions">' +
+          '<label class="count-pill" title="第 ' + state.round + ' 轮题量">题量<input type="number" min="1" max="15" data-field="questionCount" data-round="' + state.round + '" value="' + countFor(state.round) + '"></label>' +
           modelStateHtml() +
           (state.llmBusy
             ? '<span class="model-step">' + esc(state.llmStep || '跑着…') + '</span>' +
               '<button type="button" class="btn" data-action="stop-model">停</button>'
-            : '<button type="button" class="btn btn-primary" data-action="model-round">模型出 5 题</button>' +
-              '<button type="button" class="btn" data-action="auto-quota">排 5 个角度</button>' +
+            : '<button type="button" class="btn btn-primary" data-action="model-round">模型出 ' + countFor(state.round) + ' 题</button>' +
+              '<button type="button" class="btn" data-action="auto-quota">排 ' + countFor(state.round) + ' 个角度</button>' +
               '<button type="button" class="btn" data-action="fill-weakness">按薄弱点填</button>') +
         '</div>' +
       '</div>' +
@@ -488,9 +521,7 @@
             '<button type="button" data-action="check" data-check="' + esc(item.id) + '" data-verdict="pass" class="' + (v === 'pass' ? 'is-pass' : '') + '">过</button>' +
             '<button type="button" data-action="check" data-check="' + esc(item.id) + '" data-verdict="fail" class="' + (v === 'fail' ? 'is-fail' : '') + '">挂</button>' +
           '</span></div>';
-      }).join('') +
-      '<details class="selfcheck"><summary>拿不准时，照这十句自查一遍</summary><ol>' +
-        SHT.SELF_CHECK_TEN.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol></details>';
+      }).join('');
   }
 
   function renderAgentPanel() {
@@ -930,10 +961,10 @@
     }
 
     $('metrics').innerHTML =
-      kpi('本轮题数', total + ' / 5', '计划题量', '') +
+      kpi('本轮题数', total + ' / ' + countFor(state.round), '计划题量', '') +
       kpi('通过', passed, '四层 23 条全过', passed ? 'is-good' : '') +
       kpi('退回', failedCount === null ? 0 : failedCount, '条款见右栏', failedCount ? 'is-bad' : '') +
-      kpi('角度重复', overlap === null ? '—' : overlap + '/5', '合格线 ≤ 1/5', overlap !== null && overlap > 1 ? 'is-bad' : '') +
+      kpi('角度重复', overlap === null ? '—' : overlap + '/' + countFor(2), '合格线 ≤ 1/' + countFor(2), overlap !== null && overlap > 1 ? 'is-bad' : '') +
       kpi('真会 / 已测', stats.mastered + ' / ' + stats.tested, '共 ' + stats.total + ' 个考点', stats.wrong ? 'is-bad' : (stats.mastered ? 'is-good' : ''));
   }
 
@@ -1093,7 +1124,7 @@
   /* ---------- 动作 ---------- */
   function startRound2() {
     const exclusion = SHT.buildExclusionList([state.rounds[1]]);
-    const cells = generateCells(5, exclusion);
+    const cells = generateCells(countFor(2), exclusion);
     const base = state.rounds[1].questions;
     state.rounds[2] = {
       questions: cells.map(function (cell, i) {
@@ -1117,7 +1148,7 @@
 
   function autoQuota() {
     const exclusion = exclusionForCurrentRound();
-    const cells = generateCells(5, exclusion);
+    const cells = generateCells(countFor(state.round), exclusion);
     const list = currentRound().questions;
     if (!list.length) {
       currentRound().questions = cells.map(function (cell, i) {
@@ -1130,7 +1161,7 @@
       list.forEach(function (q, i) { if (cells[i]) q.cell = cells[i]; });
     }
     save(); renderAll();
-    toast('已排好 5 个角度');
+    toast('已排好 ' + countFor(state.round) + ' 个角度');
   }
 
   function fillWeakness() {
@@ -1317,7 +1348,7 @@
     state.checkLayer = 0;
     state.agent = 'course';
     state.rounds = { 1: blankRound(), 2: blankRound() };
-    state.rounds[1].questions = cloneSample(state.unitId);
+    state.rounds[1].questions = cloneSample(state.unitId, countFor(1));
     state.wrongCases = cloneWrongCases(state.unitId);
     state.failures = [];
     // 候选清单是跟着单元走的，换书换单元后旧的 id 全部失效，范围必须清空
@@ -1452,7 +1483,7 @@
     try {
       const res = await SHT.pipeline.runRound({
         unit: SHT.curriculum,
-        count: 5,
+        count: countFor(state.round),
         brief: brief,
         scope: scopeNow,
         memory: state.agentMemory,
@@ -1590,6 +1621,16 @@
       const el = e.target;
       const field = el.dataset.field;
       if (!field) return;
+      if (field === 'questionCount') {
+        const rn = el.dataset.round;
+        if (!rn) return;
+        state.questionCounts[rn] = clampCount(el.value);
+        el.value = state.questionCounts[rn];
+        resizeQuestions(state.rounds[rn], state.questionCounts[rn]);
+        if (state.activeNo > state.rounds[rn].questions.length) state.activeNo = state.rounds[rn].questions.length || 1;
+        save(); renderAll();
+        return;
+      }
       // 课程智能体计划表（带 data-no）：即时保存
       if (el.dataset.no) {
         const q = currentRound().questions[Number(el.dataset.no) - 1];
@@ -1672,7 +1713,7 @@
         const overlap = overlapCount();
         const r1 = countFailed(state.rounds[1]);
         const r2 = countFailed(state.rounds[2]);
-        toast('两轮结果：出题角度重复 ' + (overlap === null ? '—' : overlap + '/5') +
+        toast('两轮结果：出题角度重复 ' + (overlap === null ? '—' : overlap + '/' + countFor(2)) +
           '，被退回的题 ' + (r1 === null ? '—' : r1) + ' → ' + (r2 === null ? '—' : r2) +
           '。样本小，只够看方向。');
       }
