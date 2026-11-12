@@ -124,6 +124,8 @@ click('practiceCard', { action: 'pick-option', index: '0' });
 click('practiceCard', { action: 'submit-answer' });
 assert('答对后判定条出现', count('practiceCard', 'class="verdict is-good"') === 1);
 assert('答对提示换下一个考点', nodes.practiceCard.innerHTML.indexOf('换下一个考点') >= 0);
+assert('答对不显示解析（解析讲的是错项为什么错）',
+  count('practiceCard', 'class="verdict-analysis"') === 0 && count('practiceCard', 'class="verdict-notes"') === 0);
 click('practiceCard', { action: 'next-step' });
 assert('答对推进到第 2 个考点', nodes.practiceCard.innerHTML.indexOf('第 2 个考点') >= 0);
 assert('右侧第 1 个考点记为会用', nodes.practiceRail.innerHTML.indexOf('会用') >= 0);
@@ -141,6 +143,11 @@ assert('答错后直接进 03 错题本（不在本轮回练）',
   count('wrongList', 'class="wrong-card') === wrongBefore + 1,
   wrongBefore + ' → ' + count('wrongList', 'class="wrong-card'));
 assert('写进去的错题带知识点与作答', nodes.wrongList.innerHTML.indexOf('classroom') >= 0 && nodes.wrongList.innerHTML.indexOf('窗户') >= 0);
+assert('日志按天分组，组头带日期与条数',
+  count('logFeed', 'class="log-day"') >= 1 && nodes.logFeed.innerHTML.indexOf('今天 · ') >= 0,
+  String(count('logFeed', 'class="log-day"')));
+assert('日志条目改用结构化标签，不再拼成一句话',
+  count('logFeed', 'class="log-tag"') >= 0);
 assert('作答记录进了日志信息流（答对/答错各有颜色）',
   (nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length >= 1,
   String((nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length));
@@ -744,6 +751,55 @@ assert('plan 记忆会写进出题提示词', SHT.agentMemory.recallText(MEM1, '
 assert('verify 记忆会提醒它给条款号', SHT.agentMemory.recallText(MEM1, 'verify').indexOf('没给条款号') >= 0);
 assert('没有记忆时不留占位噪音', SHT.agentMemory.recallText(MEM0, 'plan') === '');
 assert('卡片摘要能读出一轮记忆', SHT.agentMemory.summary(MEM1, 'plan').indexOf('已记 1 轮') === 0);
+
+/* ================= 解析与逐项说明 ================= */
+console.log('--- 解析：只在答错时给，且逐项说 ---');
+{
+  const qn = { options: ['shirt', 'skirt', 'coat'], answer: 'shirt', optionNotes: ['shirt 是衬衫', 'skirt 是裙子', 'coat 是大衣'] };
+  const html = SHT.optionNotesHtml(qn, { picked: 'skirt', expected: 'shirt' });
+  assert('逐项说明把「你选的 / 正确 / 另一项」三行都列出来',
+    html.indexOf('你选 B') >= 0 && html.indexOf('正确 A') >= 0 && html.indexOf('C') >= 0,
+    html.replace(/<[^>]+>/g, ' ').slice(0, 60));
+  assert('逐项说明带上每项的具体理由',
+    html.indexOf('skirt 是裙子') >= 0 && html.indexOf('shirt 是衬衫') >= 0);
+  const partial = SHT.optionNotesHtml(
+    { options: ['a', 'b', 'c'], answer: 'a', optionNotes: ['a 对', '', ''] },
+    { picked: 'b', expected: 'a' });
+  assert('缺说明的项宁可不显示，不硬编', partial.indexOf('你选 B') < 0 && partial.indexOf('正确 A') >= 0);
+
+  // 代码闸 V9：解析自己承认另一个选项也成立
+  const v9 = SHT.validateQuestion({
+    knowledgePoint: 'x', cell: { type: '选词填空', scene: '学校', level: '用', distractor: '语法错形' },
+    prompt: '___ help you.', audioText: '', options: ['Let me', "Let's", 'Let'], answer: 'Let me',
+    analysis: '又不一定只能我来帮你，也可以我们来帮你。'
+  }, SHT.curriculum, {});
+  assert('解析自证两解 → 代码闸 V9 拦下', !v9.pass && v9.fails.some(f => f.id === 'V9'),
+    JSON.stringify(v9.fails.map(f => f.id)));
+  const v9ok = SHT.validateQuestion({
+    knowledgePoint: 'x', cell: { type: '选词填空', scene: '学校', level: '用', distractor: '语法错形' },
+    prompt: '___ help you.', audioText: '', options: ['Let me', "Let's", 'Let'], answer: 'Let me',
+    analysis: "不能选 Let's，虽然它也可以，但这里只有我能帮你。"
+  }, SHT.curriculum, {});
+  assert('否定语境里提到「也可以」不误判', !v9ok.fails.some(f => f.id === 'V9'),
+    JSON.stringify(v9ok.fails.map(f => f.id)));
+}
+
+/* ================= 失败记录：按轮次算 ================= */
+console.log('--- 失败记录按轮 ---');
+{
+  const at1 = '2026-11-12T10:00:00.000Z';
+  const at2 = '2026-11-12T11:00:00.000Z';
+  const list = [
+    { round: 1, at: at1, codes: ['V1'] },
+    { round: 2, at: at2, codes: ['V1'] },
+    { round: 2, at: at2, codes: ['V3c'] },
+    { at: at2, codes: ['V2'] }   // 老数据：没有 round，只能按本轮开始时间兜底
+  ];
+  assert('带轮次的按轮次算', SHT.failuresOfRound(2, list, at2).length === 3,
+    String(SHT.failuresOfRound(2, list, at2).length));
+  assert('老数据靠开始时间兜底，不把上一轮的账算进来',
+    SHT.failuresOfRound(2, list, at2).every(f => String(f.at) >= at2));
+}
 
 /* ================= 流水线（mock 模型） ================= */
 console.log('--- 流水线：规划 → 生成 → 闸 → 质检 → 退回重出 ---');
@@ -1389,8 +1445,17 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     attempt: { picked: 'classroom', correct: true, durationMs: 1200, hintCount: 0 },
     unit: dUnit
   });
-  assert('答对也诊断：秒答会被标成「记住了」而不是「会了」',
-    dRight.correct && dRight.causeId === '秒答', dRight.causeId);
+  // 答对不再编「为什么对」：快答与真会分不开，硬归因等于把「会」判成「背」
+  assert('答对不做错因归因（causeId 为空）', dRight.correct && dRight.causeId === '', dRight.causeId);
+  assert('答对仍记下快答这个事实，但不据此下结论',
+    dRight.fast === true && dRight.headline === '答对', JSON.stringify([dRight.fast, dRight.headline]));
+  const dRightHint = SHT.diagnose.judge({
+    question: { prompt: '选出「教室」的正确拼写。', options: ['classroom', 'class'], answer: 'classroom' },
+    attempt: { picked: 'classroom', correct: true, durationMs: 9000, hintCount: 1 },
+    unit: dUnit
+  });
+  assert('用了提示的答对只标「用了提示」，同样不归因',
+    dRightHint.causeId === '' && dRightHint.hinted === true, dRightHint.headline);
 
   /* 冻结：同一个 (题目, 答案) 只诊断一次 */
   const dQ = { qid: 'dq-1', prompt: '听录音，选出你听到的单词。', options: ['near', 'nears', 'not'], answer: 'near' };

@@ -61,7 +61,33 @@
     return (unit.sentencePatterns || []).map(function (p, i) { return (i + 1) + '. ' + p; }).join('\n');
   }
 
-  // 只列「只看题目本身就能判」的条目：拿不到判定所需信息的条目列给它，
+  /*
+   * 同源选项检测：let / let's / let me、a / an、is / are、near / nears 这类，
+   * 共享词干、只差一个词素。它们最容易两项代回原句都成立，
+   * 而单看「正确答案」是看不出这件事的。检测出来就在验证上下文里点名，
+   * 要求它逐项代回去读——这是 C3（答案不唯一）最常见的来源。
+   */
+  function sameRootOptions(options) {
+    const list = (options || []).map(function (o) { return String(o == null ? '' : o).trim().toLowerCase(); })
+      .filter(Boolean);
+    const pairs = [];
+    for (let i = 0; i < list.length; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const a = list[i];
+        const b = list[j];
+        const short = a.length <= b.length ? a : b;
+        const long = a.length <= b.length ? b : a;
+        if (!short || !long) continue;
+        // 互相包含（let ⊂ let's / let me）或只差一个字母（near / nears）
+        const contained = long.indexOf(short) === 0 && long.length - short.length <= 3;
+        const oneOff = Math.abs(a.length - b.length) <= 1 && (a.indexOf(b) === 0 || b.indexOf(a) === 0);
+        if (contained || oneOff) pairs.push([short, long]);
+      }
+    }
+    return pairs;
+  }
+
+  // 只列「只看题目本身就能判」的条目  // 只列「只看题目本身就能判」的条目：拿不到判定所需信息的条目列给它，
   // 它只能靠猜，猜出来的理由就是失败日志里的空话。
   const CHECK_TEXT = function () {
     const ok = {};
@@ -244,7 +270,7 @@
           '你是小学英语的出题者。一次只出一道单选题，只用给定的词表和句型。',
           '',
           '输出必须是 JSON：',
-          '{"prompt":"","audioText":"","options":["","",""],"answer":"","analysis":"","keyword":"","acceptable":[]}',
+          '{"prompt":"","audioText":"","options":["","",""],"answer":"","analysis":"","optionNotes":["","",""],"keyword":"","acceptable":[]}',
           'answer 必须与 options 里的某一项完全一致（大小写、标点都要一致）。',
           '开放题（题干要求写出来、说出来，不给选项）时 options 填 []，answer 写成一句完整的话。',
           '',
@@ -266,7 +292,13 @@
           '    例：答案是 ice cream 时，"ice-cream" 也对，填进去。',
           '    选择题填 []（学生只能从选项里选，写法本来就固定）；没有别的正确写法也填 []。',
           '    不要把「意思相近但换了主体/时态/单复数」的句子填进来，那不是写法差异，是另一个答案。',
-          '11. 方向不是你定的：考点、层次、题型、干扰项类型都由课程给定，你不许改。',
+          '11. optionNotes 与 options 一一对应，三项都要写，每条不超过 14 个字：',
+          '    正确的那项写清它为什么成立（词义、语法规则、搭配）；',
+          '    错误的那两项写出它错在哪个词、哪条规则，例：「shirt 是衬衫，不是裙子」。',
+          '    不许写「意思弄混了」「不符合要求」这类换个词也能用的空话。',
+          '    如果你发现某两项在原句里都成立（比如 Let me / Let\'s 都能接），',
+          '    就在那一项的说明里直接写「这一项也成立」——那说明这题本身不该这么出。',
+          '12. 方向不是你定的：考点、层次、题型、干扰项类型都由课程给定，你不许改。',
           '    按这个方向出不来时，换一个同方向的写法（换场景、换问法、换具体词），',
           '    不许自己把考点挪到别处、不许偷偷把难度降下来。出不来就如实按方向再写一版。'
         ].join('\n');
@@ -338,6 +370,9 @@
           '    其余 ' + (SHT.OUT_OF_SCOPE_CHECKS || []).length + ' 条要看同轮其它题或学生画像，你看不到，一律不要判；' +
             '判了也不算数，会被代码当无效否决丢掉。' +
             '（具体是：' + (SHT.OUT_OF_SCOPE_CHECKS || []).map(function (c) { return c.id; }).join('、') + '）',
+          '3.1 判「答案唯一」时不许只盯正确答案：把另外两个选项逐个代回题干读一遍。',
+          '    let / let\'s / let me、a / an、is / are、near / nears 这类同源形式最容易两项都成立；',
+          '    只要有一项代回去句子也通顺且意思合理，就判 C3，并写清是哪两项、那句话读成什么。',
           '4. 知识点措辞、解析详细程度都不在你判的范围里：知识点标签是课程写的；解析只要求讲清最主要的那个错因。',
           '    以「解析没有分别说明每个错项」为由判挂，属于无效否决。',
           '5. 拿不准的按 fail 处理，理由写「拿不准：……」。',
@@ -355,6 +390,12 @@
         lines.push('- 题干：' + JSON.stringify(q.prompt));
         if (q.audioText) lines.push('- 听力原文：' + q.audioText);
         lines.push('- 选项：' + JSON.stringify(q.options));
+        const sameRoot = sameRootOptions(q.options);
+        if (sameRoot.length) {
+          lines.push('  注意：这几项是同源形式（' +
+            sameRoot.map(function (p) { return p[0] + ' / ' + p[1]; }).join('；') +
+            '），必须逐项代回题干读一遍，只要第二项也通顺就判 C3。');
+        }
         lines.push('- 答案：' + q.answer);
         lines.push('- 解析：' + q.analysis);
         lines.push('');

@@ -1004,3 +1004,80 @@ select { cursor: pointer; }
   display: block; margin-top: 2px; font-style: normal;
   font-size: 11.5px; color: var(--amber);
 }
+
+/* 诊断卡上的「不作归因」：不是置信度，别用百分比那套排版 */
+.diag-conf.is-muted {
+  color: var(--muted, #6b7280);
+  font-weight: 500;
+}
+
+/* 答错时的逐项说明：你选的 / 正确答案 / 另一项，三项各一行 */
+.verdict-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #e3e8e6;
+  border-radius: 8px;
+  background: #fbfcfc;
+}
+.vn-row {
+  display: grid;
+  grid-template-columns: 74px minmax(90px, 160px) 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.vn-tag { color: #6b7280; font-variant-numeric: tabular-nums; }
+.vn-opt { color: #111827; font-weight: 600; overflow-wrap: anywhere; }
+.vn-why { color: #374151; }
+.vn-row.is-picked .vn-tag { color: #b42318; }
+.vn-row.is-picked .vn-why { color: #b42318; }
+.vn-row.is-answer .vn-tag { color: #067647; }
+.vn-row.is-answer .vn-why { color: #067647; }
+.vn-row.is-other .vn-opt { color: #4b5563; font-weight: 500; }
+
+/* ===== 04 日志：按天分组 + 聚合后的失败记录 ===== */
+.log-day { border: 1px solid #e6eaee; border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.log-day-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; background: #f6f8f9; border: 0; cursor: pointer;
+  font: inherit; text-align: left;
+}
+.log-day-head:hover { background: #eef2f4; }
+.log-day-caret { width: 14px; color: #6b7280; font-weight: 700; }
+.log-day-title { font-weight: 650; color: #111827; }
+.log-day-meta { margin-left: auto; color: #6b7280; font-size: 12px; font-variant-numeric: tabular-nums; }
+.log-day-body { padding: 4px 12px 8px; }
+.log-day-body[hidden] { display: none; }
+.log-main { min-width: 0; }
+.log-tag {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  margin: 4px 6px 0 0; padding: 2px 7px; border-radius: 6px;
+  background: #f3f5f6; color: #374151; font-size: 12px; line-height: 1.6;
+}
+.log-tag em { color: #6b7280; font-style: normal; }
+
+.fail-round { border: 1px solid #e6eaee; border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.fail-round-head {
+  padding: 8px 12px; background: #f6f8f9; font-weight: 650; color: #111827;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.fail-round-head em { font-style: normal; font-weight: 500; color: #6b7280; font-size: 12px; }
+.fail-group { border-top: 1px solid #eef1f3; }
+.fail-sum {
+  display: grid; grid-template-columns: 74px minmax(0, 1.6fr) minmax(0, 1fr) 52px 108px;
+  gap: 10px; align-items: baseline; padding: 8px 12px; cursor: pointer; list-style: none;
+}
+.fail-sum::-webkit-details-marker { display: none; }
+.fail-sum:hover { background: #fbfcfc; }
+.fail-kp { color: #111827; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fail-codes { color: #6b7280; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fail-count { color: #b42318; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
+.fail-span { color: #9aa3ad; font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.fail-body { padding: 2px 12px 10px 12px; background: #fbfcfc; }
+.fail-detail-row { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 3px 0; font-size: 12px; color: #4b5563; }
+.fail-detail-row .fail-at { color: #9aa3ad; font-variant-numeric: tabular-nums; }
+.fail-detail-why { overflow-wrap: anywhere; }

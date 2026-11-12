@@ -226,8 +226,14 @@
     };
   };
 
-  function failEntry(base) {
-    return Object.assign({ at: now() }, base);
+  /*
+   * 失败记录带轮次。以前不带，界面只能拿「全部失败记录」当「这一轮的」，
+   * 第二轮一跑就显示「这一轮有 78 条没出成」——那其实是两轮累计。
+   * 轮次从 runRound 的 opts.round 传进来（app 知道当前是第几轮），
+   * 没有就记 0，界面按时间兜底。
+   */
+  function failEntry(base, roundNo) {
+    return Object.assign({ at: now(), round: roundNo || 0 }, base);
   }
 
   function codesOf(fails) {
@@ -256,6 +262,9 @@
       unit: unit
     };
     const failures = [];
+    // 本轮编号：失败记录都带它，界面才分得清「这一轮的」和「两轮累计的」
+    const ROUND_NO = o.round || 0;
+    const fail = function (base) { return failEntry(base, ROUND_NO); };
     const onEvent = typeof o.onEvent === 'function' ? o.onEvent : function () {};
     // 本轮要考察的知识点范围（[{label, ability, cell}]）。空 = 不限制，由模型现场提。
     const scope = (o.scope || []).filter(function (s) { return s && s.label; });
@@ -268,7 +277,7 @@
     const hint = SHT.progress.planHint(progress, { layer: (o.stage && o.stage.layer) || 'B', scope: scope });
     const scopeAlive = scope.filter(function (s) { return hint.retired.indexOf(s.label) < 0; });
     hint.retiredInScope.forEach(function (kp) {
-      failures.push(failEntry({
+      failures.push(fail({
         stage: 'plan', attempt: 1, planKp: kp, codes: ['PLAN_RETIRED'],
         reason: '这个考点他已经真会到顶了，本轮从范围里移出', detail: ''
       }));
@@ -329,7 +338,7 @@
             const n = normKp(p.kp);
             const hit = pool.some(function (x) { return x === n || x.indexOf(n) >= 0 || n.indexOf(x) >= 0; });
             if (hit) { kept.push(p); return; }
-            failures.push(failEntry({
+            failures.push(fail({
               stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_SCOPE'],
               reason: '考点不在本轮选定范围内，这一条不排题：「' + p.kp + '」', detail: ''
             }));
@@ -341,7 +350,7 @@
           if (SHT.LEVELS.indexOf(p.level) < 0) { p.level = hint.cap; return; }
           const over = SHT.LEVELS.indexOf(p.level) > SHT.LEVELS.indexOf(hint.cap);
           if (over) {
-            failures.push(failEntry({
+            failures.push(fail({
               stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_LEVEL_CAP'],
               reason: '层次「' + p.level + '」超过 ' + hint.layer + ' 层的上限「' + hint.cap + '」，已降到上限', detail: ''
             }));
@@ -351,7 +360,7 @@
         // 退役考点再出现（模型从记忆里抄回来的），直接剔掉
         plans = plans.filter(function (p) {
           if (hint.retired.indexOf(p.kp) < 0) return true;
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_RETIRED'],
             reason: '这个考点已经真会到顶，不再排题', detail: ''
           }));
@@ -362,14 +371,14 @@
         // 先按配额裁，再截总条数——反过来会把靠后能力的题当超额砍掉。
         const applied = SHT.quota.apply(plans, quota);
         applied.over.forEach(function (x) {
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'plan', attempt: i + 1, planKp: x.kp, codes: ['QUOTA_OVER'],
             reason: '「' + x.ability + '」这一轮只排 ' + quota.byAbility[x.ability] + ' 条，这条不当正取（留作替补）', detail: ''
           }));
         });
         // 配额外的能力没被剔掉（名额还空着就收下），只留一笔在报告里，不算失败
         applied.report.short.forEach(function (x) {
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'plan', attempt: i + 1, codes: ['QUOTA_SHORT'],
             reason: '「' + x.ability + '」配额 ' + x.want + ' 条，规划只给了 ' + x.got + ' 条', detail: ''
           }));
@@ -390,7 +399,7 @@
         if (!plans.length) plans = null;
       }
       if (!plans) {
-        failures.push(failEntry({
+        failures.push(fail({
           stage: 'plan', attempt: i + 1, codes: res.ok ? ['PLAN_EMPTY'] : [shtErrType(res)],
           reason: res.ok ? '返回里没有可用的 plans' : shtErrMsg(res),
           detail: res.text ? String(res.text).slice(0, 300) : ''
@@ -411,7 +420,7 @@
     plans.forEach(function (p) {
       const k = p.kp.toLowerCase().replace(/\s+/g, ' ');
       if (seenKp[k]) {
-        failures.push(failEntry({
+        failures.push(fail({
           stage: 'plan', attempt: 1, planKp: p.kp, codes: ['PLAN_DUP'],
           reason: '考点与前面重复：「' + p.kp + '」，这一条不排题', detail: ''
         }));
@@ -574,7 +583,7 @@
               plan: alt,
               why: '诱饵造不出来（连着 ' + stuckTimes + ' 次），换到相近的「' + alt.kp + '」重出'
             };
-            failures.push(failEntry({
+            failures.push(fail({
               stage: 'plan', planKp: plan.kp, attempt: attempt,
               codes: ['PLAN_SWITCH_KP'],
               reason: '这个考点连着 ' + stuckTimes + ' 次都造不出可信的干扰项，换相近考点重出：' +
@@ -590,7 +599,7 @@
           if (b) {
             benched = true;
             moved = { plan: b, why: '这一格没出成，替补顶上：「' + b.kp + '」' };
-            failures.push(failEntry({
+            failures.push(fail({
               stage: 'plan', planKp: plan.kp, attempt: attempt,
               codes: ['BENCH_UP'],
               reason: '这一格（' + plan.kp + '）没出成，由替补「' + b.kp + '」顶上',
@@ -628,7 +637,7 @@
         });
 
         if (!generated.ok) {
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'generate', planKp: plan.kp, attempt: attempt,
             codes: [shtErrType(generated)], reason: shtErrMsg(generated),
             detail: generated.text ? String(generated.text).slice(0, 300) : ''
@@ -657,6 +666,10 @@
           // 开放题：答案是一句话而不是三个选项之一。看图说词天然是这种。
           open: plan.cell.type === '看图说词' || raw.open === true,
           analysis: String(raw.analysis || '').trim(),
+          // 逐项说明：与 options 一一对应，答错时前端按「他选的 / 正确答案 / 另一项」展示。
+          // 缺了不废题（老数据也没有），界面会退回一句解析。
+          optionNotes: (Array.isArray(raw.optionNotes) ? raw.optionNotes : [])
+            .slice(0, 3).map(function (x) { return String(x == null ? '' : x).trim(); }),
           nextIfWrong: plan.nextIfWrong,
           keyword: String(raw.keyword || '').trim(),
           // 上一轮错过、这一轮重出的题：作答时和上一轮首答配一对
@@ -684,7 +697,7 @@
         // 代码闸：有通过权
         const gate = SHT.validateQuestion(question, unit, { others: questions });
         if (!gate.pass) {
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'validate', planKp: plan.kp, attempt: attempt,
             codes: codesOf(gate.fails), reason: failsText(gate.fails),
             detail: JSON.stringify({ prompt: question.prompt, options: question.options, answer: question.answer, analysis: question.analysis })
@@ -709,7 +722,7 @@
 
         if (!verdict.ok) {
           // 验证本身失败不能把题废掉：记一笔，按「仅代码闸通过」采纳，界面标未复核
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
             codes: [shtErrType(verdict)], reason: '验证没跑成，按代码闸通过采纳：' + shtErrMsg(verdict),
             detail: ''
@@ -734,7 +747,7 @@
         const outScope = rawFails.filter(function (f) { return !!needOf[f.id]; });
         const vfails = rawFails.filter(function (f) { return !needOf[f.id]; });
         if (outScope.length) {
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
             codes: ['VERIFY_OUT_OF_SCOPE'].concat(outScope.map(function (f) { return f.id; })),
             reason: '判了它看不到信息的条款（' + outScope.map(function (f) { return f.id; }).join('、') +
@@ -748,7 +761,7 @@
         const softOnly = vj.verdict === 'fail' && vfails.length > 0 &&
           vfails.every(function (f) { return /解析/.test(String(f.reason || '')); });
         if (softOnly) {
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
             codes: ['VERIFY_SOFT'].concat(vfails.map(function (f) { return f.id; })),
             reason: '验证只嫌解析写得不够细，题面没过错，采纳并标待润色',
@@ -762,8 +775,21 @@
         }
         if (vj.verdict === 'fail') {
           if (!vfails.length) {
+            /*
+             * 说挂但没给条款号，先看它说的是什么。
+             * 如果说的是「答案不唯一 / 两个都成立」，那就是 C3 的口语版，
+             * 不能按「无条款号 = 无效否决」放过去——这是会把错题写进错题本、
+             * 再喂给诊断和下一轮出题的最严重的一类错误，宁可退回去重出。
+             */
+            const said = String(vj.note || '') + ' ' +
+              (Array.isArray(vj.fails) ? vj.fails.map(function (f) { return f && f.reason || ''; }).join(' ') : '');
+            if (/不唯一|都成立|两个?都对|也(都)?可以|都行|均正确|也能选/.test(said)) {
+              vfails.push({ id: 'C3', reason: String(vj.note || '它认为答案不唯一').slice(0, 40) });
+            }
+          }
+          if (!vfails.length) {
             // 说挂却给不出它有权判的条款号 = 无效否决，不采纳但记下来
-            failures.push(failEntry({
+            failures.push(fail({
               stage: 'verify', planKp: plan.kp, attempt: attempt,
               codes: ['VERIFY_NO_CODE'],
               reason: outScope.length
@@ -777,7 +803,7 @@
             break;
           }
           vfails.forEach(function (f) { question.checks[f.id] = 'fail'; });
-          failures.push(failEntry({
+          failures.push(fail({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
             codes: vfails.map(function (f) { return f.id; }),
             reason: vfails.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；'),
@@ -801,7 +827,7 @@
         onEvent({ phase: 'adopted', index: i, text: '第 ' + (i + 1) + ' 题通过' });
       } else {
         const tried = (switched ? '换过相近考点、' : '') + (benched || plan.fromBench ? '替补也顶上过，' : '');
-        failures.push(failEntry({
+        failures.push(fail({
           stage: 'giveup', planKp: plan.kp, attempt: maxAttempts,
           codes: ['GIVE_UP'],
           reason: tried + '连续 ' + maxAttempts + ' 次都没过闸，这一格留空，不硬塞',

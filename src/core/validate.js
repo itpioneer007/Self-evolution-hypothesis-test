@@ -284,6 +284,24 @@
       }
     }
 
+    /*
+     * V9 解析自证两解。
+     * 出题方自己写的解析/逐项说明里出现「也可以」「都成立」这类话，说明它知道
+     * 正确项之外还有一项说得通——那这题就是答案不唯一，必须废掉。
+     * 为什么放在代码闸：这是可判的字符串证据，不依赖模型是否愿意判 C3；
+     * 实测里模型经常判了 pass，而它自己写的解析明说「不一定只能我来帮你」。
+     * 否定语境要排除：「不能选 near，虽然它也可以」这种是在讲对错，不是自证两解。
+     */
+    const selfText = [analysis, (q.optionNotes || []).join(' ')].join(' ').trim();
+    if (selfText) {
+      const sentences = selfText.split(/[。；;！!？?]/);
+      const hit = sentences.filter(function (sent) {
+        if (!/也(都)?可以|都成立|两个?都对|都行|均正确|也能选|也说得通/.test(sent)) return false;
+        return !/不能|不对|不可以|不成立|错|别选/.test(sent);
+      });
+      if (hit.length) push('V9', '解析里说另一个选项也成立：' + hit[0].slice(0, 30));
+    }
+
     // V6 听力题音文一致
     if (isListening) {
       const audio = String(q.audioText || '').trim();

@@ -156,6 +156,22 @@
   }
 
   /* ---------- 变体：同考点、同格子、换表面 ---------- */
+  /*
+   * 逐项说明：每个选项为什么对、为什么错，指向具体词，不写「意思弄混了」这种空话。
+   * 本地兜底题能查词表就查；查不到就留空，界面退回一句解析，不硬编。
+   */
+  function notesForWords(options, answer, target, others) {
+    const zhOf = {};
+    zhOf[SHT.normAnswer(target.en)] = target.zh;
+    (others || []).forEach(function (o) { if (o && o.en) zhOf[SHT.normAnswer(o.en)] = o.zh; });
+    return (options || []).map(function (op) {
+      const k = SHT.normAnswer(op);
+      if (k === SHT.normAnswer(answer)) return (zhOf[k] || target.zh) + ' 就是 ' + op;
+      const zh = zhOf[k];
+      return zh ? op + ' 是「' + zh + '」，不是这一题问的' : '';
+    });
+  }
+
   function baseVariant(question) {
     return {
       no: question.no,
@@ -167,6 +183,9 @@
       nextIfWrong: question.nextIfWrong,
       audioText: '',
       analysis: '',
+      // 逐项说明：答错时前端按「他选的这项 / 正确答案 / 另一项」三行展示。
+      // 本地兜底题能算出来就填，算不出来留空数组，界面会退回到一句解析。
+      optionNotes: [],
       basis: ''
     };
   }
@@ -190,12 +209,14 @@
       v.options = rotate([target.zh, others[0].zh, others[1].zh], seed);
       v.answer = target.zh;
       v.analysis = target.en + ' 是' + target.zh + '。';
+      v.optionNotes = notesForWords(v.options, v.answer, target, others);
       v.basis = '换词：' + target.en;
     } else if (type === '中英匹配') {
       v.prompt = '选出「' + target.zh + '」的英文。';
       v.options = rotate([target.en, others[0].en, others[1].en], seed);
       v.answer = target.en;
       v.analysis = '「' + target.zh + '」是 ' + target.en + '。';
+      v.optionNotes = notesForWords(v.options, v.answer, target, others);
       v.basis = '换词：' + target.zh;
     } else {
       const bad = misspell(target.en);
@@ -205,6 +226,11 @@
       v.options = rotate([target.en, bad[0], bad[1]], seed);
       v.answer = target.en;
       v.analysis = '「' + target.zh + '」拼作 ' + target.en + '，中间字母别漏。';
+      v.optionNotes = v.options.map(function (op) {
+        return SHT.normAnswer(op) === SHT.normAnswer(v.answer)
+          ? '拼作 ' + v.answer
+          : '错拼：' + op + '（字母与 ' + v.answer + ' 对不上）';
+      });
       v.basis = '换词：' + target.en;
     }
     return v;

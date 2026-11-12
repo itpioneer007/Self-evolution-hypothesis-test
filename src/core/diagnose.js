@@ -541,32 +541,28 @@
     out.source = 'code';
 
     if (attempt.correct) {
+      /*
+       * 答对不做错因归因。
+       *
+       * 错因是用来解释「他为什么错」的：错选、排除了哪些项、差几个字母，这些都是硬证据。
+       * 答对没有这种证据——算得快可能是真会（题本来就简单），也可能是记住了答案；
+       * 光看秒数分不开。以前按「3 秒内 = 像记住了」下结论，等于把「会」判成「背」，
+       * 学生做对了还被告知「你可能是背的」，这既不严谨也伤人。
+       *
+       * 现在只留事实：答对、耗时多少、有没有用提示。要不要再验一次交给「连对两次
+       * 才算真会」那条规则，不在这里猜。
+       */
       out.ok = true;
       out.correct = true;
-      // 答对也有话说：快答、想出来、靠提示，三种「对」的可信度完全不同。
-      // 这条直接接到「连对两次才算真会」上，第一次对得越快，越可能是记住了那道题。
-      if (timing.band === 'hinted') {
-        out.causeId = '看提示才会';
-        out.headline = '是答对了，但用了提示，不算独立答对';
-        out.confidence = 0.8;
-        out.nextStep = '下一轮同考点换题面再考一次，别再给提示';
-      } else if (timing.band === 'quick') {
-        out.causeId = '秒答';
-        out.headline = '3 秒内答对，像记住了答案而不是想出来的';
-        out.confidence = 0.6;
-        out.nextStep = '下一轮同考点换场景再考，验证是不是真会';
-      } else if (timing.band === 'slow') {
-        out.causeId = '想出来的';
-        out.headline = '想了很久才对，是真在想，但还不熟';
-        out.confidence = 0.55;
-        out.nextStep = '下一轮同考点再练一次，把反应速度压下来';
-      } else {
-        out.causeId = '答对';
-        out.headline = '正常作答答对';
-        out.confidence = 0.5;
-        out.nextStep = '下一轮换题面再验一次';
-      }
-      out.causeLabel = out.causeId;
+      out.fast = timing.band === 'quick';
+      out.hinted = timing.band === 'hinted';
+      out.causeId = '';
+      out.causeLabel = '';
+      out.headline = out.hinted ? '答对，但用了提示' : '答对';
+      out.confidence = 0;
+      out.nextStep = out.hinted
+        ? '下一轮同考点换题面再考一次，这次别给提示'
+        : '下一轮换道题再对一次，才算真会';
       return out;
     }
 
@@ -722,7 +718,9 @@
   function summary(res) {
     if (!res || !res.ok) return '';
     const pct = Math.round((res.confidence || 0) * 100);
-    if (res.correct) return res.headline + '（' + pct + '%）';
+    // 答对没有置信度可言（没做归因），别印一个 0% 出来
+    if (res.correct) return res.headline + (res.hinted ? '，不算独立答对' : '') +
+      (res.timing && res.timing.ms ? '　' + Math.round(res.timing.ms / 1000) + 's' : '');
     const label = res.causeLabel || res.causeId || '未定';
     // headline 自己就带着错因前缀（给错题卡单独看用的），拼进一行时去掉，
     // 免得日志上出现「形近混淆 · 形近混淆 · 选了……」这种重复。

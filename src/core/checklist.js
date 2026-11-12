@@ -95,6 +95,7 @@
     VERIFY_SOFT: '只是嫌解析写得不够细，题面没过错',
     VERIFY_NO_CODE: '判了不通过，但没给条款号',
     VERIFY_OUT_OF_SCOPE: '判了它看不到信息的条款',
+    V9: '解析里说另一个选项也成立（答案不唯一）',
     GIVE_UP: '连续三次都没过闸',
     EXCEPTION: '程序异常'
   };

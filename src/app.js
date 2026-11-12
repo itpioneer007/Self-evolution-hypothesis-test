@@ -116,6 +116,8 @@
        * 原文里有学生作答，落进 localStorage 等于又存了一份学情。
        * 界面展示与导出 JSON 都读这一份，不只是读内存日志。
        */
+      // 日志按天分组后，哪些天是展开的（键是 YYYY-MM-DD，缺省只展开最近一天）
+      logOpenDays: {},
       traces: [],
       traceLastId: 0,
       // 拦截演练记录：人为混入超纲题/错答案题，看验证角色拦不拦得住
@@ -136,6 +138,7 @@
     if (!Array.isArray(parsed.traces)) parsed.traces = [];
     if (!Array.isArray(parsed.auditDrills)) parsed.auditDrills = [];
     if (typeof parsed.traceLastId !== 'number') parsed.traceLastId = 0;
+    if (!parsed.logOpenDays || typeof parsed.logOpenDays !== 'object') parsed.logOpenDays = {};
     parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
@@ -432,7 +435,7 @@
   const CODE_TEXT = {
     V1: '用了没教过的词', V2: '答案在选项里露了', V3: '选项不合规', V3b: '干扰项太好排除',
     V3c: '干扰拼写不像错拼', V4: '题干泄露答案', V5: '解析没说到点上', V6: '听力原文对不上',
-    V7: '题型和考点对不上', V8: '和同轮别的题撞角度',
+    V7: '题型和考点对不上', V8: '和同轮别的题撞角度', V9: '解析自己说另一个选项也成立',
     C1: '考点不够具体', C2: '不属于本单元', C3: '答案不唯一', C4: '题干有两种读法',
     C5: '语言不规范', C6: '听力原文对不上', C7: '这句读出来会歧义', C8: '配图和题不符',
     F1: '没冲着错因出', F2: '阶段不匹配', F3: '引入了没学过的词', F4: '一题压了两个难点',
@@ -465,49 +468,127 @@
   }
   // 导出给冒烟测试用：时区换算这种错，只有测了才不会回来
   SHT.timeOf = timeOf;
+  // 这两个也导出：逐项说明与「这一轮失败」都是纯字符串/数组处理，
+  // 单独断言比在整页 HTML 里 grep 稳
+  SHT.optionNotesHtml = optionNotesHtml;
+  SHT.failuresOfRound = failuresOfRound;
 
   function codeText(code) {
     return CODE_TEXT[code] || code;
   }
 
-  function failGroupsHtml() {
-    const all = (state.failures || []).slice(0, 60);
-    if (!all.length) return '<div class="chart-empty">这一轮没有没出成的题</div>';
-    const order = [];
-    const byKp = {};
-    all.forEach(function (f) {
-      const key = f.planKp || '（整轮）';
-      if (!byKp[key]) { byKp[key] = { kp: key, items: [] }; order.push(byKp[key]); }
-      byKp[key].items.push(f);
+  /*
+   * 这一轮的失败记录。
+   * 老存档里的失败条目没有 round 字段（那时候还没记），只能用本轮的 startedAt 兜底；
+   * 两个都没有就不算——宁可少报，也不把上一轮的账记到这一轮头上。
+   */
+  function failuresOfRound(roundNo, failures, startedAt) {
+    const since = startedAt ? new Date(startedAt).getTime() : 0;
+    return (failures || []).filter(function (f) {
+      if (typeof f.round === 'number' && f.round > 0) return f.round === roundNo;
+      if (!since) return false;
+      const t = f.at ? new Date(f.at).getTime() : 0;
+      return t >= since;
     });
-    return order.map(function (g) {
-      // 组内按发生时间排：日志的第一诉求是「先发生了什么、再发生了什么」。
-      // 不用 f.attempt 排，因为它的语义不统一——自动检查和质检记的都是「第几次质检」，
-      // 直接拿来当序号会出现 1、2、1、3 这种看不懂的顺序。
-      const items = g.items.slice().sort(function (a, b) {
-        return String(a.at || '').localeCompare(String(b.at || ''));
+  }
+
+  /* ---------- 日志按天分组 ---------- */
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function dayKey(iso) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  // 能一眼找到「哪一天」：今天 / 昨天 / 11月10日 周一
+  const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+  function dayLabel(key) {
+    if (!key) return '没有时间记录';
+    const now = new Date();
+    const today = dayKey(now.toISOString());
+    const yest = dayKey(new Date(now.getTime() - 86400000).toISOString());
+    const d = new Date(key + 'T00:00:00');
+    const md = (d.getMonth() + 1) + '月' + d.getDate() + '日 周' + WEEK[d.getDay()];
+    if (key === today) return '今天 · ' + md;
+    if (key === yest) return '昨天 · ' + md;
+    return d.getFullYear() + '年 · ' + md;
+  }
+  // 展开状态存在 state 里，重渲染不丢；默认只展开最近一天，其余收起
+  function isDayOpen(key, firstKey) {
+    const open = state.logOpenDays || {};
+    if (Object.prototype.hasOwnProperty.call(open, key)) return !!open[key];
+    return key === firstKey;
+  }
+
+  /*
+   * 没出成的题：按「轮次 → 考点 + 同一条款组合」聚合。
+   *
+   * 以前是一条失败记录一行，同一个考点被退 6 次就列 6 行几乎一样的字，
+   * 78 条铺满整页，看的人只能一行一行读，读不出「这个考点到底卡在哪」。
+   * 现在先聚合：同一考点、同一组条款号合成一行，右侧写 ×次数 与时间跨度，
+   * 想看每一次的具体原因再点开。默认全部收起。
+   */
+  function failGroupsHtml() {
+    const all = state.failures || [];
+    if (!all.length) return '<div class="chart-empty">还没有没出成的记录</div>';
+
+    const byRound = {};
+    all.forEach(function (f) {
+      const rn = typeof f.round === 'number' ? f.round : 0;
+      (byRound[rn] = byRound[rn] || []).push(f);
+    });
+    const roundKeys = Object.keys(byRound).map(Number).sort(function (a, b) { return b - a; });
+
+    return roundKeys.map(function (rn) {
+      const items = byRound[rn];
+      const seen = {};
+      const groups = [];
+      items.forEach(function (f) {
+        const codes = (f.codes || []).filter(function (c, i, arr) { return arr.indexOf(c) === i; }).sort();
+        const kp = f.planKp || '（整轮）';
+        const key = kp + '|' + codes.join(',');
+        if (!seen[key]) { seen[key] = { kp: kp, codes: codes, items: [] }; groups.push(seen[key]); }
+        seen[key].items.push(f);
       });
-      const rows = items.map(function (f, i) {
-        // codes 经常重复（同一个 V1 报了三个选项），去重后再翻成人话
-        const codes = (f.codes || []).filter(function (c, j, arr) { return arr.indexOf(c) === j; });
-        const label = codes.map(codeText).join('、') || '未说明';
-        // reason 里常夹着「V1: 」这类编号，翻过一遍就别再露出来
-        const why = String(f.reason || '')
-          .replace(/\b(?:V\d+[a-z]?|C\d|F\d|P\d|L\d|GIVE_UP|QUOTA_[A-Z]+|PLAN_[A-Z_]+)\s*[:：]\s*/g, '')
-          .trim();
-        return '<div class="fail-row">' +
-          '<span class="fail-nth"># ' + (i + 1) + '</span>' +
-          '<span class="fail-stage is-' + esc(f.stage) + '">' + esc(STAGE_TEXT[f.stage] || f.stage) + '</span>' +
-          '<span class="fail-why"><strong>' + esc(label) + '</strong>' + (why ? '　' + esc(why) : '') + '</span>' +
-          '<span class="fail-at">' + esc(timeOf(f.at)) + '</span>' +
-        '</div>';
+      groups.sort(function (a, b) { return b.items.length - a.items.length; });
+
+      let lastKp = '';
+      const rows = groups.map(function (g) {
+        const sameKp = g.kp === lastKp;
+        lastKp = g.kp;
+        const label = g.codes.map(codeText).join(' / ') || '未说明';
+        const times = g.items.map(function (f) { return f.at; }).filter(Boolean).sort();
+        const span = times.length
+          ? timeOf(times[0]) + (times.length > 1 ? '–' + timeOf(times[times.length - 1]) : '')
+          : '';
+        const detail = g.items.slice().sort(function (a, b) {
+          return String(a.at || '').localeCompare(String(b.at || ''));
+        }).map(function (f) {
+          // reason 里常夹着「V1: 」这类编号，翻过一遍就别再露出来
+          const why = String(f.reason || '')
+            .replace(/\b(?:V\d+[a-z]?|C\d|F\d|P\d|L\d|GIVE_UP|QUOTA_[A-Z]+|PLAN_[A-Z_]+)\s*[:：]\s*/g, '')
+            .trim();
+          return '<div class="fail-detail-row"><span class="fail-at">' + esc(timeOf(f.at)) + '</span>' +
+            '<span class="fail-detail-why">' + esc(why || label) + '</span></div>';
+        }).join('');
+        return '<details class="fail-group">' +
+          '<summary class="fail-sum">' +
+            '<span class="fail-stage is-' + esc(g.items[0].stage) + '">' + esc(STAGE_TEXT[g.items[0].stage] || '') + '</span>' +
+            // 同一考点连着好几行时只写一次，其余留空——重复的长考点名会把「条款」挤出去
+            '<span class="fail-kp' + (sameKp ? ' is-same' : '') + '" title="' + esc(g.kp) + '">' +
+              esc(sameKp ? '' : g.kp) + '</span>' +
+            '<span class="fail-codes">' + esc(label) + '</span>' +
+            '<span class="fail-count">×' + g.items.length + '</span>' +
+            '<span class="fail-span">' + esc(span) + '</span>' +
+          '</summary>' +
+          '<div class="fail-body">' + detail + '</div>' +
+        '</details>';
       }).join('');
-      return '<div class="fail-group">' +
-        '<div class="fail-kp-head"><span>' + esc(g.kp) + '</span><em>' + g.items.length + ' 次没成</em></div>' +
+
+      return '<div class="fail-round">' +
+        '<div class="fail-round-head">第 ' + rn + ' 轮<em>' + items.length + ' 条</em></div>' +
         rows + '</div>';
     }).join('');
   }
-
 
   function modelStateHtml() {
     const cfg = SHT.llm.config();
@@ -595,7 +676,7 @@
 
     // 检查标准的明细不进这一页：课程角色的面板只放「这一轮考什么」，
     // 为什么被退回是日志页的事。这里只留一行入口，出完题知道有没有全成。
-    const failN = (state.failures || []).length;
+    const failN = failuresOfRound(state.round, state.failures, (state.rounds[state.round] || {}).startedAt).length;
     const failBrief = failN
       ? '<div class="fail-brief">这一轮有 <strong>' + failN + '</strong> 条没出成 · ' +
         '<button type="button" class="link-btn" data-action="goto-log">到 04 日志看原因</button></div>'
@@ -751,6 +832,35 @@
       $('agentPanel').innerHTML = nav +
         '<div class="hint-box">这一题还没作答。诊断在作答之后才跑：它要读的是他选了什么、' +
         '排掉了什么、花了多少秒——没有这些就没有证据，先编一个原因不如不说。</div>';
+      return;
+    }
+
+    /*
+     * 答对：只报事实，不做归因。
+     *
+     * 以前的写法是给每个答对也编一个「为什么对」（3 秒内=记住了、想了很久=不熟），
+     * 这是拿时间当证据——而时间分不开「本来就会」和「这种题太简单」。
+     * 学生答对了还被盖一个「像背的」章，既不严谨也会误导后面的出题判断。
+     * 现在答对只记三件事：对了、几秒、有没有用提示；要不要再验交给「连对两次」。
+     */
+    if (at.correct) {
+      $('agentPanel').innerHTML = nav +
+        '<div class="diag-card is-good">' +
+          '<div class="diag-top">' +
+            '<span class="diag-badge">答对</span>' +
+            '<span class="diag-headline">' + esc(d.headline || '答对') + '</span>' +
+            '<span class="diag-conf is-muted">不作归因</span>' +
+          '</div>' +
+          '<div class="diag-ans">他答 <b>' + esc(at.picked) + '</b>　正确 <b>' + esc(at.expected) + '</b>' +
+            ((d.timing && d.timing.ms) ? '　' + Math.round(d.timing.ms / 1000) + ' 秒' : '') +
+            (at.hintCount ? '　用了提示' : '') + '</div>' +
+          '<div class="diag-note">答对没有可归因的证据：算得快可能是本来就会，也可能这道题本来就简单，' +
+            '单看秒数分不开。所以这里只记「这次对了」，不猜他为什么对。</div>' +
+          (d.nextStep ? '<div class="diag-next"><span>下一轮怎么验</span>' + esc(d.nextStep) + '</div>' : '') +
+          '<div class="diag-actions"><span class="diag-src">来源：作答结果与耗时（不做错因归因）</span></div>' +
+        '</div>' +
+        '<div class="hint-box" style="margin-top:10px">错因分析只在答错时出现：错选、排除了哪些项、差几个字母，' +
+          '那些才是能拿来说话的证据。</div>';
       return;
     }
 
@@ -945,6 +1055,46 @@
     human: '人工改判'
   };
 
+  /*
+   * 逐项说明：答错时把「他选的这一项为什么错 / 正确答案为什么对 / 另一项为什么错」摆出来。
+   *
+   * 以前整题只有一句 analysis，只讲最主要那个错因，另一个错项一个字都没有——
+   * 学生看到的是「你把讲台听成计算机」，可他选的是 A，A 为什么不对没人说。
+   * 现在按项来：每项一句，指向具体词与规则；缺说明的项宁可不显示，也不硬编。
+   */
+  function optionNotesHtml(q, r) {
+    const opts = (q.options || []).map(function (o) { return String(o == null ? '' : o).trim(); });
+    const notes = q.optionNotes || [];
+    if (!opts.length) return '';
+    const idxOf = function (text) {
+      const t = SHT.normAnswer(text);
+      for (let i = 0; i < opts.length; i += 1) {
+        if (SHT.normAnswer(opts[i]) === t) return i;
+      }
+      return -1;
+    };
+    const picked = idxOf(r.picked);
+    const ans = idxOf(r.expected);
+    const rows = [];
+    const push = function (i, tag, cls) {
+      if (i < 0) return;
+      const why = String(notes[i] || '').trim();
+      if (!why) return;
+      rows.push('<div class="vn-row ' + cls + '">' +
+        '<span class="vn-tag">' + esc(tag) + '</span>' +
+        '<span class="vn-opt">' + esc(opts[i]) + '</span>' +
+        '<span class="vn-why">' + esc(why) + '</span>' +
+      '</div>');
+    };
+    push(picked, '你选 ' + String.fromCharCode(65 + picked), 'is-picked');
+    push(ans, '正确 ' + String.fromCharCode(65 + ans), 'is-answer');
+    opts.forEach(function (_, i) {
+      if (i === picked || i === ans) return;
+      push(i, String.fromCharCode(65 + i), 'is-other');
+    });
+    return rows.length ? '<div class="verdict-notes">' + rows.join('') + '</div>' : '';
+  }
+
   function verdictHtml(q, p) {
     const r = p.revealed;
     // 这一题是上一轮错题的重出题（q.probe）时，结果直接决定那条错题的状态
@@ -961,8 +1111,17 @@
       next = '<button type="button" class="btn btn-primary" data-action="next-step">记下，换下一个考点</button>' +
         '<span class="verdict-note">回练还是错，下一轮再出一次这个考点</span>';
     } else {
+      /*
+       * 答错当场就把闭环交代清楚：这一条已经写进错题、诊断怎么说、下一轮准备怎么出。
+       * 以前只有一句「下一轮会按这个考点重新出题」，学生/审查员看不到「错题→诊断→下一轮」
+       * 这条链到底接上了没有。
+       */
+      const at = attemptOfQuestion(q);
+      const d = at && at.diag;
+      const plan = (d && d.nextStep) ? d.nextStep : '按这个考点换题面重出';
       next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
-        '<span class="verdict-note">下一轮会按这个考点重新出题</span>';
+        '<span class="verdict-note">已记进 03 错题' + (d && d.causeLabel ? '（' + esc(d.causeLabel) + '）' : '') +
+          '；下一轮：' + esc(plan) + '</span>';
     }
     // 模型判的才给改判入口。规则判的（与答案一致）错不了，不需要这个按钮。
     const canFlip = r.via === 'model'
@@ -979,7 +1138,9 @@
       '<div class="verdict-via">' + esc(VIA_TEXT[r.via] || '已判定') +
         (r.gradeReason ? '　·　' + esc(r.gradeReason) : '') +
         (r.via === 'model' ? '　·　这条已冻结，下次不再重判' : '') + '</div>' +
-      (q.analysis ? '<div class="verdict-analysis">' + esc(q.analysis) + '</div>' : '') +
+      // 答对不给解析：题面解析讲的是「错项为什么错」，人答对了再把这段话塞回去是自相矛盾的
+      (!r.correct ? (optionNotesHtml(q, r) ||
+        (q.analysis ? '<div class="verdict-analysis">' + esc(q.analysis) + '</div>' : '')) : '') +
       '<div class="verdict-next">' + next + canFlip + '</div>' +
     '</div>';
   }
@@ -1569,29 +1730,68 @@
         // 这道题学生的作答紧跟在它后面，出题与作答在同一条线上，看得出因果
         (r.practice ? r.practice.attempts : []).filter(function (a) { return a.no === i + 1; })
           .forEach(function (a) {
+            // 结构化：不再用全角空格把七八件事拼成一句话，改成一个个小标签
+            const tags = [];
+            if (!a.correct) {
+              tags.push({ k: a.answerMode === 'open' ? '写了' : '选了', v: a.picked });
+              tags.push({ k: '正确', v: a.expected });
+            }
+            if (a.durationMs) tags.push({ k: '耗时', v: Math.round(a.durationMs / 1000) + 's' });
+            if (a.hintCount) tags.push({ k: '提示', v: '用了 ' + a.hintCount + ' 次' });
+            if (a.via === 'model') tags.push({ k: '判定', v: '模型' });
+            else if (a.via === 'human') tags.push({ k: '判定', v: '人工改判' });
+            if (a.diag) tags.push({ k: '诊断', v: SHT.diagnose.summary(a.diag) });
             entries.push({
               round: rn, kind: a.correct ? 'pass' : 'reject', at: a.at || '',
               title: '第 ' + a.no + ' 题' + (a.stage === 'variant' ? ' 换个问法再考' : '') + (a.correct ? ' 答对' : ' 答错'),
-              detail: (a.correct ? '' : (a.answerMode === 'open' ? '写了「' : '选了「') + esc(a.picked) + '」，正确是「' + esc(a.expected) + '」') +
-                // 判定来源也带上：规则判的死判断不用管，模型判的可以人改
-                (a.via === 'model' ? '　模型判定' : a.via === 'human' ? '　人工改判' : '') +
-                (a.durationMs ? '　' + Math.round(a.durationMs / 1000) + 's' : '') +
-                (a.hintCount ? '　用了提示' : '') +
-                // 诊断跟着作答一起进日志：看得出「为什么错」，而不只是「错了」
-                (a.diag ? '　诊断：' + esc(SHT.diagnose.summary(a.diag)) : '')
+              tags: tags
             });
           });
       });
       if (r.closed) entries.push({ round: rn, kind: 'close', at: r.endedAt || '', title: '第 ' + rn + ' 轮结束', detail: '' });
     });
-    $('logCount').textContent = entries.length ? entries.length + ' 条' : '';
-    $('logFeed').innerHTML = entries.length ? entries.map(function (e) {
-      return '<div class="log-item is-' + e.kind + '">' +
-        '<span class="log-at">' + esc(e.at ? timeOf(e.at) : '') + '</span>' +
-        '<span class="log-round">第' + e.round + '轮</span>' +
-        '<span class="log-dot' + (e.kind ? ' is-' + e.kind : '') + '"></span>' +
-        '<div><div class="log-title">' + esc(e.title) + '</div>' +
-          (e.detail ? '<div class="log-detail">' + e.detail + '</div>' : '') + '</div>' +
+    /*
+     * 按天分组 + 组内倒序。
+     * 以前是两轮的记录平铺成一条长列表，只显示时分，没有日期——
+     * 过两天再看，根本不知道哪条是今天的、哪条是上周的。
+     * 现在一天一组，组头写「今天 / 昨天 / 11月10日 周三」+ 条数，
+     * 默认只展开最近一天，其余收起（展开状态记在 state.logOpenDays 里）。
+     */
+    entries.sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); });
+    const days = [];
+    const byDay = {};
+    entries.forEach(function (e) {
+      const k = dayKey(e.at);
+      if (!byDay[k]) { byDay[k] = { key: k, items: [] }; days.push(byDay[k]); }
+      byDay[k].items.push(e);
+    });
+    const firstKey = days.length ? days[0].key : '';
+    $('logCount').textContent = entries.length ? entries.length + ' 条 · ' + days.length + ' 天' : '';
+    $('logFeed').innerHTML = entries.length ? days.map(function (d) {
+      const open = isDayOpen(d.key, firstKey);
+      return '<div class="log-day">' +
+        '<button type="button" class="log-day-head" data-day="' + esc(d.key) + '" data-action="toggle-day" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+          '<span class="log-day-caret">' + (open ? '−' : '+') + '</span>' +
+          '<span class="log-day-title">' + esc(dayLabel(d.key)) + '</span>' +
+          '<span class="log-day-meta">' + d.items.length + ' 条</span>' +
+        '</button>' +
+        '<div class="log-day-body"' + (open ? '' : ' hidden') + '>' +
+          d.items.map(function (e) {
+            const tags = (e.tags || []).filter(function (t) { return t && t.v; }).map(function (t) {
+              return '<span class="log-tag"><em>' + esc(t.k) + '</em>' + esc(t.v) + '</span>';
+            }).join('');
+            return '<div class="log-item is-' + e.kind + '">' +
+              '<span class="log-at">' + esc(e.at ? timeOf(e.at) : '') + '</span>' +
+              '<span class="log-round">第' + e.round + '轮</span>' +
+              '<span class="log-dot' + (e.kind ? ' is-' + e.kind : '') + '"></span>' +
+              '<div class="log-main">' +
+                '<div class="log-title">' + esc(e.title) + '</div>' +
+                (tags ? '<div class="log-detail">' + tags + '</div>'
+                      : (e.detail ? '<div class="log-detail">' + e.detail + '</div>' : '')) +
+              '</div>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
       '</div>';
     }).join('') : '<div class="chart-empty">暂无记录</div>';
 
@@ -2219,6 +2419,8 @@
         attempts: (round.practice && round.practice.attempts) || [],
         priorAttempts: priorAttempts,
         existing: round.questions.filter(function (q) { return q.prompt; }),
+        // 失败记录要带轮次，否则界面拿「全部失败」当「这一轮」
+        round: state.round,
         planOnly: !!planOnly,
         onEvent: function (ev) {
           if (token !== runToken) return;
@@ -2326,6 +2528,20 @@
         if (action === 'model-round') { runModelRound(false); return; }
         if (action === 'stop-model') { runToken += 1; state.llmBusy = false; save(); renderAll(); toast('已停止后续步骤，已经发出去的请求不会收回'); return; }
         if (action === 'goto-log') { state.tab = 'loop'; save(); renderAll(); return; }
+        if (action === 'toggle-day') {
+          // 一天一组：点组头只切这一天，别的天不动
+          const key = b.dataset.day || '';
+          state.logOpenDays = state.logOpenDays || {};
+          const firstKey = (function () {
+            const any = [1, 2].map(function (rn) { return (state.rounds[rn] || {}).startedAt; }).filter(Boolean).sort().pop() || '';
+            return dayKey(any);
+          })();
+          const nowOpen = isDayOpen(key, firstKey);
+          state.logOpenDays[key] = !nowOpen;
+          save();
+          renderLog();
+          return;
+        }
         if (action === 'auto-quota') { autoQuota(); return; }
         if (action === 'quota-inc') { bumpQuota(b.dataset.ability, 1); return; }
         if (action === 'quota-dec') { bumpQuota(b.dataset.ability, -1); return; }
