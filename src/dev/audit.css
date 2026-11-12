@@ -888,3 +888,39 @@
   .audit-table { min-width: 0; }
   .audit-fold:not([open]) > summary::before { display: none; }
 }
+
+/* ============================================================
+   集成补充（主理人按真实渲染结果补的，2026-11-12）
+   1) 卡内证据值单行省略：不加这几条，长考点名会折成两行，
+      把第三行证据顶出卡底、压住「看证据」链接。
+   2) 宽屏把总判条改成两行栅格：徽章独占一行，
+      不跟「未达标 · 0/4」与三个按钮抢宽度。
+   ============================================================ */
+.audit-evidence dt {
+  flex: 0 0 76px;
+  white-space: nowrap;
+}
+.audit-evidence dd {
+  flex: 1 1 auto;
+  min-width: 0;               /* flex 子项默认 min-width:auto，不置 0 则省略号不生效 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.audit-live[hidden] { display: none; }
+
+@media (min-width: 900px) {
+  .audit-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "verdict tools"
+      "badges  badges";
+    align-items: center;
+    row-gap: 8px;
+  }
+  .audit-verdict { grid-area: verdict; }
+  .audit-tools { grid-area: tools; }
+  .audit-vbadges { grid-area: badges; }
+  .audit-live { grid-column: 1 / -1; }
+}

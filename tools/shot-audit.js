@@ -174,7 +174,7 @@ server.listen(PORT, '127.0.0.1', function () {
   const child = spawn(edge, [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--disable-extensions', '--hide-scrollbars', '--force-device-scale-factor=1',
-    '--window-size=1280,1560',
+    '--window-size=1280,1180',
     '--screenshot=' + OUT,
     '--virtual-time-budget=4000',
     '--user-data-dir=' + profile,
