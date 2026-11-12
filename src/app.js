@@ -26,14 +26,25 @@
     });
   }
 
-  function cloneSample(unitId) {
-    return SHT.sampleQuestionsFor(unitId || SHT.curriculum.id).map(function (q) {
+  function blankQuestionShape(no) {
+    return {
+      no: no, knowledgePoint: '', ability: '',
+      cell: { type: '听音选义', scene: SHT.curriculum.topicDomain, level: '认', distractor: '同类不同物' },
+      prompt: '', audioText: '', options: ['', '', ''], answer: '', analysis: '', nextIfWrong: '', checks: {}
+    };
+  }
+
+  function cloneSample(unitId, count) {
+    const base = SHT.sampleQuestionsFor(unitId || SHT.curriculum.id).map(function (q) {
       return Object.assign({}, q, {
         cell: Object.assign({}, q.cell),
         options: (q.options || []).slice(),
         checks: {}
       });
     });
+    const n = clampCount(count || base.length);
+    while (base.length < n) base.push(blankQuestionShape(base.length + 1));
+    return base.slice(0, n);
   }
 
   function cloneWrongCases(unitId) {
@@ -72,6 +83,7 @@
       activeNo: 1,
       learningLayer: SHT.sampleLearningLayer || 'B',
       rounds: { 1: blankRound(), 2: blankRound() },
+      questionCounts: { 1: 5, 2: 5 },
       wrongCases: cloneWrongCases(),
       failures: [],
       llmBusy: false,
@@ -93,6 +105,9 @@
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
     parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
+    if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
+    parsed.questionCounts[1] = clampCount(parsed.questionCounts[1]);
+    parsed.questionCounts[2] = clampCount(parsed.questionCounts[2]);
     if (!parsed.wrongCases) parsed.wrongCases = cloneWrongCases(parsed.unitId);
     if (!parsed.rounds[2]) parsed.rounds[2] = blankRound();
     ['1', '2'].forEach(function (k) {
@@ -140,7 +155,7 @@
   let state = loadState();
   // 先按存过的书切，再切单元；只切单元会拿错词表边界
   SHT.setBook(state.bookId, state.unitId);
-  if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample(state.unitId);
+  if (!state.rounds[1].questions.length) state.rounds[1].questions = cloneSample(state.unitId, countFor(1));
 
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* 隐私模式下忽略 */ }
@@ -148,6 +163,23 @@
 
   function currentRound() { return state.rounds[state.round]; }
   function currentQuestion() { return currentRound().questions[state.activeNo - 1] || null; }
+  function clampCount(v) {
+    const n = Math.round(Number(v));
+    if (!isFinite(n)) return 5;
+    return Math.max(1, Math.min(15, n));
+  }
+  function countFor(roundNo) {
+    return clampCount((state.questionCounts && state.questionCounts[roundNo]) || 5);
+  }
+
+  // 题量变化时立即增删题目：多了补空题，少了截断，并重排题号
+  function resizeQuestions(round, count) {
+    const n = clampCount(count);
+    const list = round.questions;
+    while (list.length < n) list.push(blankQuestionShape(list.length + 1));
+    if (list.length > n) list.length = n;
+    list.forEach(function (q, i) { q.no = i + 1; });
+  }
 
   function verdictOf(q) {
     if (!q) return '待检';
@@ -201,7 +233,7 @@
   const ROLES = [
     {
       id: 'course', no: '环节 1', name: '课程智能体', stage: '规划',
-      prompt: '命题规划 · 5 题配额',
+      prompt: '命题规划 · 按题量配额',
       memory: '上轮角度 · 薄弱画像',
       skill: '变化轴 · 配额约束'
     },
@@ -328,7 +360,7 @@
       state.quota = SHT.quota.auto({
         scope: kpScopePayload(),
         kps: unitKps(),
-        total: QUOTA_LIMIT
+        total: quotaLimit()
       });
     }
     save(); renderAll();
@@ -427,7 +459,11 @@
 
   // 这一轮最多出几题。重算配额时用它当上限，不能用「当前配额之和」，
   // 否则勾第一个考点算出 1 条，勾第二个时又拿 1 当上限，永远长不回去。
-  const QUOTA_LIMIT = 5;
+  // 上限跟着计划表上那个「题量」输入框走：设成 8 题，配额就得按 8 分。
+  const QUOTA_FALLBACK = 5;
+  function quotaLimit() {
+    return countFor(state.round) || QUOTA_FALLBACK;
+  }
 
   // 配额条：一行放下七类能力的「已排 / 配额」。
   // 不在计划表里加列——七列已经满了，加两列会挤掉知识点输入框；
@@ -437,7 +473,7 @@
     if (SHT.quota.sum(q) === 0) {
       // 还没分配过：按当前状态算一份，同时落进状态，
       // 否则显示的是一份、点「＋」时按空表从 0 起算，数字会跳
-      q = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: QUOTA_LIMIT });
+      q = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: quotaLimit() });
       state.quota = q;
     }
     const list = currentRound().questions;
@@ -475,7 +511,7 @@
     const projection = weaknessProjection();
     let body;
     if (!list.length) {
-      body = '<div class="hint-box">这一轮还没排题。点「模型出 5 题」让它自己排；也可以点「自己配 5 个题型」按题型铺开。</div>';
+      body = '<div class="hint-box">这一轮还没排题。点「模型出 ' + countFor(state.round) + ' 题」让它自己排；也可以点「自己配 ' + countFor(state.round) + ' 个题型」按题型铺开。</div>';
     } else {
       body = '<div class="plan-head"><span>题号</span><span>这道题考什么</span><span>题型</span><span>场景</span><span>考到哪一层</span><span>错项怎么设</span><span>检查结果</span></div>' +
         '<div class="plan-table">' + list.map(function (q, i) {
@@ -511,12 +547,13 @@
       '<div class="panel-toolbar">' +
         '<span class="hint">' + esc(note) + '</span>' +
         '<div class="toolbar-actions">' +
+          '<label class="count-pill" title="第 ' + state.round + ' 轮题量">题量<input type="number" min="1" max="15" data-field="questionCount" data-round="' + state.round + '" value="' + countFor(state.round) + '"></label>' +
           modelStateHtml() +
           (state.llmBusy
             ? '<span class="model-step">' + esc(state.llmStep || '跑着…') + '</span>' +
               '<button type="button" class="btn" data-action="stop-model">停</button>'
-            : '<button type="button" class="btn btn-primary" data-action="model-round">模型出 5 题</button>' +
-              '<button type="button" class="btn" data-action="auto-quota">自己配 5 个题型</button>' +
+            : '<button type="button" class="btn btn-primary" data-action="model-round">模型出 ' + countFor(state.round) + ' 题</button>' +
+              '<button type="button" class="btn" data-action="auto-quota">自己配 ' + countFor(state.round) + ' 个题型</button>' +
               '<button type="button" class="btn" data-action="fill-weakness">用错题填</button>') +
         '</div>' +
       '</div>' +
@@ -539,14 +576,16 @@
           const cls = (no === state.activeNo ? ' is-active' : '') + (verdictOf(list[i]) === '退回' ? ' is-failed' : '');
           return '<button type="button" data-action="q-nav" data-no="' + no + '" class="' + cls.trim() + '">' + no + '</button>';
         }).join('') + '</div>' +
-        '<span class="hint">第 ' + state.activeNo + ' / ' + list.length + ' 题 · ' + esc(c.type) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span>' +
+        '<div class="toolbar-actions">' +
+          '<span class="hint">第 ' + state.activeNo + ' / ' + list.length + ' 题 · ' + esc(c.type) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span>' +
+          '<button type="button" class="btn btn-primary" data-action="save-changes">保存修改</button>' +
+        '</div>' +
       '</div>' +
       '<div class="field-grid">' +
         '<div class="field-row is-wide"><label>出题角度</label><span class="cell-badge">' +
           esc(c.type) + ' / ' + esc(c.scene) + ' / ' + esc(c.level) + ' / ' + esc(c.distractor) + '</span></div>' +
-        '<div class="field-row"><label>知识点</label><div class="kp-inline">' +
-          '<input data-field="knowledgePoint" value="' + esc(q.knowledgePoint) + '" placeholder="细到错因">' +
-          '<select data-kp-pick>' + kpSelectHtml() + '</select></div></div>' +
+        '<div class="field-row is-wide"><label>知识点</label><span class="cell-badge">' +
+          esc(q.knowledgePoint || '（未填知识点）') + '</span></div>' +
         '<div class="field-row"><label>能力</label><input data-field="ability" value="' + esc(q.ability) + '"></div>' +
         '<div class="field-row is-wide"><label>题目</label><textarea data-field="prompt" placeholder="只用本单元词表与句型">' + esc(q.prompt) + '</textarea></div>' +
         '<div class="field-row is-wide"><label>听力原文</label><input data-field="audioText" value="' + esc(q.audioText) + '" placeholder="非听力题留空"></div>' +
@@ -602,9 +641,7 @@
             '<button type="button" data-action="check" data-check="' + esc(item.id) + '" data-verdict="pass" class="' + (v === 'pass' ? 'is-pass' : '') + '">过</button>' +
             '<button type="button" data-action="check" data-check="' + esc(item.id) + '" data-verdict="fail" class="' + (v === 'fail' ? 'is-fail' : '') + '">挂</button>' +
           '</span></div>';
-      }).join('') +
-      '<details class="selfcheck"><summary>拿不准时，照这十句自查一遍</summary><ol>' +
-        SHT.SELF_CHECK_TEN.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol></details>';
+      }).join('');
   }
 
   function renderAgentPanel() {
@@ -1078,10 +1115,10 @@
     }
 
     $('metrics').innerHTML =
-      kpi('本轮题数', total + ' / 5', '计划题量', '') +
+      kpi('本轮题数', total + ' / ' + countFor(state.round), '计划题量', '') +
       kpi('通过', passed, '四层 23 条全过', passed ? 'is-good' : '') +
       kpi('退回', failedCount === null ? 0 : failedCount, '条款见右栏', failedCount ? 'is-bad' : '') +
-      kpi('角度重复', overlap === null ? '—' : overlap + '/5', '合格线 ≤ 1/5', overlap !== null && overlap > 1 ? 'is-bad' : '') +
+      kpi('角度重复', overlap === null ? '—' : overlap + '/' + countFor(2), '合格线 ≤ 1/' + countFor(2), overlap !== null && overlap > 1 ? 'is-bad' : '') +
       kpi('真会 / 已测', stats.mastered + ' / ' + stats.tested, '共 ' + stats.total + ' 个考点', stats.wrong ? 'is-bad' : (stats.mastered ? 'is-good' : ''));
   }
 
@@ -1257,7 +1294,7 @@
   /* ---------- 动作 ---------- */
   function startRound2() {
     const exclusion = SHT.buildExclusionList([state.rounds[1]]);
-    const cells = generateCells(5, exclusion);
+    const cells = generateCells(countFor(2), exclusion);
     const base = state.rounds[1].questions;
     state.rounds[2] = {
       questions: cells.map(function (cell, i) {
@@ -1281,7 +1318,7 @@
 
   function autoQuota() {
     const exclusion = exclusionForCurrentRound();
-    const cells = generateCells(5, exclusion);
+    const cells = generateCells(countFor(state.round), exclusion);
     const list = currentRound().questions;
     if (!list.length) {
       currentRound().questions = cells.map(function (cell, i) {
@@ -1294,7 +1331,7 @@
       list.forEach(function (q, i) { if (cells[i]) q.cell = cells[i]; });
     }
     save(); renderAll();
-    toast('已排好 5 个角度');
+    toast('已排好 ' + countFor(state.round) + ' 个角度');
   }
 
   // 手工改配额：一按就记成 manual，来源不再被自动覆盖
@@ -1307,7 +1344,7 @@
       if (v > 0) next[x] = v;
     });
     const sum = SHT.quota.sum({ byAbility: next });
-    const limit = Math.max(QUOTA_LIMIT, sum);
+    const limit = Math.max(quotaLimit(), sum);
     state.quota = SHT.quota.normalize({ source: 'manual', total: limit, byAbility: next, note: '人工调整' });
     save(); renderAll();
   }
@@ -1316,7 +1353,7 @@
   function recalcQuota() {
     const rounds = state.round === 2 ? [state.rounds[1], state.rounds[2]] : [state.rounds[1]];
     const brief = SHT.pipeline.buildBrief({ unitId: state.unitId, rounds: rounds, wrongCases: state.wrongCases });
-    state.quota = SHT.quota.auto({ scope: kpScopePayload(), brief: brief, kps: unitKps(), total: QUOTA_LIMIT });
+    state.quota = SHT.quota.auto({ scope: kpScopePayload(), brief: brief, kps: unitKps(), total: quotaLimit() });
     save(); renderAll();
     toast('配额已重算：' + (state.quota.note || '') + '　' + SHT.quota.text(state.quota));
   }
@@ -1508,7 +1545,7 @@
     state.checkLayer = 0;
     state.agent = 'course';
     state.rounds = { 1: blankRound(), 2: blankRound() };
-    state.rounds[1].questions = cloneSample(state.unitId);
+    state.rounds[1].questions = cloneSample(state.unitId, countFor(1));
     state.wrongCases = cloneWrongCases(state.unitId);
     state.failures = [];
     // 候选清单是跟着单元走的，换书换单元后旧的 id 全部失效，范围必须清空
@@ -1671,7 +1708,7 @@
     try {
       const res = await SHT.pipeline.runRound({
         unit: SHT.curriculum,
-        count: 5,
+        count: countFor(state.round),
         brief: brief,
         scope: scopeNow,
         memory: state.agentMemory,
@@ -1791,6 +1828,7 @@
         if (action === 'toggle-scope') { toggleScope(b.dataset.id); return; }
         if (action === 'clear-scope') { state.kpScope = []; save(); renderAll(); toast('本轮不限知识点范围'); return; }
         if (action === 'q-nav') { state.activeNo = Number(b.dataset.no); save(); renderAll(); return; }
+        if (action === 'save-changes') { save(); renderAll(); toast('已保存本页修改'); return; }
         if (action === 'layer') { state.checkLayer = Number(b.dataset.index); save(); renderAll(); return; }
         if (action === 'check') {
           const q = currentQuestion();
@@ -1814,24 +1852,38 @@
 
     $('agentPanel').addEventListener('change', function (e) {
       const el = e.target;
-      if (el.dataset.kpPick !== undefined) {
-        if (el.value) applyKnowledgePoint(el.value, state.activeNo, false);
-        return;
-      }
       const field = el.dataset.field;
       if (!field) return;
+      if (field === 'questionCount') {
+        const rn = el.dataset.round;
+        if (!rn) return;
+        state.questionCounts[rn] = clampCount(el.value);
+        el.value = state.questionCounts[rn];
+        resizeQuestions(state.rounds[rn], state.questionCounts[rn]);
+        if (state.activeNo > state.rounds[rn].questions.length) state.activeNo = state.rounds[rn].questions.length || 1;
+        // 题量变了，配额要跟着重新分；人手工调过的配额不动
+        if (Number(rn) === state.round && state.quota && state.quota.source !== 'manual') {
+          state.quota = SHT.quota.auto({
+            scope: kpScopePayload(), kps: unitKps(), total: quotaLimit()
+          });
+        }
+        save(); renderAll();
+        return;
+      }
+      // 课程智能体计划表（带 data-no）：即时保存
       if (el.dataset.no) {
         const q = currentRound().questions[Number(el.dataset.no) - 1];
         if (!q) return;
         if (field === 'knowledgePoint') q[field] = el.value;
         else if (q.cell) q.cell[field] = el.value;
-      } else {
-        const q = currentQuestion();
-        if (!q) return;
-        if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
-        else q[field] = el.value;
+        save(); renderAll();
+        return;
       }
-      save(); renderAll();
+      // 执行智能体九字段（不带 data-no）：只写内存，等「保存修改」按钮
+      const q = currentQuestion();
+      if (!q) return;
+      if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
+      else q[field] = el.value;
     });
 
     $('agentPanel').addEventListener('input', function (e) {
@@ -1842,7 +1894,6 @@
       if (!q) return;
       if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
       else q[field] = el.value;
-      save();
     });
 
     $('wrongList').addEventListener('click', function (e) {
@@ -1901,7 +1952,7 @@
         const overlap = overlapCount();
         const r1 = countFailed(state.rounds[1]);
         const r2 = countFailed(state.rounds[2]);
-        toast('两轮结果：出题角度重复 ' + (overlap === null ? '—' : overlap + '/5') +
+        toast('两轮结果：出题角度重复 ' + (overlap === null ? '—' : overlap + '/' + countFor(2)) +
           '，被退回的题 ' + (r1 === null ? '—' : r1) + ' → ' + (r2 === null ? '—' : r2) +
           '。样本小，只够看方向。');
       }
@@ -1924,7 +1975,7 @@
   // 配额先定下来再渲染：首屏就该看到「词汇 2 / 语法 1」这样的分配，
   // 而不是一片 0/0 等着人去点
   if (SHT.quota.sum(state.quota) === 0) {
-    state.quota = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: QUOTA_LIMIT });
+    state.quota = SHT.quota.auto({ scope: kpScopePayload(), kps: unitKps(), total: quotaLimit() });
   }
 
   bind();
