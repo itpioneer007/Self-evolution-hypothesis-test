@@ -1070,6 +1070,42 @@ async function runCase(name, script, expect) {
   })();
 
   await (function () {
+    /*
+     * 错题复用的整条链，一步不许断：
+     *   第一轮答错 → 错题本（unitId 存的是教材单元 id）→ brief.priority → plan.probe → 题目 parentQid
+     * 以前 buildBrief 拿册内 id 去比教材单元 id，priority 恒空，
+     * 于是 probe 全 null、parentQid 全空，界面上一点异常都看不出来。
+     */
+    const hostId = SHT_BOOK.getUnit(SHT.curriculum.id).hostUnitId;
+    const saved = {
+      id: 'wq:S-001:' + hostId + ':q3', studentId: 'S-001', unitId: hostId,
+      originalQuestionId: 'q3', kpId: 'kp-shirt', knowledgePoint: 'vocab · shirt · 音义联结',
+      ability: 'vocab', category: '形近混淆', questionSnapshot: '选出「衬衫」的英文。',
+      studentAnswer: 'skirt', correctAnswer: 'shirt',
+      firstAttemptEvidence: { hintCount: 0, durationMs: 8000 },
+      variantAttempts: [], masteryState: 'wrong', remediationLoopCount: 0
+    };
+    const brief = SHT.pipeline.buildBrief({ unitId: SHT.curriculum.id, rounds: [], wrongCases: [saved] });
+    assert('真实错题进得了 brief 的 priority（probe 的唯一来源）',
+      brief.priority.length === 1 && brief.priority[0].prevQid === 'q3', JSON.stringify(brief.priority));
+    const one = { ok: true, tokens: 10, ms: 1, json: { plans: [{ kp: 'vocab · shirt · 音义联结', ability: 'vocab', cause: '形近', whyThisOne: '上一轮答错，换题面重考', nextIfWrong: '先配对', level: '认' }] } };
+    let k = 0;
+    const script = [() => one, () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 }), () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 })];
+    SHT.llm.call = async function () { const f = script[Math.min(k, script.length - 1)]; k += 1; return f(); };
+    return SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 1, brief: brief, existing: [],
+      quota: { source: 'manual', total: 1, byAbility: { vocab: 1 } }
+    }).then(function (out) {
+      assert('本轮计划标成复用错题（probe）', !!out.plans[0].probe, JSON.stringify(out.plans[0].probe || null));
+      assert('计划挂回第一轮那道错题的 id', out.plans[0].probe.parentQid === 'q3',
+        String(out.plans[0].probe && out.plans[0].probe.parentQid));
+      assert('出出来的题带 parentQid，审计台靠它对上', out.questions[0].parentQid === 'q3', String(out.questions[0].parentQid));
+      assert('题级 probe 带上一轮题干当反例',
+        !!out.questions[0].probe && out.questions[0].probe.prevPrompt === '选出「衬衫」的英文。');
+    });
+  })();
+
+  await (function () {
     // 诱饵造不出来：连着两次 V3（选项重复）就换相近考点，不把第三次机会耗完
     const S2 = [
       { id: 'a', label: 'vocab · A · 甲', ability: 'vocab', cell: { type: '中英匹配', level: '认' } },

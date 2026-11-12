@@ -463,15 +463,38 @@
   }
 
   /* ---------- 导出与交互 ---------- */
+  /*
+   * 导出要能回答「第二轮到底复用了第一轮什么」。
+   * 只导当前轮是不够的：老师翻到 probe:null 会问「那错题去哪了」，
+   * 而错题本和上一轮的题都不在文件里，没法自证。所以三样一起给：
+   *   prevRound  —— 上一轮的计划/题目/作答（reuse 的「源」）
+   *   wrongCases —— 错题本（含诊断结论、原题 id，reuse 的「凭据」）
+   *   round      —— 本轮（reuse 的「结果」，probe / parentQid 指回去）
+   * 示例错题不进导出：它是给人看界面的，不是学情证据。
+   */
+  function roundSnap(r, roundNo) {
+    if (!r) return null;
+    return {
+      round: roundNo,
+      plans: r.plans || [],
+      questions: r.questions || [],
+      attempts: (r.practice && r.practice.attempts) || []
+    };
+  }
+
   function exportPayload() {
     const state = (SHT.devAudit.state && SHT.devAudit.state()) || {};
     const round = (state.rounds || {})[state.round] || {};
+    const prevNo = (state.round || 1) - 1;
     return {
       exportedAt: new Date().toISOString(),
       student: SHT.sampleStudent && SHT.sampleStudent.id,
       book: SHT.curriculum.bookName,
       unit: SHT.curriculum.hostUnitId,
       round: state.round,
+      // 复用的三个落点
+      prevRound: prevNo >= 1 ? roundSnap((state.rounds || {})[prevNo], prevNo) : null,
+      wrongCases: (state.wrongCases || []).filter(function (c) { return !c.demo; }),
       plans: round.plans || [],
       questions: round.questions || [],
       failures: state.failures || [],
