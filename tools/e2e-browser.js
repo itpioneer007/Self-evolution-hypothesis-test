@@ -45,6 +45,26 @@ const kpIndex = {};     // 考点文本 → 计划序号
 const verifyHits = {};  // 题干 → 被验证次数
 const promptIdx = {};  // 题干 → 计划序号（验证看不到知识点，只能按题干认题）
 
+const MODE = { round: 1 };  // 页面会先打一声招呼切到第二轮
+
+/*
+ * 第二轮的剧本刻意和第一轮不同：只排 1 条，而且是「改写过的考点」。
+ * 真实模型不会照抄考点文本（实测一轮 5 条计划 5 条自造），这里就按那个真实行为写：
+ * 把错题画像里的考点原文砍掉半截，看代码是把它当新考点漏掉，
+ * 还是按词面重合挂回第一轮那道错题。
+ */
+function planFromWrongCard(userText) {
+  const m = String(userText).match(/错题画像[^\n]*\n- ([^（\n]+)（/);
+  const kp = m ? m[1].trim() : '';
+  if (!kp) {
+    return [{ kp: 'vocab · 画像没读到 · 兜底', ability: 'vocab', cause: '未掌握', whyThisOne: '画像没读到', nextIfWrong: '重排', level: '认' }];
+  }
+  return [{
+    kp: kp.replace(/·[^·]*$/, '· 换个角度再考一次'), ability: 'vocab', cause: '形近混淆',
+    whyThisOne: '上一轮这个考点答错了，换一个角度再考', nextIfWrong: '再换图片直认', level: '辨'
+  }];
+}
+
 function parseVocab(text) {
   const out = [];
   const seen = {};
@@ -62,6 +82,7 @@ function parseVocab(text) {
 }
 
 function buildPlans(userText) {
+  if (MODE.round === 2) return planFromWrongCard(userText);
   const words = parseVocab(userText).slice(0, 12);
   const shapes = [['vocab', '认'], ['spelling', '辨'], ['sentence', '用'], ['vocab', '认'], ['vocab', '认']];
   return shapes.map(function (s, i) {
@@ -99,7 +120,9 @@ function buildQuestion(userText, idx) {
     return { prompt: '选出「' + w.zh + '」的正确拼写。', audioText: '', options: [w.en, 'curtain', 'zebra'], answer: w.en, analysis: '看清词形。', keyword: w.en };
   }
 
-  const w = vocab[(idx + 1) * 7 % vocab.length] || vocab[0];
+  // 第二轮换个词出：复用的意思是「同考点、换题面」，不是把原题再印一遍
+  const base = (idx + 1) * 7 % vocab.length;
+  const w = vocab[MODE.round === 2 ? (base + 1) % vocab.length : base] || vocab[0];
   const others = vocab.filter(function (x) { return x.en.toLowerCase() !== w.en.toLowerCase(); });
   const o1 = others[(idx + 1) % others.length];
   const o2 = others[(idx + 2) % others.length];
@@ -167,12 +190,48 @@ const PAGE = function () {
     '    var res = await SHT.pipeline.runRound({unit:unit,count:5,brief:SHT.pipeline.buildBrief({unitId:unit.id,rounds:[],wrongCases:[]}),existing:[],quota:{total:5,byAbility:{vocab:3,spelling:1,sentence:1}},onEvent:function(e){events.push(e.phase);}});',
     '    var cells = {};',
     '    res.questions.forEach(function(q){cells[SHT.cellKey(q.cell)]=1;});',
+    /*
+     * 第二轮：把第一轮第 1 题当成他答错了，走一遍「错题本 → brief → 计划 → 题」。
+     * 这一步以前没有覆盖：smoke 里是手搓一条 wrongCase 直接喂 brief，
+     * 验不到「页面上的 buildBrief 用的是哪个 unitId」「改写过的考点还能不能挂上」。
+     */
+    '    var q1 = res.questions[0];',
+    '    var wrong = {',
+    '      id: "wq:S-001:" + unit.hostUnitId + ":" + q1.qid, studentId: "S-001",',
+    '      unitId: unit.hostUnitId, originalQuestionId: q1.qid, kpId: "",',
+    '      knowledgePoint: q1.knowledgePoint, ability: q1.ability, category: "未掌握",',
+    '      questionSnapshot: q1.prompt, studentAnswer: "他选错的项", correctAnswer: q1.answer,',
+    '      firstAttemptEvidence: { hintCount: 0, retryCount: 0, durationMs: 6000, completedAt: new Date().toISOString() },',
+    '      variantAttempts: [], masteryState: "wrong", remediationLoopCount: 0, createdAt: new Date().toISOString()',
+    '    };',
+    // 只传本轮的 attempts，等于告诉 brief「上一轮没人作答」，这里刻意带上一次错答
+    '    var brief2 = SHT.pipeline.buildBrief({',
+    '      unitId: unit.id,',
+    '      rounds: [{ questions: res.questions, practice: { attempts: [{ no: q1.no, stage: "first", kpLabel: q1.knowledgePoint, picked: "他选错的项", expected: q1.answer, correct: false, hintCount: 0 }] } }],',
+    '      wrongCases: [wrong]',
+    '    });',
+    '    await fetch("/mode", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ round: 2 }) });',
+    '    var res2 = await SHT.pipeline.runRound({',
+    '      unit: unit, count: 1, brief: brief2, existing: res.questions,',
+    '      quota: { source: "manual", total: 1, byAbility: { vocab: 1 } }',
+    '    });',
     '    var summary = {',
     '      ok: res.ok, unit: unit.id, planCount: res.plans.length, questionCount: res.questions.length,',
     '      distinctCells: Object.keys(cells).length,',
     '      questions: res.questions.map(function(q){return {no:q.no,type:q.cell.type,options:q.options,answer:q.answer,verdict:q.modelVerdict,verify:q.checks.__verify};}),',
     '      failures: res.failures.map(function(f){return {stage:f.stage,codes:f.codes,reason:String(f.reason||"")};}),',
-    '      events: events, llm: SHT.llm.stats()',
+    '      events: events, llm: SHT.llm.stats(),',
+    '      round2: {',
+    '        wrongQid: q1.qid, wrongKp: q1.knowledgePoint, wrongPrompt: q1.prompt,',
+    '        priorityCount: (brief2.priority || []).length,',
+    '        priorityQid: (brief2.priority[0] || {}).prevQid || "",',
+    '        planProbe: (res2.plans[0] || {}).probe || null,',
+    '        planKp: (res2.plans[0] || {}).kp || "",',
+    '        questionCount: res2.questions.length,',
+    '        questionParent: (res2.questions[0] || {}).parentQid || "",',
+    '        questionPrompt: (res2.questions[0] || {}).prompt || "",',
+    '        failures: res2.failures.map(function(f){return {stage:f.stage,codes:f.codes,reason:String(f.reason||"")};})',
+    '      }',
     '    };',
     '    await send({ok:true,summary:summary});',
     '  } catch(e) { await send({ok:false,error:String(e&&e.stack||e)}); }',
@@ -220,6 +279,13 @@ const server = http.createServer(function (req, res) {
       res.writeHead(200, Object.assign({ 'Content-Type': 'application/json' }, cors));
       res.end('{"ok":true}');
       try { finish(JSON.parse(body)); } catch (e) { finish({ ok: false, error: '报告不是合法 JSON' }); }
+      return;
+    }
+    // 页面要跑第二轮前先切剧本：同一个 mock 服务，第一轮演「出题失败」，第二轮演「复用错题」
+    if (req.url === '/mode') {
+      res.writeHead(200, Object.assign({ 'Content-Type': 'application/json' }, cors));
+      res.end('{"ok":true}');
+      try { MODE.round = Number(JSON.parse(body).round) || 1; } catch (e) { MODE.round = 1; }
       return;
     }
     let payload = {};
@@ -294,6 +360,28 @@ server.listen(PORT, '127.0.0.1', function () {
       byCode('V1').length === 3);
     assert('失败记录一条都没被吞（退回的题都留在记录里）', s.failures.length === 7,
       s.failures.length + ' 条');
+
+    /*
+     * 第二轮：错题复用。这条链在浏览器里跑，验的是 smoke 覆盖不到的两件事：
+     *   1. 页面调 buildBrief 时传的是哪个 unitId（错题存的是教材单元 id）
+     *   2. 模型把考点改写之后，probe 还挂不挂得上（真实模型不照抄考点文本）
+     */
+    const r2 = s.round2 || {};
+    assert('第二轮 brief 里读到了第一轮的错题',
+      r2.priorityCount === 1 && r2.priorityQid === r2.wrongQid,
+      'priority ' + r2.priorityCount + ' 条 / prevQid ' + (r2.priorityQid || '(空)') + ' / 原题 ' + r2.wrongQid);
+    assert('考点被模型改写后仍挂上了，并标成近似命中',
+      !!r2.planProbe && r2.planProbe.match === 'near',
+      JSON.stringify(r2.planProbe || null) + ' / 计划考点：' + r2.planKp);
+    assert('计划挂回第一轮那道错题（parentQid）',
+      !!r2.planProbe && r2.planProbe.parentQid === r2.wrongQid,
+      String(r2.planProbe && r2.planProbe.parentQid));
+    assert('出出来的题带着同一个 parentQid',
+      r2.questionCount === 1 && r2.questionParent === r2.wrongQid,
+      r2.questionCount + ' 题 / parentQid ' + (r2.questionParent || '(空)'));
+    assert('复用题换了题面，不是把原题照抄一遍',
+      !!r2.questionPrompt && r2.questionPrompt !== r2.wrongPrompt,
+      '第一轮：' + r2.wrongPrompt + ' / 第二轮：' + r2.questionPrompt);
     console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
     process.exit(failed === 0 ? 0 : 1);
   });

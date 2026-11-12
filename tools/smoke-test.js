@@ -807,23 +807,31 @@ assert('brief 把上一轮那道原题带给生成方当反例',
 assert('两枪都对的考点不会再被优先出', brief.priority.every(p => p.kp !== '真会考点'));
 assert('brief 是结构化字段，不是一段话', typeof brief.levelHint === 'string' && Array.isArray(brief.blockedCells));
 /*
- * 错题落库时 unitId 存的是教材单元 id（G4-上-U1），brief 传的是册内 id（U1）。
+ * 错题落库时 unitId 存的是教材单元 id（G4-上-U1 / HEB4-上-U1），brief 传的是册内 id（U1）。
  * 只比一个的话所有错题都会被滤掉，课程角色读不到任何错题 ——
  * 界面照常显示错题，但「根据错题出下一轮」这件事悄悄失效。
+ *
+ * 这里必须按「当前册」取 hostUnitId：早期修复误用了 root.SHT_BOOK，
+ * 那是 textbook.js 里的旧单册数据集（只有人教），getUnit('U1') 永远返回人教那条，
+ * 多册并存时会把别册的错题当成自己的。这类错，只有换到非人教册才暴露。
  */
+const curBook = SHT.BOOKS.current();
+const curU1 = curBook.getUnit('U1');
+const hostOfU1 = curU1 ? curU1.hostUnitId : 'G4-上-U1';
+const otherHost = hostOfU1 === 'G4-上-U1' ? 'HEB4-上-U1' : 'G4-上-U1';
 const briefUnitId = SHT.pipeline.buildBrief({
   unitId: 'U1', rounds: [],
-  wrongCases: [{ knowledgePoint: '按教材单元 id 存的错题', kpId: 'kp-u', ability: 'vocab', unitId: 'G4-上-U1', masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }]
+  wrongCases: [{ knowledgePoint: '按教材单元 id 存的错题', kpId: 'kp-u', ability: 'vocab', unitId: hostOfU1, masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }]
 });
 assert('错题按教材单元 id 存，也要能被 brief 认出来',
   briefUnitId.priority.length === 1 && briefUnitId.priority[0].kp === '按教材单元 id 存的错题',
-  JSON.stringify(briefUnitId.priority.map(p => p.kp)));
+  JSON.stringify(briefUnitId.priority.map(p => p.kp)) + ' / 当前册 ' + curBook.meta.id + ' hostUnitId ' + hostOfU1);
 const briefOtherUnit = SHT.pipeline.buildBrief({
   unitId: 'U1', rounds: [],
-  wrongCases: [{ knowledgePoint: '别的单元的错题', kpId: 'kp-o', ability: 'vocab', unitId: 'G4-上-U5', masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }]
+  wrongCases: [{ knowledgePoint: '别的单元的错题', kpId: 'kp-o', ability: 'vocab', unitId: otherHost, masteryState: 'wrong', variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0 }]
 });
-assert('别的单元的错题不会串进本单元 brief', briefOtherUnit.priority.length === 0,
-  JSON.stringify(briefOtherUnit.priority.map(p => p.kp)));
+assert('别的册/别的单元的错题不会串进本单元 brief', briefOtherUnit.priority.length === 0,
+  JSON.stringify(briefOtherUnit.priority.map(p => p.kp)) + ' / 拿 ' + otherHost + ' 试的');
 
 /* ================= 三个角色各自的记忆 ================= */
 console.log('--- 角色记忆 ---');
@@ -1076,7 +1084,8 @@ async function runCase(name, script, expect) {
      * 以前 buildBrief 拿册内 id 去比教材单元 id，priority 恒空，
      * 于是 probe 全 null、parentQid 全空，界面上一点异常都看不出来。
      */
-    const hostId = SHT_BOOK.getUnit(SHT.curriculum.id).hostUnitId;
+    // 注意用 BOOKS.current()：SHT_BOOK 是旧单册数据集，getUnit('U1') 永远返回人教那条
+    const hostId = SHT.BOOKS.current().getUnit(SHT.curriculum.id).hostUnitId;
     const saved = {
       id: 'wq:S-001:' + hostId + ':q3', studentId: 'S-001', unitId: hostId,
       originalQuestionId: 'q3', kpId: 'kp-shirt', knowledgePoint: 'vocab · shirt · 音义联结',
