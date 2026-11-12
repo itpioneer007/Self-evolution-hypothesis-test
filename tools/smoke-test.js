@@ -1068,7 +1068,9 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
   assert('没排满的能力进 short，不补假题', ap.report.short.some(function (x) { return x.ability === 'listening'; }), JSON.stringify(ap.report.short));
   const ax = SHT.quota.apply([{ kp: 'l1', ability: 'listening' }], { total: 3, byAbility: { vocab: 2 } });
   assert('配额外的能力名额还空着就收下，只记 extra', ax.plans.length === 1 && ax.extra.length === 1, JSON.stringify(ax.extra));
-  assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
+  assert('课程提示词要求焦点考点吃满 3 条（验收指标三）',
+  SHT.ROLES.plan.system().indexOf('不少于 3 条') >= 0);
+assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 },
     unit: SHT.curriculum, brief: {}, blockedCells: [], count: 3,
     quota: { total: 3, byAbility: { vocab: 2, grammar: 1 }, note: '人工填写' }
