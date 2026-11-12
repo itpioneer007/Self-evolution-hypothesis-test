@@ -1105,6 +1105,31 @@ async function runCase(name, script, expect) {
     });
   })();
 
+  (function () {
+    /*
+     * 考点对齐的三层判定。为什么值得单测：
+     * 模型几乎不照抄考点文本（实测 5 条计划 5 条自造），
+     * 只做逐字/包含匹配会让 probe 大量漏挂，而漏挂在界面上完全看不出来。
+     */
+    const prio = [
+      { kp: 'vocab · parents / uncle / aunt / cousin · 家庭成员称呼词义混淆', ability: 'vocab', kpId: 'k1', prevQid: 'q-1', missCount: 1 },
+      { kp: 'spelling · doctor / cook / driver / farmer / nurse · 职业拼写', ability: 'spelling', kpId: 'k2', prevQid: 'q-2', missCount: 2 }
+    ];
+    const m = SHT.pipeline.matchPriority;
+    assert('考点逐字相同算 exact',
+      m({ kp: 'vocab · parents / uncle / aunt / cousin · 家庭成员称呼词义混淆', ability: 'vocab' }, prio).match === 'exact');
+    assert('考点只是长短不同算 contain',
+      m({ kp: 'vocab · parents / uncle / aunt / cousin · 家庭成员称呼词义混淆（补充）', ability: 'vocab' }, prio).match === 'contain');
+    const near = m({ kp: 'vocab · parents / uncle / aunt · 家庭称呼词辨认', ability: 'vocab' }, prio);
+    assert('换成自己的措辞也能挂上，但标成 near',
+      near && near.match === 'near' && near.item.prevQid === 'q-1', JSON.stringify(near && near.match));
+    assert('同域但词不同的考点不会被误挂',
+      m({ kp: 'vocab · family / people / photo · 家庭相关名词', ability: 'vocab' }, prio) === null);
+    assert('能力不同不挂（拼写题不能顶成词汇错题的回练）',
+      m({ kp: 'vocab · parents / uncle / aunt / cousin', ability: 'vocab' },
+        [{ kp: 'spelling · parents / uncle / aunt / cousin · 职业拼写', ability: 'spelling', prevQid: 'q-9' }]) === null);
+  })();
+
   await (function () {
     // 诱饵造不出来：连着两次 V3（选项重复）就换相近考点，不把第三次机会耗完
     const S2 = [

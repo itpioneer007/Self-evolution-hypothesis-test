@@ -81,12 +81,14 @@ if (!Array.isArray(wc)) {
 
 /* ---------- 4 本轮计划 ---------- */
 hr('四 第二轮怎么排的（每条计划的来由）');
+const matchText = { exact: '逐字命中', contain: '包含命中', near: '近似命中（词面重合，建议人工确认）' };
 (j.plans || []).forEach((p) => {
   const tag = p.probe ? ('复用错题 · 上轮错 ' + (p.probe.missCount || 1) + ' 次') : '新考点';
   line('P' + p.no + '　[' + tag + ']　' + shortKp(p.kp));
   line('      题型/层次/干扰：' + (p.cell ? p.cell.type + ' / ' + p.cell.level + ' / ' + p.cell.distractor : '(未分格)'));
   line('      为什么排它：' + (p.whyThisOne || '(模型没写理由)'));
   if (p.probe && p.probe.parentQid) line('      挂在第一轮的原题：' + p.probe.parentQid);
+  if (p.probe && p.probe.match) line('      挂接方式：' + (matchText[p.probe.match] || p.probe.match));
 });
 
 /* ---------- 5 复用核对 ---------- */

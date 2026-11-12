@@ -236,6 +236,67 @@
     };
   };
 
+  // 考点串的归一：去空白、去分隔点、小写。全局一份，避免两处实现慢慢漂开。
+  function normKpText(s) {
+    return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[·・.]/g, '');
+  }
+
+  /*
+   * 考点串 → 英文实词集合。
+   * "vocab · parents / uncle / aunt / cousin · 家庭成员称呼混淆" → {parents, uncle, aunt, cousin}
+   * 中文那半段是给人看的说明，决定「考哪些词」的是英文；能力词本身不算内容。
+   */
+  const ABILITY_WORDS = ['vocab', 'spelling', 'grammar', 'sentence', 'listening', 'speaking', 'phonics'];
+  SHT.pipeline.kpWords = function (kp, ability) {
+    const out = new Set();
+    const skip = ability ? String(ability).toLowerCase() : '';
+    String(kp || '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).forEach(function (w) {
+      if (w.length < 2 || w === skip || ABILITY_WORDS.indexOf(w) >= 0) return;
+      out.add(w);
+    });
+    return out;
+  };
+
+  /*
+   * 计划里的考点 ↔ 错题画像里的考点，判它们是不是同一条。
+   *
+   * 为什么要分三层：模型几乎不照抄考点文本。实测一轮 5 条计划，考点串 5 条全是它自己
+   * 重写的（候选清单原文一条没抄）。只做字符串相等/包含，probe 会大量漏挂——
+   * 而漏挂的后果是「错题明明在错题本里，第二轮却当没有」，界面上一点异常都看不出来。
+   *
+   * 第三层用英文实词重合度（Jaccard ≥ 0.6 且同能力），结果标 match:'near'，
+   * 意思是「挂上了，但按近似挂的」，审计与导出都能看出差别，不冒充逐字命中。
+   */
+  SHT.pipeline.matchPriority = function (plan, prio) {
+    const list = prio || [];
+    if (!plan || !list.length) return null;
+    const n = normKpText(plan.kp);
+    if (!n) return null;
+
+    for (let i = 0; i < list.length; i += 1) {
+      if (normKpText(list[i].kp) === n) return { item: list[i], match: 'exact', score: 1 };
+    }
+    for (let i = 0; i < list.length; i += 1) {
+      const a = normKpText(list[i].kp);
+      if (a && (a.indexOf(n) >= 0 || n.indexOf(a) >= 0)) return { item: list[i], match: 'contain', score: 1 };
+    }
+
+    const words = SHT.pipeline.kpWords;
+    const mine = words(plan.kp, plan.ability);
+    if (!mine.size) return null;
+    let best = null;
+    list.forEach(function (x) {
+      if (plan.ability && x.ability && plan.ability !== x.ability) return;
+      const theirs = words(x.kp, x.ability);
+      if (!theirs.size) return;
+      let common = 0;
+      mine.forEach(function (w) { if (theirs.has(w)) common += 1; });
+      const jac = common / (mine.size + theirs.size - common);
+      if (jac >= 0.6 && (!best || jac > best.score)) best = { item: x, match: 'near', score: jac };
+    });
+    return best;
+  };
+
   /*
    * 失败记录带轮次。以前不带，界面只能拿「全部失败记录」当「这一轮的」，
    * 第二轮一跑就显示「这一轮有 78 条没出成」——那其实是两轮累计。
@@ -292,7 +353,7 @@
         reason: '这个考点他已经真会到顶了，本轮从范围里移出', detail: ''
       }));
     });
-    const normKp = function (s) { return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[·・.]/g, ''); };
+    const normKp = normKpText;
 
     // 能力配额：给了就用给的（人改过的优先），没给就按「范围 → 错题 → 本册」自动算。
     // 题量不是「出 5 题」，是「词汇 2 / 语法 2 / 听力 1」这张小表。
@@ -460,22 +521,20 @@
     // 用代码标记而不是让模型自己声明：模型会把「我觉得相关」也算进去。
     const prio = (o.brief && o.brief.priority) || [];
     const markProbe = function (p) {
-      const n = normKp(p.kp);
-      const exact = prio.filter(function (x) { return normKp(x.kp) === n; })[0];
-      const near = exact || prio.filter(function (x) {
-        const a = normKp(x.kp);
-        return a && n && (a.indexOf(n) >= 0 || n.indexOf(a) >= 0);
-      })[0];
-      if (near) {
-        p.probe = {
-          kpId: near.kpId || '',
-          // 变体挂在错题本里那道原题的 id 上（不是题干）。审计台靠它回答
-          // 「第二轮的这道题，是不是从第一轮那道错题演化来的」。
-          parentQid: near.prevQid || '',
-          prevPrompt: near.prevPrompt || '',
-          missCount: near.missCount || 1
-        };
-      }
+      const hit = SHT.pipeline.matchPriority(p, prio);
+      if (!hit || !hit.item) return;
+      const near = hit.item;
+      p.probe = {
+        kpId: near.kpId || '',
+        // 变体挂在错题本里那道原题的 id 上（不是题干）。审计台靠它回答
+        // 「第二轮的这道题，是不是从第一轮那道错题演化来的」。
+        parentQid: near.prevQid || '',
+        prevPrompt: near.prevPrompt || '',
+        missCount: near.missCount || 1,
+        // 'exact' 逐字/'contain' 包含；'near' 是按词面重合近似挂的，人工值得看一眼。
+        // 留这个字段是因为「挂上了」和「挂对了」不是一回事。
+        match: hit.match
+      };
     };
     plans.forEach(markProbe);
     // 替补顶上来时同样要对上那一枪，否则「他到底是不是真会了」配不成对
