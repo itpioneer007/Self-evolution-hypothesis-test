@@ -6,7 +6,7 @@
  *
  * 走的是页面里同一条代码路径（不是另写一套），逐条验证七件事：
  *   1 选定知识点范围 → 2 每道题考哪个考点 → 3 出题 → 4 作答判定 →
- *   5 错题进日志 → 6 日志被下一轮复用 → 7 变体探针 + 三份智能体记忆
+ *   5 错题进日志 → 6 日志被下一轮复用 → 7 变体探针 + 三份角色记忆
  *
  * 学生是模拟的：按题号确定性地答对 / 答错，不引入随机数，跑两次结果结构一致。
  * 这样验的是「机制通不通」，不是「这个学生学得好不好」。
@@ -210,7 +210,7 @@ function wrongIndex(q) {
   line('已占用格子', brief.blockedCells.length + ' 个');
   line('难度提示', brief.levelHint);
   assert('brief 从错题日志里取出了优先考点', brief.priority.length >= 1);
-  assert('两个智能体的记忆都记下了这一轮',
+  assert('两个角色的记忆都记下了这一轮',
     (function () {
       const m = SHT.agentMemory.commit(SHT.agentMemory.blank(), { questions: r1.questions, failures: r1.failures });
       return m.plan.rounds === 1 && m.generate.rounds === 1 && m.verify.rounds === 1;

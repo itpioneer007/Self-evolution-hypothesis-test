@@ -373,7 +373,7 @@
   function withBait(question, v) {
     const judge = baitJudge(question, v, SHT.curriculum);
     if (!judge.ok) {
-      // 记下没放的原因：这条会进智能体记忆，下一轮规划时提醒换考点别跨语境太大
+      // 记下没放的原因：这条会进课程角色的记忆，下一轮规划时提醒换考点别跨语境太大
       v.__bait = 'dropped: ' + judge.reason;
       return v;
     }
@@ -499,13 +499,32 @@
     }, -1);
 
     if (at >= 0) {
-      list[at] = SHT.appendVariantAttempt(list[at], {
+      const prev = list[at];
+      const hist = (prev.diagnosisHistory || []).slice(-4);
+      if (prev.diagnosis && draft.diagnosis && prev.diagnosis.key !== draft.diagnosis.key) {
+        hist.push(prev.diagnosis);
+      }
+      const merged = SHT.appendVariantAttempt(prev, {
         correct: false,
         hintCount: draft.hintCount || 0,
         retryCount: 0,
         purpose: 'remediation-training',
         completedAt: draft.at
       });
+      // 又错一次就重诊一次：诊断跟着最新一枪走，旧结论留在 diagnosisHistory 里可回溯。
+      // 错因是会变的（上次形近、这次没记住），变过几次本身就是信息。
+      merged.diagnosisHistory = hist;
+      if (draft.diagnosis) {
+        merged.diagnosis = draft.diagnosis;
+        merged.category = draft.diagnosis.causeId || merged.category;
+        merged.causeConfidence = draft.diagnosis.confidence || 0;
+        merged.causeSource = draft.causeSource || 'code';
+        merged.errorCause = draft.errorCause || merged.errorCause;
+      }
+      merged.intentCause = draft.intentCause || merged.intentCause || '';
+      merged.studentAnswer = draft.studentAnswer || merged.studentAnswer;
+      merged.correctAnswer = draft.correctAnswer || merged.correctAnswer;
+      list[at] = merged;
       return { list: list, index: at, created: false };
     }
 
@@ -518,13 +537,21 @@
       kpId: draft.kpId || '',
       knowledgePoint: draft.knowledgePoint,
       ability: draft.ability || 'vocab',
+      // category 是「诊断出来的错因」，不是「课程打算考什么」。
+      // 这两个必须分开存：以前 category 直接抄计划的 cause，等于出题者给自己判分，
+      // 学生再错就只会一遍遍加深同一个错误假设，永远出不来。
       category: draft.category || '未掌握',
+      causeSource: draft.causeSource || 'code',
+      causeConfidence: draft.causeConfidence || 0,
+      intentCause: draft.intentCause || '',
+      diagnosis: draft.diagnosis || null,
+      diagnosisHistory: [],
       errorCause: draft.errorCause || '未填写错因说明',
       questionSnapshot: draft.questionSnapshot || '（未记录原题）',
       studentAnswer: draft.studentAnswer || '（未记录）',
       correctAnswer: draft.correctAnswer || '（未记录）',
       firstAttemptEvidence: {
-        durationMs: 0,
+        durationMs: draft.durationMs || 0,
         hintCount: draft.hintCount || 0,
         retryCount: 0,
         completedAt: draft.at || new Date().toISOString()

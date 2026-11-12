@@ -1,14 +1,15 @@
 /*
- * 三个智能体各自的记忆
+ * 四个角色各自的记忆
  *
  * brief（pipeline.buildBrief）是「这一轮该考什么」的输入，一份。记忆不同：它按角色
- * 分开存，因为三个角色该记的东西根本不是一回事——
+ * 分开存，因为四个角色该记的东西根本不是一回事——
  *
  *   plan     记「出过哪些角度、补过哪些考点、哪几条被退回」——排题时别撞自己
  *   generate 记「哪个条款最容易把它退回」——写题时先躲开
  *   verify   记「上一轮有多少次判 fail 没给条款号」——这是它自己被判无效的记录
+ *   diagnose 记「错因分布、有没有老把同一类挂在嘴边」——诊断要能自我校准
  *
- * 为什么不分给模型自己维护：模型没有跨调用状态，所谓「智能体记忆」必须由代码
+ * 为什么不分给模型自己维护：模型没有跨调用状态，所谓「角色记忆」必须由代码
  * 在两次调用之间搬运，而且写成可数的字段，不能写成一段散文——散文没法验证，
  * 也没法在下一轮判断它到底用上了没有。
  */
@@ -38,12 +39,13 @@
   }
 
   SHT.agentMemory = {
-    // 空记忆：三个角色各一份
+    // 空记忆：四个角色各一份
     blank: function () {
       return {
         plan: { rounds: 0, cells: [], kps: [], backoff: {}, lessons: [] },
         generate: { rounds: 0, fails: {} },
-        verify: { rounds: 0, fails: {}, noCodeCount: 0 }
+        verify: { rounds: 0, fails: {}, noCodeCount: 0 },
+        diagnose: { rounds: 0, causes: {}, lowConf: 0 }
       };
     },
 
@@ -73,7 +75,9 @@
        * 记录的是「为什么放不进」，不是「放不进几次」——后者没用，前者能指导选题。
        */
       if (!next.plan.lessons) next.plan.lessons = [];
-      const attempts = (round && round.attempts) || [];
+      // 上一次的作答可能属于上一轮：生成下一轮时，这一轮还没开始答。
+      // 两份都收进来，教训和诊断才不会因为「跨了一轮」就丢了。
+      const attempts = (round && round.attempts || []).concat(round && round.priorAttempts || []);
       attempts.forEach(function (a) {
         if (!a || a.stage !== 'variant' || !a.bait) return;
         const why = String(a.bait).replace(/^dropped:\s*/, '');
@@ -95,10 +99,25 @@
         if ((f.codes || []).indexOf('VERIFY_NO_CODE') >= 0) next.verify.noCodeCount += 1;
       });
 
+      /*
+       * 诊断角色的记忆：它自己给过的错因分布。用处在下一轮——
+       * 如果它把八成的错都归成「未掌握」，那这个归类没有信息量，
+       * 提示词里就让它这次先看证据再落编号。
+       */
+      next.diagnose = next.diagnose || { rounds: 0, causes: {}, lowConf: 0 };
+      next.diagnose.rounds += 1;
+      if (!next.diagnose.causes) next.diagnose.causes = {};
+      attempts.forEach(function (a) {
+        const d = a && a.diag;
+        if (!d || !d.causeId) return;
+        bump(next.diagnose.causes, d.causeId);
+        if (Number(d.confidence || 0) < 0.4) next.diagnose.lowConf += 1;
+      });
+
       return next;
     },
 
-    // 给界面的三行摘要（卡片上的记忆那一行）
+    // 给界面的四行摘要（卡片上的记忆那一行）
     summary: function (mem, agentId) {
       const m = (mem && mem[agentId]) || null;
       if (!m) return '';
@@ -106,6 +125,10 @@
       if (agentId === 'generate') {
         const top = topCode(m.fails);
         return '已记 ' + m.rounds + ' 轮 · 最常被退回 ' + (top ? top.code + '×' + top.n : '无');
+      }
+      if (agentId === 'diagnose') {
+        const top = topCode(m.causes);
+        return '已记 ' + m.rounds + ' 轮 · 最常见错因 ' + (top ? top.code + '×' + top.n : '无');
       }
       return '已记 ' + m.rounds + ' 轮 · 无效否决 ' + m.noCodeCount + ' 次';
     },
@@ -137,6 +160,19 @@
         const fails = sortedCodes(m.fails).slice(0, 4);
         if (fails.length) {
           lines.push('上一轮把你退回最多的条款：' + fails.map(function (b) { return b.code + '×' + b.n; }).join('、') + '。写之前先自查这几条。');
+        }
+      } else if (agentId === 'diagnose') {
+        const causes = sortedCodes(m.causes).slice(0, 3);
+        if (causes.length) {
+          const total = Object.keys(m.causes).reduce(function (a, k) { return a + m.causes[k]; }, 0);
+          const top = causes[0];
+          lines.push('你上一轮给过的错因：' + causes.map(function (b) { return b.code + '×' + b.n; }).join('、'));
+          if (total >= 3 && top.n / total >= 0.7) {
+            lines.push('其中 ' + top.n + ' / ' + total + ' 次都归成「' + top.code + '」，这一轮先看证据再落编号，别默认往这一类靠。');
+          }
+        }
+        if (m.lowConf) {
+          lines.push('上一轮有 ' + m.lowConf + ' 次置信度低于 0.4，说明当时证据不足。证据不足就直说，不要凑一个说法。');
         }
       } else {
         const fails = sortedCodes(m.fails).slice(0, 4);

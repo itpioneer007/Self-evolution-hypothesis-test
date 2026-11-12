@@ -42,7 +42,8 @@ function assert(name, cond, extra) {
 /* ---------------- mock 模型的剧本 ---------------- */
 
 const kpIndex = {};     // 考点文本 → 计划序号
-const verifyHits = {};  // 考点文本 → 被质检次数
+const verifyHits = {};  // 题干 → 被验证次数
+const promptIdx = {};  // 题干 → 计划序号（验证看不到知识点，只能按题干认题）
 
 function parseVocab(text) {
   const out = [];
@@ -123,11 +124,17 @@ function answerFor(role, user) {
     const kp = m ? m[1].trim() : '';
     return JSON.stringify(buildQuestion(user, kpIndex[kp] == null ? 0 : kpIndex[kp]));
   }
-  const m = user.match(/- 知识点：(.+)/);
-  const kp = m ? m[1].trim() : '';
-  const idx = kpIndex[kp] == null ? 0 : kpIndex[kp];
-  verifyHits[kp] = (verifyHits[kp] || 0) + 1;
-  const first = verifyHits[kp] === 1;
+  /*
+   * 验证角色现在看不到知识点与出题意图（那是刻意拿掉的），所以 mock 只能按题面
+   * 认题：题干 + 选项一起当键。只按题干不够——两道题可能问同一个中文词。
+   */
+  const m = user.match(/- 题干：(.+)/);
+  const mo = user.match(/- 选项：(.+)/);
+  const key = (m ? m[1].trim() : '') + '|' + (mo ? mo[1].trim() : '');
+  if (promptIdx[key] == null) promptIdx[key] = Object.keys(promptIdx).length;
+  const idx = promptIdx[key];
+  verifyHits[key] = (verifyHits[key] || 0) + 1;
+  const first = verifyHits[key] === 1;
   if (idx === 2 && first) return JSON.stringify({ verdict: 'fail', fails: [{ id: 'C3', reason: '选项里 This 与 These 大小写不一致' }], note: '' });
   if (idx === 3 && first) return JSON.stringify({ verdict: 'fail', fails: [], note: '说不上来哪里不对' });
   return JSON.stringify({ verdict: 'pass' });
@@ -140,8 +147,8 @@ const PAGE = function () {
     'src/data/books.js', 'src/data/textbook.js', 'src/data/books/hebei-g4a.js',
     'src/data/books/xiangshao-g4a.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
-    'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/agents.js',
-    'src/core/validate.js', 'src/core/quota.js', 'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
+    'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/grade.js', 'src/core/diagnose.js', 'src/core/agents.js',
+    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
   ];
   return [
     '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>e2e</title></head><body>',

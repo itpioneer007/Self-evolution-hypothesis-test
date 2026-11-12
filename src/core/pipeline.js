@@ -1,13 +1,13 @@
 /*
- * 出题流水线：规划 → 分格 → 生成 → 代码闸 → 质检 → 退回重出
+ * 出题流水线：课程 → 分格 → 生成 → 代码闸 → 验证 → 退回重出 → （作答后）诊断
  *
- * 三段调用都是同一个模型（SHT.llm），靠 SHT.AGENTS 里的三套配置区分角色。
+ * 几次调用都是同一个模型（SHT.llm），靠 SHT.ROLES 里的几套配置区分角色。
  * 这一层只做编排与记录，判断全在下面两处：
  *   - SHT.validateQuestion（代码闸，有通过权）
- *   - SHT.AGENTS.verify 的返回（模型质检，只有否决权）
+ *   - SHT.ROLES.verify 的返回（模型验证，只有否决权）
  *
  * 失败不吞：每一次不采纳都进 failures，带 stage / 条款号 / 一句话原因，
- * 界面拿它显示「为什么这次没成」，重出时也把它拼进提示词。
+ * 界面拿它显示「为什么这次没成」，下一轮课程角色读它决定换什么说法重试。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
@@ -119,7 +119,16 @@
         stage: i.errorCount >= 2 ? 'variant-failed' : '',
         cell: i.suggestedCell || null,
         // 上一轮那道原题。生成时当反例用：同一考点、换题面，但别照着这一版改字。
-        prevPrompt: i.snapshot || ''
+        prevPrompt: i.snapshot || '',
+        // 以下四项是「作答证据」，不是「出题意图」：
+        //   诊断角色说他错在哪一维、上次选了什么、花了多久、有没有用提示
+        // 课程角色要据此决定下一轮往哪个方向压，而不是只看「错了几次」。
+        diag: i.diag || null,
+        pKnown: i.pKnown,
+        lastPicked: i.lastPicked || '',
+        lastAnswer: i.lastAnswer || '',
+        lastMs: i.lastMs || 0,
+        lastHint: i.lastHint || 0
       };
     });
 
@@ -156,6 +165,29 @@
     if (tested >= 3 && masteredCount === 0) levelHint = '整体降一档';
     else if (tested >= 3 && masteredCount / tested >= 0.8) levelHint = '升一档';
 
+    /*
+     * 验证角色的输出要进课程的输入：不是整道题，是「哪个考点、卡在哪几条、几次」。
+     * 课程据此换一个能落地的说法重排，而不是把上一轮的计划原样再写一遍。
+     */
+    const byKpFail = {};
+    // 只汇总最近这一小段：失败记录是跨轮累积的，越早的越不代表「这一轮为什么没过」。
+    // 数组是最新的在前，取前 40 条足够覆盖上一轮。
+    (o.failures || []).slice(0, 40).forEach(function (f) {
+      if (!f || !f.planKp) return;
+      const codes = f.codes || [];
+      if (codes.indexOf('PLAN_RETIRED') >= 0) return;
+      const e = byKpFail[f.planKp] = byKpFail[f.planKp] || { kp: f.planKp, codes: [], times: 0 };
+      e.times += 1;
+      codes.forEach(function (c) { if (e.codes.indexOf(c) < 0) e.codes.push(c); });
+    });
+    const rejects = Object.keys(byKpFail).map(function (k) {
+      const e = byKpFail[k];
+      return {
+        kp: e.kp, times: e.times, codes: e.codes,
+        text: e.codes.map(function (c) { return SHT.codeLabel(c); }).join('；')
+      };
+    }).sort(function (a, b) { return b.times - a.times; }).slice(0, 4);
+
     return {
       unitId: unitId,
       priority: priority,
@@ -163,6 +195,7 @@
       blockedCells: blockedCells,
       levelHint: levelHint,
       testedCount: tested,
+      rejects: rejects,
       note: priority.length ? '上一轮错过的考点优先' : '无历史错题，按单元难点排'
     };
   };
@@ -200,7 +233,7 @@
     const onEvent = typeof o.onEvent === 'function' ? o.onEvent : function () {};
     // 本轮要考察的知识点范围（[{label, ability, cell}]）。空 = 不限制，由模型现场提。
     const scope = (o.scope || []).filter(function (s) { return s && s.label; });
-    // 三个智能体各自的记忆：由代码在调用之间搬运，下一轮各自读回
+    // 四个角色各自的记忆：由代码在调用之间搬运，下一轮各自读回
     const memory = (o.memory && o.memory.plan) ? o.memory : SHT.agentMemory.blank();
     const recall = function (id) { return SHT.agentMemory.recallText(memory, id); };
 
@@ -232,7 +265,7 @@
         (hint.layer ? '　' + hint.layer + ' 层上限 ' + hint.cap : '') + '　配额 ' + SHT.quota.text(quota)
     });
     let plans = null;
-    const planAgent = SHT.AGENTS.plan;
+    const planAgent = SHT.ROLES.plan;
     for (let i = 0; i < 2 && !plans; i += 1) {
       const res = await SHT.llm.call({
         role: 'plan',
@@ -382,7 +415,10 @@
     if (o.planOnly) {
       return { ok: true, plans: plans, questions: [], failures: failures, stage: 'plan',
         quota: quota, quotaReport: quotaReport,
-        memoryNext: SHT.agentMemory.commit(memory, { questions: [], failures: failures }) };
+        memoryNext: SHT.agentMemory.commit(memory, {
+          questions: [], failures: failures,
+          attempts: o.attempts || [], priorAttempts: o.priorAttempts || []
+        }) };
     }
 
     // ---------- 环节 2 / 闸 / 环节 3 ----------
@@ -397,7 +433,7 @@
       for (let attempt = 1; attempt <= maxAttempts && !adopted; attempt += 1) {
         onEvent({ phase: 'generate', index: i, attempt: attempt, text: '第 ' + (i + 1) + ' 题生成中（第 ' + attempt + ' 次）' });
 
-        const genAgent = SHT.AGENTS.generate;
+        const genAgent = SHT.ROLES.generate;
         const generated = await SHT.llm.call({
           role: 'generate',
           system: genAgent.system(),
@@ -450,7 +486,7 @@
 
         // 听力题的兜底：模型十次有四五次忘记填 audioText，题目本身却没问题。
         // 只给「真要听」的题补：题型是听音选义 / 听写，或题干里写了听 / 录音。
-        // 书面辨音题（选出与 cake 中 a 同音的词）不需要朗读，硬补反而音文不一，质检会否。
+        // 书面辨音题（选出与 cake 中 a 同音的词）不需要朗读，硬补反而音文不一，验证会否。
         const LISTENING = ['听音选义', '字母组合辨音', '听写'];
         const needsAudio = question.cell.type === '听音选义' || question.cell.type === '听写' ||
           /听|录音/.test(question.prompt);
@@ -472,9 +508,9 @@
           continue;
         }
 
-        // 模型质检：只有否决权
-        onEvent({ phase: 'verify', index: i, text: '第 ' + (i + 1) + ' 题质检中' });
-        const verifyAgent = SHT.AGENTS.verify;
+        // 模型验证：只有否决权
+        onEvent({ phase: 'verify', index: i, text: '第 ' + (i + 1) + ' 题验证中' });
+        const verifyAgent = SHT.ROLES.verify;
         const verdict = await SHT.llm.call({
           role: 'verify',
           system: verifyAgent.system(),
@@ -485,10 +521,10 @@
         });
 
         if (!verdict.ok) {
-          // 质检本身失败不能把题废掉：记一笔，按「仅代码闸通过」采纳，界面标未复核
+          // 验证本身失败不能把题废掉：记一笔，按「仅代码闸通过」采纳，界面标未复核
           failures.push(failEntry({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
-            codes: [shtErrType(verdict)], reason: '质检没跑成，按代码闸通过采纳：' + shtErrMsg(verdict),
+            codes: [shtErrType(verdict)], reason: '验证没跑成，按代码闸通过采纳：' + shtErrMsg(verdict),
             detail: ''
           }));
           question.modelVerdict = 'unverified';
@@ -498,7 +534,27 @@
         }
 
         const vj = verdict.json || {};
-        const vfails = Array.isArray(vj.fails) ? vj.fails.filter(function (f) { return f && f.id; }) : [];
+        const rawFails = Array.isArray(vj.fails)
+          ? vj.fails.filter(function (f) { return f && f.id; })
+          : [];
+        /*
+         * 验证角色只该判它拿得到信息的条款。判了「需要同轮其它题」或「需要学生画像」
+         * 的条目，说明它在猜——那种否决不采纳，但记一笔，让它自己的记忆看得见。
+         * 这一步把「验证越权」从一句话变成可统计的失败条目。
+         */
+        const needOf = {};
+        (SHT.OUT_OF_SCOPE_CHECKS || []).forEach(function (c) { needOf[c.id] = c; });
+        const outScope = rawFails.filter(function (f) { return !!needOf[f.id]; });
+        const vfails = rawFails.filter(function (f) { return !needOf[f.id]; });
+        if (outScope.length) {
+          failures.push(failEntry({
+            stage: 'verify', planKp: plan.kp, attempt: attempt,
+            codes: ['VERIFY_OUT_OF_SCOPE'].concat(outScope.map(function (f) { return f.id; })),
+            reason: '判了它看不到信息的条款（' + outScope.map(function (f) { return f.id; }).join('、') +
+              '），这些否决不算数',
+            detail: outScope.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；').slice(0, 200)
+          }));
+        }
         // 软否决：所有理由都指向「解析写得不够细」时，不重出、直接采纳并标 weak。
         // 理由：解析限 30 字，逐项罗列本来就写不下；为解析把整道题丢掉，代价远大于收益，
         // 而且题面本身是合规的（代码闸已经过了）。解析留给人再润一句就行。
@@ -508,7 +564,7 @@
           failures.push(failEntry({
             stage: 'verify', planKp: plan.kp, attempt: attempt,
             codes: ['VERIFY_SOFT'].concat(vfails.map(function (f) { return f.id; })),
-            reason: '质检只嫌解析写得不够细，题面没过错，采纳并标待润色',
+            reason: '验证只嫌解析写得不够细，题面没过错，采纳并标待润色',
             detail: vfails.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；').slice(0, 200)
           }));
           question.modelVerdict = 'pass';
@@ -519,10 +575,13 @@
         }
         if (vj.verdict === 'fail') {
           if (!vfails.length) {
-            // 说挂又不给条款号 = 无效否决，不采纳但记下来
+            // 说挂却给不出它有权判的条款号 = 无效否决，不采纳但记下来
             failures.push(failEntry({
               stage: 'verify', planKp: plan.kp, attempt: attempt,
-              codes: ['VERIFY_NO_CODE'], reason: '质检判 fail 但没给条款号，按无效否决处理',
+              codes: ['VERIFY_NO_CODE'],
+              reason: outScope.length
+                ? '只给了它看不到信息的条款，按无效否决处理'
+                : '判 fail 但没给条款号，按无效否决处理',
               detail: String(vj.note || '').slice(0, 200)
             }));
             question.modelVerdict = 'pass';
@@ -538,7 +597,7 @@
             detail: JSON.stringify({ prompt: question.prompt, options: question.options, answer: question.answer })
           }));
           feedback = vfails.map(function (f) { return f.id + '（' + (SHT.ALL_CHECKS.filter(function (c) { return c.id === f.id; })[0] || {}).text + '）：' + f.reason; }).join('；');
-          onEvent({ phase: 'reject', index: i, codes: vfails.map(function (f) { return f.id; }), text: '第 ' + (i + 1) + ' 题质检退回' });
+          onEvent({ phase: 'reject', index: i, codes: vfails.map(function (f) { return f.id; }), text: '第 ' + (i + 1) + ' 题被验证退回' });
           continue;
         }
 
@@ -567,9 +626,9 @@
       questions: questions,
       failures: failures,
       stage: 'done',
-      memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures, attempts: o.attempts || [] }),
+      memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures, attempts: o.attempts || [], priorAttempts: o.priorAttempts || [] }),
       // 推进状态与自动停止建议：界面据此把停止条自动勾上，并把已会的考点从下一轮范围里去掉
-      progressNext: SHT.progress.commit(progress, { questions: questions, attempts: o.attempts || [] }),
+      progressNext: SHT.progress.commit(progress, { questions: questions, attempts: o.attempts || [], priorAttempts: o.priorAttempts || [] }),
       stageHint: hint,
       stop: SHT.progress.stopJudge({ questions: questions, attempts: o.attempts || [], failures: failures }),
       // 这一轮实际用的配额与达成情况，界面回写后下一轮才看得见偏差

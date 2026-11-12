@@ -7,7 +7,8 @@
  * 题目内容由人按格子填写 —— 对应出题手册「最小测试全手工」的口径。
  *
  * 四个 tab 按流程切分：
- *   01 出题 = 环节 1/2/3（课程规划 / 执行生成 / 验证质检），一次只显示一个角色
+ *   01 出题 = 岗位 1/2/3（课程排考点 / 生成写题 / 验证判题），一次只显示一个角色；
+ *           岗位 4（诊断）在作答之后跑，解释他为什么这么答
  *   02 答题 = 学生侧：作答 → 判对错 → 对就换考点 / 错就当场写进错题（下一轮由模型重出回练题）
  *   03 错题 = 出题侧回边：错因 → 出题要点 → 写入计划 → 回 01 出下一轮
  *   04 日志 = 环节 4/5，含跨轮事前排除、作答记录与停止决策
@@ -69,12 +70,15 @@
       hintUsed: false,
       hintGone: -1,
       revealed: null,
+      // 这一题是什么时候出现在屏幕上的。作答耗时要靠它算——耗时是诊断的一条证据：
+      // 3 秒内选错和想了 20 秒选错，不是同一回事。
+      shownAt: 0,
       attempts: []
     };
   }
 
   function blankRound() {
-    return { questions: [], stopSignals: [], endReason: '', closed: false, practice: blankPractice() };
+    return { questions: [], stopSignals: [], endReason: '', closed: false, practice: blankPractice(), progressCommitted: false };
   }
 
   function defaultState() {
@@ -102,7 +106,10 @@
       quota: SHT.quota.blank(),
       // 判分台账：(题目, 归一化后的答案) → 判定结论。一次判定、落库冻结，
       // 下游只读不重判。见 core/grade.js 顶部说明。
-      gradeLedger: {}
+      gradeLedger: {},
+      // 诊断台账：键与判分台账相同（题目 + 归一化答案）。一次诊断、落库冻结，
+      // 错题本、课程角色、日志都只读这一份，不各自重算。见 core/diagnose.js。
+      diagnoses: {}
     };
   }
 
@@ -114,6 +121,7 @@
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
     // 老数据没有判分台账：给个空表，已有作答记录不受影响（它们自带 correct）
     if (!parsed.gradeLedger || typeof parsed.gradeLedger !== 'object') parsed.gradeLedger = {};
+    if (!parsed.diagnoses || typeof parsed.diagnoses !== 'object') parsed.diagnoses = {};
     parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
@@ -130,6 +138,8 @@
       // 早期版本没有作答记录，补一份空的，作答从第 1 题开始
       r.practice = Object.assign(blankPractice(), r.practice || {});
       if (!Array.isArray(r.practice.attempts)) r.practice.attempts = [];
+      if (!r.practice.shownAt) r.practice.shownAt = 0;
+      if (r.progressCommitted == null) r.progressCommitted = false;
     });
     if (!parsed.learningLayer) parsed.learningLayer = SHT.sampleLearningLayer || 'B';
     if (!parsed.tab) parsed.tab = 'agents';
@@ -240,30 +250,39 @@
     return SHT.projectWeaknesses(state.wrongCases, SHT.curriculum.topicDomain);
   }
 
-  /* ---------- 角色定义：同一模型，三套提示词 / 记忆 / 技能 ---------- */
+  /* ---------- 角色定义：同一个模型，四套提示词 / 上下文 ----------
+   * 这里说「角色」不说「角色」：模型不会自己去做事，没有工具、没有跨调用记忆，
+   * 每次都是代码拼好上下文、调一次、拿回一段 JSON。它只是同一个底模的四个岗位。
+   */
   const ROLES = [
     {
-      id: 'course', no: '环节 1', name: '课程智能体', stage: '规划',
+      id: 'course', no: '岗位 1', name: '课程角色', stage: '排考点',
       prompt: '命题规划 · 按题量配额',
-      memory: '上轮角度 · 薄弱画像',
+      memory: '上轮角度 · 诊断结论 · 掌握概率',
       skill: '变化轴 · 配额约束'
     },
     {
-      id: 'execute', no: '环节 2', name: '执行智能体', stage: '生成',
+      id: 'execute', no: '岗位 2', name: '生成角色', stage: '写题',
       prompt: '单题生成 · 九字段',
       memory: '仅本单元词表',
       skill: '词表取材 · 干扰项设计'
     },
     {
-      id: 'verify', no: '环节 3', name: '验证智能体', stage: '质检',
-      prompt: '独立质检 · 23 条二元',
-      memory: '教材词表 · 四层判据',
+      id: 'verify', no: '岗位 3', name: '验证角色', stage: '判题',
+      prompt: '独立验证 · 只判题目本身',
+      memory: '词表 · 15 条可判条款',
       skill: '四层判据 · 条款号'
+    },
+    {
+      id: 'diagnose', no: '岗位 4', name: '诊断角色', stage: '作答后',
+      prompt: '作答归因 · 选项级对照',
+      memory: '代码证据 · 固定错因编号',
+      skill: '形近 / 音近 / 词形 · 排除理由'
     }
   ];
 
-  // 卡片上的记忆摘要：课程/执行/验证 对应 agents.js 里的 plan/generate/verify
-  const AGENT_OF_ROLE = { course: 'plan', execute: 'generate', verify: 'verify' };
+  // 卡片上的记忆摘要：课程/生成/验证/诊断 对应 agents.js 里的 plan/generate/verify/diagnose
+  const AGENT_OF_ROLE = { course: 'plan', execute: 'generate', verify: 'verify', diagnose: 'diagnose' };
   function agentMemLine(roleId) {
     const id = AGENT_OF_ROLE[roleId];
     if (!id || !state.agentMemory) return '';
@@ -283,7 +302,7 @@
     }).join('');
   }
 
-  /* ---------- 01 课程智能体：配额表 ---------- */
+  /* ---------- 01 课程角色：配额表 ---------- */
   function selectHtml(values, selected) {
     return values.map(function (v) {
       return '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(v) + '</option>';
@@ -559,7 +578,7 @@
       ? (projection.remainingCount ? '错题待练 ' + projection.remainingCount + ' 个考点' : '暂无错题记录')
       : '上一轮用过 ' + exclusion.usedCells.size + ' 种题型搭配' + (blockedCount ? '，这一轮有 ' + blockedCount + ' 道和它重复了' : '，这一轮没有重复');
 
-    // 检查标准的明细不进这一页：课程智能体的面板只放「这一轮考什么」，
+    // 检查标准的明细不进这一页：课程角色的面板只放「这一轮考什么」，
     // 为什么被退回是日志页的事。这里只留一行入口，出完题知道有没有全成。
     const failN = (state.failures || []).length;
     const failBrief = failN
@@ -584,12 +603,12 @@
       kpFoldHtml() + quotaBarHtml() + body + failBrief;
   }
 
-  /* ---------- 01 执行智能体：单题九字段 ---------- */
+  /* ---------- 01 生成角色：单题九字段 ---------- */
   function renderExecutePanel() {
     const q = currentQuestion();
     const list = currentRound().questions;
     if (!q) {
-      $('agentPanel').innerHTML = '<div class="hint-box">这一轮还没有题。先去第 1 个角色「课程智能体」写计划。</div>';
+      $('agentPanel').innerHTML = '<div class="hint-box">这一轮还没有题。先去第 1 个角色「课程角色」写计划。</div>';
       return;
     }
     const c = q.cell;
@@ -640,7 +659,15 @@
         '</div></details>';
   }
 
-  /* ---------- 01 验证智能体：四层，一次一层 ---------- */
+  /* ---------- 01 验证角色：四层，一次一层 ---------- */
+  // 这 8 条验证角色拿不到判定所需的信息（同轮其它题 / 学生画像 / 课程声明的意图）。
+  // 页面上直接标出来：不标的话，人点「挂」像是在补模型该判的事，其实是两套口径。
+  const NEED_TEXT = {
+    label: '要看知识点标签（课程写的，不归验证判）',
+    plan: '要看课程声明的层次与干扰项类型（那是出题意图）',
+    round: '要看同轮其它题（单题调用里没有）',
+    student: '要看学生画像与历史（刻意不给，防同情）'
+  };
   function renderVerifyPanel() {
     const q = currentQuestion();
     const checks = (q && q.checks) || {};
@@ -658,13 +685,16 @@
         '<span class="stat-pill">第 ' + state.activeNo + ' 题 · 已查 ' + done + ' / ' + SHT.ALL_CHECKS.length + ' 条</span>' +
         '<span class="stat-pill ' + (failed.length ? 'is-bad' : (verdictOf(q) === '通过' ? 'is-good' : '')) + '">' +
           (failed.length ? '要重出，挂在这几条：' + esc(failed.join(' / ')) : (verdictOf(q) === '通过' ? '通过' : '暂时没有不合格')) + '</span>' +
+        '<span class="stat-pill">模型只能判 ' + SHT.JUDGEABLE_CHECKS.length + ' 条</span>' +
       '</div>' +
       '<div class="hint-box" style="margin-bottom:8px">' + esc(layer.note) + '</div>' +
       layer.items.map(function (item) {
         const v = checks[item.id];
-        return '<div class="check-row">' +
+        return '<div class="check-row' + (item.needs ? ' is-out' : '') + '">' +
           '<span class="check-id">' + esc(item.id) + '</span>' +
-          '<span class="check-text">' + esc(item.text) + '</span>' +
+          '<span class="check-text">' + esc(item.text) +
+            (item.needs ? '<em class="check-need">' + esc(NEED_TEXT[item.needs] || '模型判不了') + '</em>' : '') +
+          '</span>' +
           '<span class="check-btns">' +
             '<button type="button" data-action="check" data-check="' + esc(item.id) + '" data-verdict="pass" class="' + (v === 'pass' ? 'is-pass' : '') + '">过</button>' +
             '<button type="button" data-action="check" data-check="' + esc(item.id) + '" data-verdict="fail" class="' + (v === 'fail' ? 'is-fail' : '') + '">挂</button>' +
@@ -672,9 +702,94 @@
       }).join('');
   }
 
+  /* ---------- 01 诊断角色：他为什么选了这个 ----------
+   * 这一页只回答一个问题：答完之后，能不能说清「他为什么偏选 B、为什么排掉 C 和 D」。
+   * 数据全部来自 core/diagnose.js 的冻结结果，这里只负责摆出来，不重算。
+   */
+  function attemptOfQuestion(q) {
+    if (!q) return null;
+    const list = (practiceOf().attempts || []);
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (list[i].no === q.no) return list[i];
+    }
+    return null;
+  }
+
+  function renderDiagnosePanel() {
+    const list = currentRound().questions;
+    const q = currentQuestion();
+    if (!q) {
+      $('agentPanel').innerHTML = '<div class="hint-box">这一轮还没有题。诊断要等他答完，先去 01 出题、02 作答。</div>';
+      return;
+    }
+    const at = attemptOfQuestion(q);
+    const d = at && at.diag;
+    const nav = '<div class="panel-toolbar"><div class="q-nav">' + list.map(function (item, i) {
+      const no = i + 1;
+      const done = !!(attemptOfQuestion(item) || {}).diag;
+      return '<button type="button" data-action="q-nav" data-no="' + no + '" class="' +
+        (no === state.activeNo ? 'is-active' : '') + (done ? ' is-answered' : '') + '">' + no + '</button>';
+    }).join('') + '</div>' +
+      '<div class="toolbar-actions"><span class="hint">第 ' + state.activeNo + ' 题 · ' + esc(q.knowledgePoint || '未填知识点') + '</span></div></div>';
+
+    if (!at || !d) {
+      $('agentPanel').innerHTML = nav +
+        '<div class="hint-box">这一题还没作答。诊断在作答之后才跑：它要读的是他选了什么、' +
+        '排掉了什么、花了多少秒——没有这些就没有证据，先编一个原因不如不说。</div>';
+      return;
+    }
+
+    const pct = Math.round((d.confidence || 0) * 100);
+    const weak = !d.causeId || (d.confidence || 0) < 0.4;
+    // 徽章已经写了错因，横标题里再重复一遍是废话，读的人还以为是两件事
+    const headline = String(d.headline || '').replace(new RegExp('^' + (d.causeLabel || d.causeId || '') + ' · '), '');
+
+    $('agentPanel').innerHTML = nav +
+      '<div class="diag-card ' + (at.correct ? 'is-good' : 'is-bad') + '">' +
+        '<div class="diag-top">' +
+          '<span class="diag-badge">' + esc(at.correct ? '答对' : (d.causeLabel || '待诊断')) + '</span>' +
+          '<span class="diag-headline">' + esc(headline || d.headline || '') + '</span>' +
+          '<span class="diag-conf">置信 ' + pct + '%</span>' +
+        '</div>' +
+        '<div class="diag-ans">他答 <b>' + esc(at.picked) + '</b>　正确 <b>' + esc(at.expected) + '</b>' +
+          ((d.timing && d.timing.ms) ? '　' + Math.round(d.timing.ms / 1000) + ' 秒' : '') +
+          (at.hintCount ? '　用了提示' : '') + '</div>' +
+        (d.whyPicked ? '<div class="diag-why">' + esc(d.whyPicked) + '</div>' : '') +
+        ((d.eliminated || []).length
+          ? '<div class="diag-block"><div class="diag-block-title">为什么没选其它项（说明他不是乱选）</div>' +
+            d.eliminated.map(function (e) {
+              return '<div class="diag-elim"><span class="diag-letter">' + esc(e.letter) + '</span>' +
+                '<span class="diag-opt">' + esc(e.option) + '</span>' +
+                '<span class="diag-reason">' + esc(e.why) + '</span></div>';
+            }).join('') + '</div>'
+          : '') +
+        ((d.signals || []).length
+          ? '<div class="diag-block"><div class="diag-block-title">依据</div>' +
+            d.signals.map(function (s) {
+              return '<div class="diag-sig">' + esc(s.text) + '</div>';
+            }).join('') + '</div>'
+          : '') +
+        (d.timing && d.timing.note ? '<div class="diag-note">' + esc(d.timing.note) + '</div>' : '') +
+        (d.nextStep ? '<div class="diag-next"><span>下一轮怎么出</span>' + esc(d.nextStep) + '</div>' : '') +
+        (d.modelView
+          ? '<div class="diag-model"><span>诊断角色补的</span>' + esc(d.modelView.causeId || '') +
+            (d.modelView.why ? '：' + esc(d.modelView.why) : '') +
+            (d.modelView.confidence ? '（' + Math.round(d.modelView.confidence * 100) + '%）' : '') + '</div>'
+          : '') +
+        '<div class="diag-actions">' +
+          (weak ? '<button type="button" class="btn" data-action="diagnose-model">证据不足，请诊断角色再看一眼</button>' : '') +
+          '<span class="diag-src">来源：' + esc(d.source === 'model' ? '模型补诊' : '代码归因') +
+            (d.key ? '　·　冻结键 ' + esc(String(d.key).slice(-14)) : '') + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="hint-box" style="margin-top:10px">诊断只解释原因，不改判定结果、不改题。' +
+        '结论按「题目 + 答案」冻结：同一个答案重看一百次都一样；换个答案重答是另一条记录。</div>';
+  }
+
   function renderAgentPanel() {
     if (state.agent === 'course') renderPlanPanel();
     else if (state.agent === 'execute') renderExecutePanel();
+    else if (state.agent === 'diagnose') renderDiagnosePanel();
     else renderVerifyPanel();
   }
 
@@ -864,6 +979,8 @@
     const q = activePracticeQuestion();
     if (!q) { renderPracticeDone(); return; }
     const r = p.revealed;
+    // 计时起点：一题刚出现、还没作答时打点。只存在内存里，提交时随作答一起落盘。
+    if (!r && !p.shownAt) p.shownAt = Date.now();
     const st = pointStateOf(list[p.cursor] || q);
 
     $('practiceCard').innerHTML = '' +
@@ -1044,9 +1161,29 @@
       gradeKey: SHT.grade.ledgerKey(q, roundNo, raw),
       answerMode: isOpen ? 'open' : 'choice',
       hintCount: p.hintUsed ? 1 : 0,
+      // 耗时是诊断的一条证据：3 秒内选错和想了 20 秒选错，不是同一回事。
+      // 上限 5 分钟：中间去干别的了就别假装是在想，超过就按「没测到」算。
+      durationMs: p.shownAt ? Math.min(300000, Math.max(0, Date.now() - p.shownAt)) : 0,
       at: new Date().toISOString()
     });
-    p.revealed = p.attempts[p.attempts.length - 1];
+    const attempt = p.attempts[p.attempts.length - 1];
+
+    /*
+     * 诊断：答完立刻算一次，落库冻结。键与判分台账同一个（题目 + 归一化答案），
+     * 所以同一个答案只诊断一次；改答案重答是另一个事件，各诊断各的。
+     * 这里只跑代码；代码证据不足时（confidence < 0.4）界面会给出「请诊断角色再看一眼」，
+     * 模型补的那一份是追加，不改写已经冻结的结论。
+     */
+    const frozenDiag = SHT.diagnose.read(state.diagnoses, q, attempt, roundNo);
+    if (frozenDiag) {
+      attempt.diag = frozenDiag;
+    } else {
+      const d = SHT.diagnose.judge({ question: q, attempt: attempt, unit: SHT.curriculum });
+      state.diagnoses = SHT.diagnose.remember(state.diagnoses, q, attempt, roundNo, d);
+      attempt.diag = d;
+    }
+
+    p.revealed = attempt;
     p.gradeError = '';
     save(); renderAll();
   }
@@ -1079,25 +1216,112 @@
 
   // 首答就错 → 当场写进 03 错题；这一轮不再塞一道代码拼出来的变体。
   // 回练题（上一轮错、这一轮模型重出）的结果不新建卡，只给原有那条追加一次证据。
+  /*
+   * 写进错题本。这里最容易出错的一处是「错因从哪来」：
+   * 以前直接抄知识点表里的 cause —— 那是课程当初打算用哪种错法做干扰项，是出题意图。
+   * 拿意图当诊断，等于出题者给自己判分：学生再错，错题本还是同一句，下一轮照着同一句出，
+   * 系统就永远看不到「他其实是没认出这个词」。所以现在 category 只来自诊断角色。
+   */
   function writeWrongFromPractice(q, ev) {
     const kp = SHT.kpByLabel(q.knowledgePoint);
+    const diag = ev.diag || null;
+    const whyText = diag
+      ? // 「选了 X，正确的是 Y」上面那行已经写了，这里只补「为什么」，
+        // 同一句话在这一张卡上出现两次，读的人会以为是两条不同的证据
+        [diag.whyPicked || diag.headline].filter(Boolean).join('') +
+        ((diag.eliminated || []).length
+          ? '。排掉了 ' + diag.eliminated.map(function (e) { return e.letter + '「' + e.option + '」'; }).join('、')
+          : '')
+      : '第一次选了「' + ev.picked + '」，答案是「' + ev.expected + '」，诊断证据不足';
     const res = SHT.upsertWrongCase(state.wrongCases, {
       studentId: SHT.sampleStudent.id,
       unitId: SHT.curriculum.hostUnitId,
-      originalQuestionId: 'q' + q.no,
+      originalQuestionId: q.qid || ('q' + q.no),
       kpId: kp ? kp.id : '',
       knowledgePoint: q.knowledgePoint || (kp ? kp.label : '未填写知识点'),
       ability: q.ability || (kp ? kp.ability : 'vocab'),
-      category: kp ? kp.cause : '未掌握',
-      errorCause: (kp ? kp.why : '') + '　第一次选了「' + ev.picked + '」，答案是「' + ev.expected + '」。',
+      category: diag ? diag.causeId : '未掌握',
+      causeSource: diag ? (diag.causeSource || 'code') : 'code',
+      causeConfidence: diag ? diag.confidence : 0,
+      // 出题意图单独留档，与诊断并排显示。两者一致说明这个干扰项设对了；
+      // 不一致本身就是信号：学生错的不是我们以为的那一维。
+      intentCause: kp ? kp.cause : '',
+      diagnosis: diag,
+      errorCause: whyText,
       questionSnapshot: q.prompt,
       studentAnswer: ev.picked,
       correctAnswer: ev.expected,
       hintCount: ev.hintCount,
+      durationMs: ev.durationMs || 0,
       at: ev.at
     });
     state.wrongCases = res.list;
     toast(res.created ? '已写进 03 错题，下一轮会按这条重新出题' : '这个考点又错一次，错题状态已更新');
+  }
+
+  /*
+   * 代码证据不足时，请诊断角色补一次。
+   * 补的那一份是追加，不改写已经冻结的结论：只有当代码原本没给出结论（或置信低于 0.4）
+   * 时才顶上来当主结论。这样「一次判定、落库冻结」的口径不会被模型随手推翻。
+   */
+  async function diagnoseByModel() {
+    const q = currentQuestion();
+    const at = attemptOfQuestion(q);
+    if (!q || !at || !at.diag) { toast('这一题还没作答，没有可诊断的东西'); return; }
+    if (!SHT.llm.isReady()) { openModel(); toast('先填 API Key'); return; }
+    if (state.llmBusy) return;
+    const roundNo = state.round;
+    const base = SHT.diagnose.read(state.diagnoses, q, at, roundNo) || at.diag;
+    state.llmBusy = true;
+    state.llmStep = '诊断角色在看第 ' + q.no + ' 题';
+    renderAll();
+    try {
+      const role = SHT.ROLES.diagnose;
+      const recall = SHT.agentMemory.recallText(state.agentMemory, 'diagnose');
+      const res = await SHT.llm.call({
+        role: 'diagnose',
+        system: role.system(),
+        user: role.user({ question: q, diagnosis: base, picked: at.picked }) + (recall ? '\n\n' + recall : ''),
+        maxTokens: 260,
+        temperature: 0.2
+      });
+      if (!res.ok) { toast('诊断角色没跑成：' + (res.message || '未知原因')); return; }
+      const j = res.json || {};
+      const known = (SHT.ERROR_CAUSES || []).some(function (c) { return c.id === j.cause; });
+      const view = {
+        causeId: known ? j.cause : '',
+        why: String(j.why || '').trim(),
+        confidence: Math.max(0, Math.min(1, Number(j.confidence) || 0))
+      };
+      state.diagnoses = SHT.diagnose.appendModel(state.diagnoses, q, at, roundNo, view);
+      at.diag = SHT.diagnose.read(state.diagnoses, q, at, roundNo);
+      syncDiagToWrong(at);
+      save();
+      toast(known ? '诊断角色补了一条：' + view.causeId : '诊断角色也说证据不足，保持原结论');
+    } catch (err) {
+      toast('诊断出错了：' + (err && err.message ? err.message : err));
+    } finally {
+      state.llmBusy = false;
+      state.llmStep = '';
+      save(); renderAll();
+    }
+  }
+
+  // 模型补诊之后，把 03 错题本里那条的错因一起更新，别让两个面板说两套话
+  function syncDiagToWrong(at) {
+    const idx = (state.wrongCases || []).findIndex(function (c) {
+      return c.knowledgePoint === at.kpLabel && c.studentAnswer === at.picked;
+    });
+    if (idx < 0) return;
+    const prev = state.wrongCases[idx];
+    const next = Object.assign({}, prev, {
+      diagnosis: at.diag,
+      category: (at.diag && at.diag.causeId) || prev.category,
+      causeConfidence: (at.diag && at.diag.confidence) || 0,
+      causeSource: 'model'
+    });
+    state.wrongCases = state.wrongCases.slice();
+    state.wrongCases[idx] = next;
   }
 
   // 回练结果记到错题本那条上：连对两次才算真会，答错就退回待订正，
@@ -1147,6 +1371,8 @@
     p.gradeError = '';
     p.hintUsed = false;
     p.hintGone = -1;
+    // 下一题的计时从它出现的这一刻开始
+    p.shownAt = 0;
     save(); renderAll();
   }
 
@@ -1199,7 +1425,8 @@
           '<div class="wrong-kp">' + esc(c.knowledgePoint) + '</div>' +
           '<div class="wrong-tags">' +
             '<span class="chip">' + esc(c.ability) + '</span>' +
-            '<span class="chip">' + esc(c.category) + '</span>' +
+            '<span class="chip">' + esc(c.category) +
+              (c.causeConfidence ? ' · ' + Math.round(c.causeConfidence * 100) + '%' : '') + '</span>' +
             '<span class="chip is-status' + statusCls + '">' + esc(statusLabel) + '</span>' +
           '</div>' +
           '<div class="wrong-q">' + esc(c.questionSnapshot) + '</div>' +
@@ -1210,13 +1437,22 @@
             (attempts.length ? '<span>后续 ' + attempts.length + ' 次 · 对 ' + corrected + '</span>' : '') +
             (c.certificationScore != null ? '<span>认证 ' + c.certificationScore + '</span>' : '') +
           '</div>' +
-          '<div class="wrong-cause"><em>错因</em>　' + esc(c.errorCause) + '</div>' +
+          '<div class="wrong-cause"><em>诊断</em>　' + esc(c.errorCause) + '</div>' +
+          (c.intentCause
+            ? '<div class="wrong-cause is-intent"><em>出题意图</em>　当初想考的是「' + esc(c.intentCause) + '」' +
+              (c.intentCause === c.category ? '，和诊断一致：这个干扰项设对了' : '，和诊断不一致：学生错的不是我们以为的那一维，下一轮按诊断来') +
+              '</div>'
+            : '') +
         '</div>' +
         '<div class="brief">' +
           '<div class="brief-title">出题要点</div>' +
           '<div class="brief-row"><span>知识点</span><span>' + esc(c.knowledgePoint) + '</span></div>' +
           '<div class="brief-row"><span>能力</span><span>' + esc(c.ability) + '</span></div>' +
-          '<div class="brief-row"><span>错因</span><span>' + esc(c.category) + '</span></div>' +
+          '<div class="brief-row"><span>诊断错因</span><span>' + esc(c.category) + '</span></div>' +
+          // 意图与诊断一致时只留左边那句「设对了」，右边不再重复一行一样的字
+          (c.intentCause && c.intentCause !== c.category
+            ? '<div class="brief-row"><span>出题意图</span><span>' + esc(c.intentCause) + '</span></div>'
+            : '') +
           '<div class="brief-row"><span>建议角度</span><span><strong>' + esc(cell.type) + ' / ' + esc(cell.level) + ' / ' + esc(cell.distractor) + '</strong></span></div>' +
           '<div class="brief-row"><span>再错则</span><span>' + esc(kp ? kp.nextIfWrong : '换角度重出') + '</span></div>' +
           '<div class="brief-row"><span>教材依据</span><span>' + esc(kp ? kp.source : c.unitId) + '</span></div>' +
@@ -1323,7 +1559,10 @@
               detail: (a.correct ? '' : (a.answerMode === 'open' ? '写了「' : '选了「') + esc(a.picked) + '」，正确是「' + esc(a.expected) + '」') +
                 // 判定来源也带上：规则判的死判断不用管，模型判的可以人改
                 (a.via === 'model' ? '　模型判定' : a.via === 'human' ? '　人工改判' : '') +
-                (a.hintCount ? '　用了提示' : '')
+                (a.durationMs ? '　' + Math.round(a.durationMs / 1000) + 's' : '') +
+                (a.hintCount ? '　用了提示' : '') +
+                // 诊断跟着作答一起进日志：看得出「为什么错」，而不只是「错了」
+                (a.diag ? '　诊断：' + esc(SHT.diagnose.summary(a.diag)) : '')
             });
           });
       });
@@ -1694,7 +1933,7 @@
       },
       // 生成失败的全量记录：哪一步、哪条判据、什么原因、第几次
       failures: state.failures || [],
-      // 本轮考察范围与三个智能体各自的记忆，导出时一并留档（不含 key）
+      // 本轮考察范围与三个角色各自的记忆，导出时一并留档（不含 key）
       kpScope: state.kpScope || [],
       // 这一轮的能力配额与达成情况，导出后能复盘「是不是又全考了词汇」
       quota: state.quota || null,
@@ -1888,10 +2127,32 @@
 
     const round = currentRound();
     const rounds = state.round === 2 ? [state.rounds[1], state.rounds[2]] : [state.rounds[1]];
+
+    /*
+     * 上一轮答完的题，在这一轮开头结算一次：该升层的升、该退役的退役。
+     * 不结算的话规划永远看到「一轮都没考过」，层次阶梯就是死的——
+     * 而且这个结算只能做一次，所以打个标记，重出题不会重复升层。
+     */
+    const prior = state.round === 2 ? state.rounds[1] : null;
+    if (prior && !prior.progressCommitted && (prior.practice && prior.practice.attempts.length)) {
+      state.progress = SHT.progress.commit(state.progress, {
+        questions: prior.questions,
+        attempts: prior.practice.attempts
+      });
+      prior.progressCommitted = true;
+    }
+    // 上一轮的作答也要进角色记忆：生成下一轮时这一轮还没开始答，
+    // 只传本轮的 attempts 等于永远传空，诊断角色的错因分布就永远记不住。
+    const priorAttempts = rounds.reduce(function (acc, r) {
+      return acc.concat((r.practice && r.practice.attempts) || []);
+    }, []);
+
     const brief = SHT.pipeline.buildBrief({
       unitId: state.unitId,
       rounds: rounds,
-      wrongCases: state.wrongCases
+      wrongCases: state.wrongCases,
+      // 验证角色上一轮判了哪些不过：课程角色要读这个才知道「为什么没出成」
+      failures: state.failures
     });
     brief.levelHint = brief.levelHint || '持平';
 
@@ -1919,6 +2180,7 @@
         quota: state.quota,
         stage: { layer: state.learningLayer },
         attempts: (round.practice && round.practice.attempts) || [],
+        priorAttempts: priorAttempts,
         existing: round.questions.filter(function (q) { return q.prompt; }),
         planOnly: !!planOnly,
         onEvent: function (ev) {
@@ -2031,6 +2293,7 @@
         if (action === 'toggle-scope') { toggleScope(b.dataset.id); return; }
         if (action === 'clear-scope') { state.kpScope = []; save(); renderAll(); toast('本轮不限知识点范围'); return; }
         if (action === 'q-nav') { state.activeNo = Number(b.dataset.no); save(); renderAll(); return; }
+        if (action === 'diagnose-model') { diagnoseByModel(); return; }
         if (action === 'save-changes') { save(); renderAll(); toast('已保存本页修改'); return; }
         if (action === 'layer') { state.checkLayer = Number(b.dataset.index); save(); renderAll(); return; }
         if (action === 'check') {
@@ -2073,7 +2336,7 @@
         save(); renderAll();
         return;
       }
-      // 课程智能体计划表（带 data-no）：即时保存
+      // 课程角色计划表（带 data-no）：即时保存
       if (el.dataset.no) {
         const q = currentRound().questions[Number(el.dataset.no) - 1];
         if (!q) return;
@@ -2082,7 +2345,7 @@
         save(); renderAll();
         return;
       }
-      // 执行智能体九字段（不带 data-no）：只写内存，等「保存修改」按钮
+      // 生成角色九字段（不带 data-no）：只写内存，等「保存修改」按钮
       const q = currentQuestion();
       if (!q) return;
       if (field === 'answerMode') {

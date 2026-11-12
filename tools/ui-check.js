@@ -84,8 +84,8 @@ function click(el) { if (el) el.click(); return !!el; }
 
   mark('打开页面');
 
-  // 1 三张智能体卡片
-  rec('01 页渲染出 3 张智能体卡片', qa('[data-role]').length === 3, qa('[data-role]').length);
+  // 1 四张角色卡片
+  rec('01 页渲染出 4 张角色卡片', qa('[data-role]').length === 4, qa('[data-role]').length);
 
   // 2 候选知识点清单（PEP 四上 U1 有 8 条）
   const scopeBtns = qa('[data-action="toggle-scope"]');
@@ -153,8 +153,8 @@ function click(el) { if (el) el.click(); return !!el; }
   const opts = qa('[data-action="pick-option"]').length;
   const failRows = qa('.fail-row').length;
   rec('模型真跑了一轮并出题', started && opts > 0, opts + ' 个选项 / ' + elapsed + ' 秒 / 失败 ' + failRows + ' 条');
-  // 出题成功后界面会自动切到执行智能体（单题九字段），计划面板不在 DOM 里了。
-  // 要看配额条得先点回课程智能体，否则读到的是空的。
+  // 出题成功后界面会自动切到执行角色（单题九字段），计划面板不在 DOM 里了。
+  // 要看配额条得先点回课程角色，否则读到的是空的。
   click(q('[data-role="course"]'));
   await sleep(400);
   const chipTextAfter = qa('.quota-chip').map(function (c) { return String(c.textContent || '').replace(/\\s+/g, ''); }).join(' ');
@@ -254,7 +254,7 @@ function click(el) { if (el) el.click(); return !!el; }
 
   // 8 卡片上是否显示记忆摘要
   const memLines = qa('.agent-mem').map(function (e) { return e.textContent.trim(); });
-  rec('智能体卡片显示已记 1 轮', memLines.length === 3 && memLines.every(function (x) { return x.indexOf('已记 1 轮') === 0; }), memLines.join(' | '));
+  rec('角色卡片显示已记 1 轮', memLines.length >= 3 && memLines.every(function (x) { return x.indexOf('已记 1 轮') === 0; }), memLines.join(' | '));
 
   // 9 页面无未捕获错误
   rec('页面没有未捕获的 JS 错误', errs.length === 0, errs.slice(0, 3).join(' / '));

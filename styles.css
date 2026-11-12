@@ -121,7 +121,7 @@ p { margin: 0; }
 .stage-page { display: none; flex: 1; min-height: 0; }
 .stage-page.is-active { display: flex; }
 
-/* ---------- Tab1：智能体侧栏 + 工作区 ---------- */
+/* ---------- Tab1：角色侧栏 + 工作区 ---------- */
 #page-agents.is-active { display: grid; grid-template-columns: 286px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 
 .agent-rail {
@@ -944,3 +944,63 @@ select { cursor: pointer; }
 /* 计划行题号里带能力缩写，与配额条的 chip 对上 */
 .plan-row .no { line-height: 1.1; }
 .plan-row .no em { display: block; font-style: normal; font-size: 9.5px; color: var(--ink-hint); }
+
+/* ---------- 01 诊断角色：作答归因 ---------- */
+.q-nav button.is-answered { border-color: #b9d0e8; color: var(--blue-deep); background: var(--blue-soft); }
+.diag-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  border-radius: var(--radius);
+  padding: 15px 17px;
+}
+.diag-card.is-bad { border-left-color: var(--red); }
+.diag-card.is-good { border-left-color: #2f7d5a; }
+.diag-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.diag-badge {
+  font-size: 12px; font-weight: 650; color: #fff;
+  background: var(--blue); border-radius: 6px; padding: 2px 8px;
+}
+.diag-card.is-bad .diag-badge { background: var(--red); }
+.diag-card.is-good .diag-badge { background: #2f7d5a; }
+.diag-headline { font-size: 14.5px; font-weight: 600; }
+.diag-conf { margin-left: auto; font-size: 12px; color: var(--ink-hint); }
+.diag-ans { margin-top: 8px; font-size: 13px; color: var(--ink-soft); }
+.diag-ans b { color: var(--ink); }
+.diag-why { margin-top: 8px; font-size: 13.5px; line-height: 1.6; }
+.diag-block { margin-top: 12px; }
+.diag-block-title { font-size: 12px; color: var(--ink-hint); margin-bottom: 6px; }
+.diag-elim {
+  display: grid; grid-template-columns: 22px 130px 1fr; gap: 8px;
+  align-items: baseline; font-size: 13px; padding: 4px 0;
+  border-top: 1px dashed var(--line);
+}
+.diag-letter {
+  width: 20px; height: 20px; border-radius: 5px; background: var(--line-soft);
+  text-align: center; line-height: 20px; font-size: 11.5px; color: var(--ink-soft);
+}
+.diag-opt { font-weight: 600; }
+.diag-reason { color: var(--ink-soft); }
+.diag-sig { font-size: 12.5px; color: var(--ink-soft); padding-left: 10px; position: relative; }
+.diag-sig::before { content: '·'; position: absolute; left: 2px; }
+.diag-note {
+  margin-top: 10px; font-size: 12.5px; color: var(--amber);
+  background: var(--amber-soft); border-radius: 7px; padding: 6px 10px; display: inline-block;
+}
+.diag-next { margin-top: 12px; font-size: 13px; background: var(--blue-soft); border-radius: 8px; padding: 9px 12px; }
+.diag-next span { display: block; font-size: 11.5px; color: var(--ink-hint); margin-bottom: 2px; }
+.diag-model {
+  margin-top: 10px; font-size: 12.5px; color: var(--ink-soft);
+  border-top: 1px dashed var(--line); padding-top: 8px;
+}
+.diag-model span { color: var(--ink-hint); margin-right: 6px; }
+.diag-actions { margin-top: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.diag-src { font-size: 11.5px; color: var(--ink-hint); }
+.wrong-cause.is-intent { color: var(--ink-soft); }
+
+/* 验证角色判不了的条款：标出来，别让人以为漏了 */
+.check-row.is-out .check-text { color: var(--ink-hint); }
+.check-need {
+  display: block; margin-top: 2px; font-style: normal;
+  font-size: 11.5px; color: var(--amber);
+}

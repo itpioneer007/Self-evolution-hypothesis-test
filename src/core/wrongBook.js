@@ -105,6 +105,26 @@
       g.cases.forEach(function (c) { causes[c.category] = (causes[c.category] || 0) + 1; });
       const topCause = Object.keys(causes).sort(function (a, b) { return causes[b] - causes[a]; })[0] || '未掌握';
 
+      /*
+       * 掌握概率：把这一组的作答序列（首错 + 每次回练）过一遍 BKT。
+       * 为什么不用「错过几次」：次数不带顺序，也分不出「错 3 次后连对 2 次」和
+       * 「连错 3 次」。规划环节要的是「现在多半会不会」，这个数才给得出。
+       */
+      const seq = [];
+      g.cases.forEach(function (c) {
+        seq.push({
+          correct: false,
+          hintCount: (c.firstAttemptEvidence || {}).hintCount || 0,
+          at: c.createdAt || c.firstAttemptEvidence && c.firstAttemptEvidence.completedAt || ''
+        });
+        (c.variantAttempts || []).forEach(function (a) {
+          seq.push({ correct: !!a.correct, hintCount: a.hintCount || 0, at: a.completedAt || '' });
+        });
+      });
+      const bkt = (SHT.bkt && SHT.bkt.project) ? SHT.bkt.project(seq) : { p: null };
+      // 最近一次诊断：诊断记录跟着错题走，规划要读它才知道「他上次错在哪一维」
+      const lastCase = g.cases[g.cases.length - 1] || {};
+
       return {
         key: g.key, label: g.label, ability: g.ability,
         // 下一轮要按这条重新出题，得知道「哪一条错题」和「上一轮那道题长什么样」：
@@ -114,6 +134,13 @@
         status: status, priorityScore: score, errorCount: g.errorCount,
         supportCount: g.supportCount, caseCount: g.cases.length,
         topCause: topCause,
+        // 诊断与掌握概率：课程角色排题时读这两个，前者说「错在哪一维」，后者说「还剩多少」
+        diag: lastCase.diagnosis || null,
+        pKnown: bkt.p,
+        lastPicked: lastCase.studentAnswer || '',
+        lastAnswer: lastCase.correctAnswer || '',
+        lastMs: (lastCase.firstAttemptEvidence || {}).durationMs || 0,
+        lastHint: (lastCase.firstAttemptEvidence || {}).hintCount || 0,
         suggestedCell: SHT.suggestCell(topCause, topicDomain)
       };
     }).sort(function (a, b) { return b.priorityScore - a.priorityScore; });

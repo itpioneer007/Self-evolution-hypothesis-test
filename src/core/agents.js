@@ -1,18 +1,28 @@
 /*
- * 三个角色 = 同一个模型的三套配置（提示词 / 记忆 / 技能）
+ * 四个角色 = 同一个模型的四套配置（提示词 / 记忆 / 上下文）
  *
- * 这套分工借的是「专家」的思路：不是三个不同的模型，而是同一底模在三次调用里
- * 拿到不同的 system、不同的上下文、不同的输出契约。
+ * 说法要严谨：这里没有「智能体」。模型不会自己去做事——它没有工具、不会读文件、
+ * 不会在两次调用之间记住任何东西。每一轮都是代码把上下文拼好、调一次、拿回一段
+ * JSON。所以它们只是同一底模在不同位置上的四个角色，记忆由代码搬运。
  *
- *   规划 plan     记忆：错题画像 + 已占用角度 + 上轮退回条款     技能：只提考点意图
- *   生成 generate 记忆：只有本单元词表与句型（不给画像）          技能：九字段单题
- *   质检 verify   记忆：词表 + 23 条（不给画像，防放水）          技能：只判 pass / fail
+ *   plan     课程：决定这一轮考哪几个点、往哪个方向出      看得到学情（诊断 / 作答 / 掌握概率）
+ *   generate 生成：把课程给的方向落成一道题                看不到学情，防手软
+ *   verify   验证：只针对题目本身判能不能进这一轮          看不到学情，防同情
+ *   diagnose 诊断：解释他为什么选了这个、为什么排掉那些    只在作答之后跑，不参与命题
  *
- * 为什么生成看不到画像：让它知道「这学生弱」就会不自觉地把题出简单，而难度
- * 该由规划环节的 level 决定，不该由出题者临时心软。
- * 为什么质检看不到画像：看到画像会同情，会把「他做不出来」当成「题有问题」。
+ * 权限边界（这条是整套设计的地基）：
+ *   - 验证只有否决权，通过权在代码闸 validate.js 手里。
+ *   - 生成不能自己改方向：考点、层次、题型、干扰项类型都由课程定，代码落格。
+ *   - 课程不写题、不判对错；层次由 progress.js 的阶梯与上限按住，模型只能在其内选。
+ *   - 诊断不改判定结果，也不改题；它只给「为什么」，而且代码先算，模型只能补。
  *
- * 三套提示词都只描述职责与契约，不含任何判据实现——判据在 validate.js 里，
+ * 为什么生成看不到学情：让它知道「这学生弱」就会不自觉把题出简单，难度该由
+ * 课程的 level 决定，不该由出题者临时心软。
+ * 为什么验证看不到学情：看到学情会同情，会把「他做不出来」当成「题有问题」。
+ * 为什么验证也看不到出题意图：看到「这题应该用形近干扰项」就会去确认意图，
+ * 而不是独立判断选项在这道题里成不成立。
+ *
+ * 四套提示词都只描述职责与契约，不含判据实现——判据在 validate.js 里，
  * 模型说通过不算通过。
  */
 (function (root) {
@@ -33,10 +43,10 @@
     return fw.join(' ');
   }
 
-  // 除了词表和功能词，还有两类词是「学过但不在词表里」的，必须主动告诉模型与质检：
+  // 除了词表和功能词，还有两类词是「学过但不在词表里」的，必须主动告诉模型与验证：
   //   语音板块的对比词对（a / a-e 这一课就是用 cat / cake 讲的）
   //   教材句型表原文里出现的词（One blackboard, one TV, many desks and chairs）
-  // 不说清楚，模型会不敢用、质检会拿词表去否掉本来对的题（实测两条都发生过）。
+  // 不说清楚，模型会不敢用、验证会拿词表去否掉本来对的题（实测两条都发生过）。
   function extraKnownText(unit) {
     const lines = [];
     const pairs = ((unit.phonics && unit.phonics.pairs) || []).map(function (p) { return p.join(' / '); });
@@ -51,23 +61,32 @@
     return (unit.sentencePatterns || []).map(function (p, i) { return (i + 1) + '. ' + p; }).join('\n');
   }
 
+  // 只列「只看题目本身就能判」的条目：拿不到判定所需信息的条目列给它，
+  // 它只能靠猜，猜出来的理由就是失败日志里的空话。
   const CHECK_TEXT = function () {
+    const ok = {};
+    (SHT.JUDGEABLE_CHECKS || []).forEach(function (c) { ok[c.id] = true; });
     return (SHT.CHECK_LAYERS || []).map(function (layer) {
-      return '【' + layer.name + '】' + layer.items.map(function (it) {
+      const items = layer.items.filter(function (it) { return ok[it.id]; });
+      if (!items.length) return '';
+      return '【' + layer.name + '】' + items.map(function (it) {
         return it.id + ' ' + it.text;
       }).join('；');
-    }).join('\n');
+    }).filter(Boolean).join('\n');
   };
 
-  SHT.AGENTS = {
+  SHT.ROLES = {
     plan: {
       id: 'plan',
-      name: '规划',
-      memoryLabel: '错题画像 · 已占用角度 · 上轮退回条款',
+      name: '课程',
+      memoryLabel: '上轮角度 · 考点台账 · 诊断与掌握概率',
       skillLabel: '只提考点意图，不写题',
       system: function () {
         return [
-          '你是小学英语的命题规划者。你只决定「这一轮考哪几个点」，不写题干、不写选项。',
+          '你是小学英语的课程设计者。你决定「这一轮考哪几个点、往哪个方向出」，不写题干、不写选项。',
+          '',
+          '你的边界：不判对错，不声明学生为什么错。学生为什么错由诊断角色根据作答证据给出，',
+          '你只负责读它、并据此决定这一轮考什么。题目怎么落地由生成角色负责，你不写题面。',
           '',
           '输出必须是 JSON：{"plans":[{"kp":"","ability":"","cause":"","whyThisOne":"","nextIfWrong":"","level":""}]}',
           '',
@@ -78,11 +97,14 @@
           '4. level 只能取：认 / 辨 / 用 / 表达。',
           '5. 各条考点互不重复；如果给了错题画像，前两条必须冲画像里的 priority 考点。',
           '6. 如果给了「本轮考点范围」，每条的 kp 必须原样用范围内的一条说法，一个字都不许改，也不许自己另造。',
-          '7. whyThisOne：为什么这一轮要考它，一句话，不超过 25 个字。',
+          '7. whyThisOne：为什么这一轮要考它，一句话，不超过 25 个字。要引用诊断结论或掌握概率，不许写「巩固基础」这种空话。',
           '8. nextIfWrong：他这次还错，下一轮出什么，必须是更小的一步，不超过 25 个字。',
-          '9. 如果给了「本轮能力配额」，按配额分每类能力的条数，一类都不许多；每条的 ability 必须来自配额表，配额里没有的能力不要出现。',
-          '10. 相邻两条计划的语境不要跨太远。检验「他是不是真记住」靠的是把上一题的错误答案放进下一题当干扰项——只有两题语境相近时这个干扰项才可信。一条考词汇拼写、下一条考问答应答，跨得太远，上一题的答案在新题里根本说不通，放进去就是个谁都不会选的废选项。排的时候把同话题、同句型的考点放在相邻位置。',
-          '11. 不要输出题目内容、选项、解析、答案。只输出 JSON。'
+          '9. cause 是你打算用哪种错法做干扰项（形近 / 音近 / 语法错形 / 单复数 / 近义 / 母语负迁移），',
+          '   这是设计意图，不是对学生的判断。诊断角色给过真实错因时，干扰项要跟它对齐。',
+          '10. 如果给了「本轮能力配额」，按配额分每类能力的条数，一类都不许多；每条的 ability 必须来自配额表，配额里没有的能力不要出现。',
+          '11. 相邻两条计划的语境不要跨太远。检验「他是不是真记住」靠的是把上一题的错误答案放进下一题当干扰项——只有两题语境相近时这个干扰项才可信。一条考词汇拼写、下一条考问答应答，跨得太远，上一题的答案在新题里根本说不通，放进去就是个谁都不会选的废选项。排的时候把同话题、同句型的考点放在相邻位置。',
+          '12. 上一轮没出成题的考点，读「为什么没出成」那一段：如果是超纲或词表里没有，就换一个能落地的说法；如果是层次高了，就降到上限以内。不要原样再排一遍。',
+          '13. 不要输出题目内容、选项、解析、答案。只输出 JSON。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -138,13 +160,41 @@
         }
         const brief = ctx.brief || {};
         if (brief.priority && brief.priority.length) {
-          lines.push('错题画像（按优先级）：');
+          lines.push('错题画像（按优先级，越靠前越该先考）：');
           brief.priority.forEach(function (p) {
-            lines.push('- ' + p.kp + '（错过 ' + p.missCount + ' 次' + (p.stage === 'variant-failed' ? '，换题也错' : '') + '）');
+            const bits = ['错过 ' + p.missCount + ' 次'];
+            if (p.stage === 'variant-failed') bits.push('换题也错');
+            if (p.pKnown != null) bits.push('掌握概率 ' + SHT.bkt.text(p.pKnown));
+            lines.push('- ' + p.kp + '（' + bits.join('，') + '）');
+            if (p.diag && p.diag.causeLabel) {
+              lines.push('  诊断：' + p.diag.causeLabel +
+                (p.diag.headline ? '——' + p.diag.headline : '') +
+                (p.diag.confidence != null ? '（置信 ' + Math.round(p.diag.confidence * 100) + '%）' : ''));
+            }
+            if (p.lastPicked) {
+              lines.push('  上一次他选的是「' + p.lastPicked + '」，正确是「' + (p.lastAnswer || '') + '」' +
+                (p.lastMs ? '，用了 ' + Math.round(p.lastMs / 1000) + ' 秒' : '') +
+                (p.lastHint ? '，用了提示' : ''));
+            }
+            if (p.diag && p.diag.eliminated && p.diag.eliminated.length) {
+              lines.push('  他排掉了：' + p.diag.eliminated.map(function (e) {
+                return e.letter + '「' + e.option + '」（' + e.why + '）';
+              }).join('；') + '——同考点继续出题时，别再靠这几项做干扰');
+            }
+            if (p.diag && p.diag.nextStep) lines.push('  诊断建议的下一步：' + p.diag.nextStep);
           });
           lines.push('前两条计划必须冲上面这些考点。');
         } else {
           lines.push('错题画像：这一轮没有历史错题，按单元本身的难点排。');
+        }
+        // 验证角色的输出：上一轮这些题为什么没过。给的是条款 + 一句原因，
+        // 不是整道题——课程要据此换一个能落地的说法，而不是照原样再排一遍。
+        if (brief.rejects && brief.rejects.length) {
+          lines.push('');
+          lines.push('上一轮没出成题的考点（验证角色退回的原因，这一轮别再犯）：');
+          brief.rejects.forEach(function (r) {
+            lines.push('- ' + (r.kp || '（未记考点）') + '：' + r.text + (r.times > 1 ? '（' + r.times + ' 次）' : ''));
+          });
         }
         if (brief.mastered && brief.mastered.length) {
           lines.push('上一轮已经真会的考点（不要重复出）：' + brief.mastered.join('；'));
@@ -202,7 +252,10 @@
           '    例：答案 He is tall. 时，["He\'s tall."] 也是对的，填进去；',
           '    例：答案是 ice cream 时，"ice-cream" 也对，填进去。',
           '    选择题填 []（学生只能从选项里选，写法本来就固定）；没有别的正确写法也填 []。',
-          '    不要把「意思相近但换了主体/时态/单复数」的句子填进来，那不是写法差异，是另一个答案。'
+          '    不要把「意思相近但换了主体/时态/单复数」的句子填进来，那不是写法差异，是另一个答案。',
+          '11. 方向不是你定的：考点、层次、题型、干扰项类型都由课程给定，你不许改。',
+          '    按这个方向出不来时，换一个同方向的写法（换场景、换问法、换具体词），',
+          '    不许自己把考点挪到别处、不许偷偷把难度降下来。出不来就如实按方向再写一版。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -249,12 +302,15 @@
 
     verify: {
       id: 'verify',
-      name: '质检',
-      memoryLabel: '词表 + 四层 23 条（不给画像）',
+      name: '验证',
+      memoryLabel: '词表 + ' + (SHT.JUDGEABLE_CHECKS || []).length + ' 条可判条款（不给学情）',
       skillLabel: '只判 pass / fail 与条款号',
       system: function () {
         return [
-          '你是独立质检者。你不写题，也不改题，只判这道题能不能进这一轮。',
+          '你是独立验证者。你不写题、不改题、不判分，只判这道题本身能不能进这一轮。',
+          '',
+          '你不知道学生是谁、他错过什么、这道题原本想考哪一层。这不是遗漏，是刻意不给：',
+          '知道了你会去确认出题者的意图，而不是独立判断选项在这道题里成不成立。',
           '',
           '输出必须是 JSON：',
           '{"verdict":"pass"} 或 {"verdict":"fail","fails":[{"id":"C3","reason":""}],"note":""}',
@@ -265,11 +321,14 @@
           '2.1 理由控制在 20 个字以内，只写「哪儿不对」，不要复述题目、不要写分析、不要重复条款说明。',
           '    要短，但不要把关键信息砍掉：宁可换一句更短的话，也不要写成「选项有问题」这种空话。',
           '    好：「选项 2 的 near 不能加 s」；坏：「这个题目中第二个选项 nears 其实是 near 的第三人称单数形式，但是作为介词使用时不应当加 s」。',
-          '3. 你看不到出题者的说明，也不要去推测他的意图，只看题面与词表。',
-          '3.1 知识点的措辞由系统给定，不是你判的范围。知识点与题目对不上时，只判题目本身，不要因为「标签写得不准」而判挂。',
-          '3.2 解析只要求讲清最主要的错因，不要求逐项罗列每个错项。以「解析没有分别说明每个错项」为由判挂，属于无效否决。',
-          '4. 拿不准的按 fail 处理，理由写「拿不准：……」。',
-          '5. 只输出 JSON。'
+          '3. 只判下面列出的 ' + (SHT.JUDGEABLE_CHECKS || []).length + ' 条。',
+          '    其余 ' + (SHT.OUT_OF_SCOPE_CHECKS || []).length + ' 条要看同轮其它题或学生画像，你看不到，一律不要判；' +
+            '判了也不算数，会被代码当无效否决丢掉。' +
+            '（具体是：' + (SHT.OUT_OF_SCOPE_CHECKS || []).map(function (c) { return c.id; }).join('、') + '）',
+          '4. 知识点措辞、解析详细程度都不在你判的范围里：知识点标签是课程写的；解析只要求讲清最主要的那个错因。',
+          '    以「解析没有分别说明每个错项」为由判挂，属于无效否决。',
+          '5. 拿不准的按 fail 处理，理由写「拿不准：……」。',
+          '6. 只输出 JSON。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -278,9 +337,8 @@
         const lines = [];
         lines.push('教材：' + ctx.bookName + '；单元：' + u.id + ' ' + u.title + '（' + u.titleZh + '）');
         lines.push('');
-        lines.push('待检的题：');
-        lines.push('- 知识点：' + q.knowledgePoint);
-        lines.push('- 题型：' + q.cell.type + '；场景：' + q.cell.scene + '；层次：' + q.cell.level + '；干扰项类型：' + q.cell.distractor);
+        lines.push('待检的题（只有题目本身）：');
+        lines.push('- 题型：' + q.cell.type);
         lines.push('- 题干：' + JSON.stringify(q.prompt));
         if (q.audioText) lines.push('- 听力原文：' + q.audioText);
         lines.push('- 选项：' + JSON.stringify(q.options));
@@ -296,21 +354,75 @@
         lines.push('本单元句型表原文（其中出现的词也算学过，不许按超纲否）：');
         lines.push(patternText(u));
         lines.push('');
-        lines.push('检查项（每条二元判定）：');
+        lines.push('检查项（每条二元判定，只判这些）：');
         lines.push(CHECK_TEXT());
         lines.push('');
         lines.push('判完输出 JSON。');
         return lines.join('\n');
       },
       memory: function (ctx) {
-        return { checks: (SHT.ALL_CHECKS || []).length, words: ctx.unit.words.length };
+        return { checks: (SHT.JUDGEABLE_CHECKS || []).length, words: ctx.unit.words.length };
+      }
+    },
+
+    /*
+     * 诊断角色：只在作答之后跑，解释「他为什么选了这个、为什么排掉那些」。
+     * 它不改判定结果，不改题，也不参与命题——它是课程角色的参谋。
+     *
+     * 输入里的「代码算出来的证据」是硬事实（差几个字母、音形键是否相同、
+     * 哪些选项被排掉、花了多少秒），提示词明确要求不许推翻，只能引用。
+     * 这样模型即使想编，也编不出一个和证据相反的说法。
+     */
+    diagnose: {
+      id: 'diagnose',
+      name: '诊断',
+      memoryLabel: '代码证据 · 固定的错因编号',
+      skillLabel: '只解释为什么，不判对错',
+      system: function () {
+        return [
+          '你是学情诊断者。你不写题、不改题、不判对错，只解释一次作答为什么会这样。',
+          '',
+          '系统已经先把能算的都算过了：错选与正确答案差几个字母、读音是否接近、是不是只差一个词形后缀、',
+          '另外两个选项为什么被他排掉、他花了多少秒、有没有用提示。这些是证据，不许推翻，只许引用。',
+          '',
+          '输出必须是 JSON：{"cause":"","why":"","confidence":0.0}',
+          '',
+          '约束：',
+          '1. cause 只能取这些编号之一：' + (SHT.ERROR_CAUSES || []).map(function (c) { return c.id; }).join(' / ') + '。',
+          '   不许自己发明说法，也不许写「基础不牢」「掌握不牢」这种放之四海皆准的话。',
+          '2. why 一句话，不超过 30 个字，说清「他拿什么当成了什么」，例：把 nears 当成 near 的复数。',
+          '3. confidence 取 0 到 1。证据不足以判断时给 0.2 以下，不要硬编一个听上去合理的说法。',
+          '4. 只能引用给你的证据。证据里没有的东西，不要写。',
+          '5. 只输出 JSON。'
+        ].join('\n');
+      },
+      user: function (ctx) {
+        const q = ctx.question;
+        const d = ctx.diagnosis || {};
+        const lines = [];
+        lines.push('这道题：' + JSON.stringify(q.prompt));
+        lines.push('正确答案：' + q.answer);
+        if ((q.options || []).filter(Boolean).length) lines.push('选项：' + JSON.stringify(q.options));
+        lines.push('他答的：' + JSON.stringify(ctx.picked || ''));
+        lines.push('');
+        lines.push('代码算出来的证据：');
+        if (!(d.signals || []).length) lines.push('- （没有可用的硬证据）');
+        (d.signals || []).forEach(function (s) { lines.push('- ' + s.text); });
+        lines.push('- 耗时：' + Math.round((d.timing && d.timing.ms || 0) / 1000) + ' 秒' +
+          (d.timing && d.timing.note ? '（' + d.timing.note + '）' : ''));
+        lines.push('');
+        lines.push('请判断他为什么会这样答。只输出 JSON。');
+        return lines.join('\n');
+      },
+      memory: function () {
+        return { causes: (SHT.ERROR_CAUSES || []).length };
       }
     }
   };
 
-  // 界面三张卡直接读这里，保证卡片上的三行与真实提示词同源
-  SHT.AGENT_LIST = ['plan', 'generate', 'verify'].map(function (id) {
-    const a = SHT.AGENTS[id];
+  // 界面四张卡直接读这里，保证卡片上的四行与真实提示词同源
+  SHT.ROLE_LIST = ['plan', 'generate', 'verify', 'diagnose'].map(function (id) {
+    const a = SHT.ROLES[id];
     return { id: a.id, name: a.name, memory: a.memoryLabel, skill: a.skillLabel };
   });
-})(window);
+})(window);;

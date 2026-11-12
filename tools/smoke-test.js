@@ -60,9 +60,11 @@ require('../src/core/wrongBook.js');
 require('../src/core/practice.js');
 require('../src/core/llm.js');
 require('../src/core/grade.js');
+require('../src/core/diagnose.js');
 require('../src/core/agents.js');
 require('../src/core/validate.js');
 require('../src/core/quota.js');
+require('../src/core/bkt.js');
 require('../src/core/progress.js');
 require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
@@ -87,14 +89,14 @@ console.log('--- 初始化渲染 ---');
 const localIso = new Date(2026, 10, 12, 16, 13).toISOString();
 assert('日志时间按本地时区显示，不是 UTC',
   SHT.timeOf(localIso) === '16:13', SHT.timeOf(localIso));
-assert('三个智能体卡片 = 3', count('agentRail', 'data-role="') === 3, count('agentRail', 'data-role="'));
-assert('默认显示课程智能体的 5 行配额', count('agentPanel', 'class="plan-row') === 5, count('agentPanel', 'class="plan-row'));
+assert('四个角色卡片 = 4', count('agentRail', 'data-role="') === 4, count('agentRail', 'data-role="'));
+assert('默认显示课程角色的 5 行配额', count('agentPanel', 'class="plan-row') === 5, count('agentPanel', 'class="plan-row'));
 assert('错题卡 3 张，每题带 6 行出题要点', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', 'class="brief-row"') === 18,
   count('wrongList', 'class="wrong-card') + ' / ' + count('wrongList', 'class="brief-row"'));
 assert('五个 KPI', count('metrics', 'class="kpi"') === 5, count('metrics', 'class="kpi"'));
 assert('出题日志有记录', count('logFeed', 'class="log-item') >= 5, count('logFeed', 'class="log-item'));
 assert('打回缘由有渲染结果', nodes.rejectChart.innerHTML.length > 0);
-// 检查标准的明细不该出现在课程智能体的面板里，那是日志页的活
+// 检查标准的明细不该出现在课程角色的面板里，那是日志页的活
 assert('01 页不再放检查明细', count('agentPanel', 'class="fail-row') === 0, count('agentPanel', 'class="fail-row'));
 assert('出题日志每行带时间', count('logFeed', 'class="log-at"') >= 5, count('logFeed', 'class="log-at"'));
 assert('已出过的角度显示题型+层次，不是指纹短码',
@@ -152,7 +154,7 @@ pickTab('agents');
 fire('agentRail', 'click', {
   closest(sel) { return sel === 'button[data-role]' ? { dataset: { role: 'execute' } } : null; }
 });
-assert('01 执行智能体有「作答方式」这一项',
+assert('01 生成角色有「作答方式」这一项',
   nodes.agentPanel.innerHTML.indexOf('data-field="answerMode"') >= 0);
 fire('agentPanel', 'change', { dataset: { field: 'answerMode' }, value: 'open' });
 pickTab('practice');
@@ -187,7 +189,7 @@ assert('开放题判不了时进入「判定中」，按钮同时禁用',
   nodes.practiceCard.innerHTML.indexOf('data-action="submit-answer" disabled') >= 0,
   nodes.practiceCard.innerHTML.slice(-260));
 
-// 收尾：把这道题改回选择题、角色切回课程智能体。
+// 收尾：把这道题改回选择题、角色切回课程角色。
 // 上面为了测开放题改过作答方式和当前角色，不收尾的话后面的用例会读到半路状态。
 pickTab('agents');
 fire('agentRail', 'click', {
@@ -242,15 +244,19 @@ fire('agentPanel', 'click', {
 });
 assert('点「用这个」把候选写进第 1 题', nodes.agentPanel.innerHTML.indexOf('value="spelling · blackboard · oa + ar 双字母组合"') >= 0);
 fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'execute' } }) });
-assert('执行智能体渲染单题表单', count('agentPanel', 'class="field-grid"') === 1 && count('agentPanel', 'data-field="prompt"') === 1);
-assert('执行智能体知识点为只读展示（无候选下拉）', count('agentPanel', 'data-kp-pick') === 0 && count('agentPanel', 'cell-badge') >= 2);
+assert('生成角色渲染单题表单', count('agentPanel', 'class="field-grid"') === 1 && count('agentPanel', 'data-field="prompt"') === 1);
+assert('生成角色知识点为只读展示（无候选下拉）', count('agentPanel', 'data-kp-pick') === 0 && count('agentPanel', 'cell-badge') >= 2);
 fire('agentRail', 'click', { closest: () => ({ dataset: { role: 'verify' } }) });
-assert('验证智能体渲染层切换', count('agentPanel', 'class="layer-switch"') === 1 && count('agentPanel', 'data-action="layer"') === SHT.CHECK_LAYERS.length);
+assert('验证角色渲染层切换', count('agentPanel', 'class="layer-switch"') === 1 && count('agentPanel', 'data-action="layer"') === SHT.CHECK_LAYERS.length);
 fire('agentPanel', 'click', {
   closest(sel) { return sel === '[data-action]' ? { dataset: { action: 'check', check: SHT.ALL_CHECKS[0].id, verdict: 'pass' } } : null; },
   matches() { return false; }
 });
-assert('勾选一条检查后面板重渲染且摘要仍在', count('agentPanel', 'stat-pill') === 2, count('agentPanel', 'stat-pill'));
+assert('勾选一条检查后面板重渲染且摘要仍在', count('agentPanel', 'stat-pill') === 3, count('agentPanel', 'stat-pill'));
+assert('验证页标出模型只能判 15 条，不让人以为漏判',
+  nodes.agentPanel.innerHTML.indexOf('模型只能判 ' + SHT.JUDGEABLE_CHECKS.length + ' 条') >= 0);
+assert('判不了的条款在页面上写明原因',
+  nodes.agentPanel.innerHTML.indexOf('check-need') >= 0 && nodes.agentPanel.innerHTML.indexOf('不归验证判') >= 0);
 
 console.log('--- 错题回写计划 ---');
 fire('tabbar', 'click', { closest: () => ({ dataset: { tab: 'wrongbook' } }) });
@@ -676,8 +682,8 @@ assert('brief 把上一轮那道原题带给生成方当反例',
 assert('两枪都对的考点不会再被优先出', brief.priority.every(p => p.kp !== '真会考点'));
 assert('brief 是结构化字段，不是一段话', typeof brief.levelHint === 'string' && Array.isArray(brief.blockedCells));
 
-/* ================= 三个智能体各自的记忆 ================= */
-console.log('--- 智能体记忆 ---');
+/* ================= 三个角色各自的记忆 ================= */
+console.log('--- 角色记忆 ---');
 const MEM0 = SHT.agentMemory.blank();
 const MEM1 = SHT.agentMemory.commit(MEM0, {
   questions: [{ knowledgePoint: 'vocab · shirt', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' } }],
@@ -806,7 +812,7 @@ async function runCase(name, script, expect) {
 
   // 选定知识点范围：范围外的考点不许进这一轮，提示词要真带上范围
   const SCOPE = [{ id: 'k1', label: 'vocab · shirt · 音义联结', ability: 'vocab', cell: { type: '中英匹配', scene: '身体与衣物', level: '认', distractor: '同类不同物' } }];
-  assert('规划提示词里带着选定范围', SHT.AGENTS.plan.user({
+  assert('规划提示词里带着选定范围', SHT.ROLES.plan.user({
     bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 },
     unit: SHT.curriculum, brief: {}, blockedCells: [], count: 1, scope: SCOPE
   }).indexOf('vocab · shirt · 音义联结') >= 0);
@@ -877,7 +883,7 @@ const PR2 = SHT.progress.commit(PR, {
 assert('出了题的考点从重试队列里删掉', !PR2.retry['kp-lost'], JSON.stringify(PR2.retry));
 assert('重试队列进得了规划提示词的上下文', SHT.progress.planHint(PR, { layer: 'B' }).retry.length === 1,
   JSON.stringify(SHT.progress.planHint(PR, { layer: 'B' }).retry));
-assert('规划提示词里写出「上一轮这些考点没出成题」', SHT.AGENTS.plan.user({
+assert('规划提示词里写出「上一轮这些考点没出成题」', SHT.ROLES.plan.user({
   bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 }, unit: SHT.curriculum,
   brief: {}, blockedCells: [], count: 1, scope: [],
   stage: SHT.progress.planHint(PR, { layer: 'B' })
@@ -948,7 +954,7 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
   assert('没排满的能力进 short，不补假题', ap.report.short.some(function (x) { return x.ability === 'listening'; }), JSON.stringify(ap.report.short));
   const ax = SHT.quota.apply([{ kp: 'l1', ability: 'listening' }], { total: 3, byAbility: { vocab: 2 } });
   assert('配额外的能力名额还空着就收下，只记 extra', ax.plans.length === 1 && ax.extra.length === 1, JSON.stringify(ax.extra));
-  assert('规划提示词里带着能力配额', SHT.AGENTS.plan.user({
+  assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     bookName: 'PEP', bookMeta: { grade: '四', term: '上', units: 6 },
     unit: SHT.curriculum, brief: {}, blockedCells: [], count: 3,
     quota: { total: 3, byAbility: { vocab: 2, grammar: 1 }, note: '人工填写' }
@@ -1116,9 +1122,210 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
       nodes.practiceCard.innerHTML.slice(0, 120));
     assert('回练题把上一轮原题放在提示里',
       nodes.practiceCard.innerHTML.indexOf('选出「讲台」的英文') >= 0);
+
+    /* 诊断页：答完才说话，且要说清「他排掉了什么」 */
+    fire('agentRail', 'click', {
+      closest(sel) { return sel === 'button[data-role]' ? { dataset: { role: 'diagnose' } } : null; }
+    });
+    assert('诊断页在未作答时不给结论', nodes.agentPanel.innerHTML.indexOf('这一题还没作答') >= 0,
+      nodes.agentPanel.innerHTML.slice(0, 160));
+    click('practiceCard', { action: 'pick-option', index: 1 });
+    click('practiceCard', { action: 'submit-answer' });
+    fire('agentRail', 'click', {
+      closest(sel) { return sel === 'button[data-role]' ? { dataset: { role: 'diagnose' } } : null; }
+    });
+    assert('作答之后诊断页给出结论与置信度',
+      nodes.agentPanel.innerHTML.indexOf('class="diag-card') >= 0 &&
+      nodes.agentPanel.innerHTML.indexOf('置信 ') >= 0,
+      nodes.agentPanel.innerHTML.slice(0, 220));
+    assert('诊断说出他没选的那一项为什么被排掉',
+      nodes.agentPanel.innerHTML.indexOf('为什么没选其它项') >= 0 &&
+      nodes.agentPanel.innerHTML.indexOf('class="diag-reason"') >= 0);
+    assert('诊断给出下一轮怎么出', nodes.agentPanel.innerHTML.indexOf('下一轮怎么出') >= 0);
+    assert('诊断页写明它不改判定、不改题',
+      nodes.agentPanel.innerHTML.indexOf('不改判定结果') >= 0);
   } catch (err) {
     assert('回练题在 02 页标成「错题回练」', false, err.message);
   }
+
+  /* ================= 诊断：为什么偏选这个 ================= */
+  console.log('--- 诊断归因 ---');
+  const dUnit = {
+    words: [
+      { en: 'near', zh: '在附近' }, { en: 'class', zh: '班级' }, { en: 'classroom', zh: '教室' },
+      { en: 'wall', zh: '墙' }, { en: 'blackboard', zh: '黑板' }, { en: 'in', zh: '在…里' },
+      { en: 'on', zh: '在…上' }, { en: 'cake', zh: '蛋糕' }, { en: 'cat', zh: '猫' }
+    ],
+    allowedFunctionWords: ['is', 'are', 'the', 'a', 'he', 'she', 'it', 'very', 'tall', 'has']
+  };
+  const judgeD = function (q, picked, ms, hint) {
+    return SHT.diagnose.judge({
+      question: q,
+      attempt: { picked: picked, correct: false, durationMs: ms == null ? 9000 : ms, hintCount: hint || 0 },
+      unit: dUnit
+    });
+  };
+  const dNear = judgeD({ prompt: '听录音，选出你听到的单词。', options: ['near', 'nears', 'not'], answer: 'near' }, 'nears');
+  assert('near / nears 判成词形问题，不是形近拼写',
+    dNear.causeId === '语法错形', dNear.causeId);
+  assert('词形问题的理由说清「加了 -s」', /加 -s/.test(dNear.whyPicked), dNear.whyPicked);
+  assert('诊断带上他排掉的选项与理由',
+    dNear.eliminated.length === 1 && dNear.eliminated[0].letter === 'C' && dNear.eliminated[0].why.length > 6,
+    JSON.stringify(dNear.eliminated));
+
+  const dPrefix = judgeD({ prompt: '选出「教室」的正确拼写。', options: ['classroom', 'class', 'calssroom'], answer: 'classroom' }, 'class');
+  assert('class / classroom 按共同前缀判成形近', dPrefix.causeId === '形近混淆', dPrefix.causeId);
+
+  const dIrregular = judgeD({ prompt: 'She ___ long hair.', options: ['has', 'have', 'is'], answer: 'has' }, 'have');
+  assert('have / has 按不规则屈折判成语法错形，不当形近', dIrregular.causeId === '语法错形', dIrregular.causeId);
+
+  const dShort = judgeD({ prompt: '— Where is the picture? — It\'s ___ the wall.', options: ['on', 'in', 'at'], answer: 'on' }, 'in');
+  assert('in / on 这种短词判成近义（用法）而不是音近', dShort.causeId === '近义混淆', dShort.causeId);
+
+  const dBe = judgeD({ prompt: '用英语说：他很高。', options: [], answer: 'He is very tall.', open: true }, 'He tall');
+  assert('开放题漏 be 动词能读出来', dBe.causeId === '语法错形' && /be 动词/.test(dBe.whyPicked), dBe.whyPicked);
+
+  const dOrder = judgeD({ prompt: '用英语说：他很高。', options: [], answer: 'He is very tall.', open: true }, 'Very tall he is');
+  assert('开放题词序颠倒判成母语负迁移', dOrder.causeId === '母语负迁移', dOrder.causeId);
+
+  const dTwice = judgeD({ prompt: '听录音，选出你听到的单词。', options: ['near', 'nears', 'not'], answer: 'near' }, 'nears');
+  assert('同一个答案跑两次结论一致（可复算）',
+    dTwice.causeId === dNear.causeId && dTwice.confidence === dNear.confidence);
+
+  const dQuick = judgeD({ prompt: '听录音，选出你听到的单词。', options: ['near', 'nears', 'not'], answer: 'near' }, 'nears', 1500);
+  const dSlow = judgeD({ prompt: '听录音，选出你听到的单词。', options: ['near', 'nears', 'not'], answer: 'near' }, 'nears', 26000);
+  assert('秒选的诊断置信度低于想了很久的', dQuick.confidence < dSlow.confidence,
+    dQuick.confidence + ' / ' + dSlow.confidence);
+
+  const dRight = SHT.diagnose.judge({
+    question: { prompt: '选出「教室」的正确拼写。', options: ['classroom', 'class'], answer: 'classroom' },
+    attempt: { picked: 'classroom', correct: true, durationMs: 1200, hintCount: 0 },
+    unit: dUnit
+  });
+  assert('答对也诊断：秒答会被标成「记住了」而不是「会了」',
+    dRight.correct && dRight.causeId === '秒答', dRight.causeId);
+
+  /* 冻结：同一个 (题目, 答案) 只诊断一次 */
+  const dQ = { qid: 'dq-1', prompt: '听录音，选出你听到的单词。', options: ['near', 'nears', 'not'], answer: 'near' };
+  const dAtt = { picked: 'nears', correct: false, durationMs: 9000, hintCount: 0 };
+  let dStore = SHT.diagnose.remember({}, dQ, dAtt, 1, dNear);
+  const dStore2 = SHT.diagnose.remember(dStore, dQ, dAtt, 1, Object.assign({}, dNear, { causeId: '未掌握' }));
+  assert('诊断落库后不覆盖（冻结）',
+    SHT.diagnose.read(dStore2, dQ, dAtt, 1).causeId === dNear.causeId);
+  assert('改答案重答是另一条诊断记录',
+    SHT.diagnose.read(dStore2, { qid: 'dq-1', answer: 'near' }, { picked: 'not' }, 1) === null);
+
+  // 代码证据强时，模型只能附加意见，不能改主结论
+  const dStrong = SHT.diagnose.appendModel(dStore2, dQ, dAtt, 1, { causeId: '未掌握', why: '我觉得是没掌握', confidence: 0.9 });
+  const dStrongHit = SHT.diagnose.read(dStrong, dQ, dAtt, 1);
+  assert('代码证据强时模型补诊不推翻主结论', dStrongHit.causeId === dNear.causeId, dStrongHit.causeId);
+  assert('模型补的意见另存一份可对照', dStrongHit.modelView && dStrongHit.modelView.causeId === '未掌握');
+  // 代码证据弱时，模型那一份才顶上来
+  const dWeak = Object.assign({}, dNear, { causeId: '未掌握', confidence: 0.2 });
+  let dWeakStore = SHT.diagnose.remember({}, { qid: 'dq-2' }, { picked: 'x' }, 1, dWeak);
+  dWeakStore = SHT.diagnose.appendModel(dWeakStore, { qid: 'dq-2' }, { picked: 'x' }, 1, { causeId: '形近混淆', why: '差一个字母', confidence: 0.7 });
+  assert('代码证据弱时模型补诊顶上来当主结论',
+    SHT.diagnose.read(dWeakStore, { qid: 'dq-2' }, { picked: 'x' }, 1).causeId === '形近混淆');
+
+  /* ================= 掌握概率（BKT） ================= */
+  console.log('--- 掌握概率 ---');
+  const p0 = SHT.bkt.P.init;
+  const pUp = SHT.bkt.project([{ correct: true }, { correct: true }, { correct: true }]).p;
+  const pDown = SHT.bkt.project([{ correct: false }, { correct: false }, { correct: false }]).p;
+  assert('连对三次掌握概率上升', pUp > p0, p0 + ' → ' + pUp);
+  assert('连错三次掌握概率下降', pDown < p0, p0 + ' → ' + pDown);
+  const pHint = SHT.bkt.project([{ correct: true, hintCount: 1 }, { correct: true, hintCount: 1 }]).p;
+  const pClean = SHT.bkt.project([{ correct: true }, { correct: true }]).p;
+  assert('靠提示答对涨得比独立答对慢', pHint < pClean, pHint + ' / ' + pClean);
+  assert('掌握概率带档位，规划提示词读得懂',
+    SHT.bkt.text(0.82).indexOf('高') >= 0 && SHT.bkt.text(0.1).indexOf('低') >= 0);
+
+  /* ================= 角色边界：谁看得到什么 ================= */
+  console.log('--- 角色边界 ---');
+  assert('四个角色都在，且诊断角色存在',
+    ['plan', 'generate', 'verify', 'diagnose'].every(function (k) { return !!SHT.ROLES[k]; }), Object.keys(SHT.ROLES).join(','));
+  const verifyCtx = SHT.ROLES.verify.user({
+    bookName: 'PEP 四上', unit: SHT.curriculum,
+    question: {
+      knowledgePoint: 'spelling · blackboard · oa + ar',
+      cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
+      prompt: '选出「黑板」的正确拼写。', options: ['blackboard', 'blackbord', 'blakboard'],
+      answer: 'blackboard', analysis: 'black 两个 a。'
+    }
+  });
+  assert('验证角色看不到干扰项类型（那是出题意图）', verifyCtx.indexOf('干扰项类型') < 0);
+  assert('验证角色看不到层次（不给它确认意图的机会）', verifyCtx.indexOf('层次') < 0);
+  assert('验证角色看不到知识点标签', verifyCtx.indexOf('- 知识点：') < 0);
+  assert('验证提示词只列可判条款，并点明其余不判',
+    verifyCtx.indexOf('P1') < 0 && verifyCtx.indexOf('F2') < 0 &&
+    SHT.ROLES.verify.system().indexOf('一律不要判') >= 0);
+  assert('可判 15 条 / 不判 8 条（23 条总数不变）',
+    SHT.JUDGEABLE_CHECKS.length === 15 && SHT.OUT_OF_SCOPE_CHECKS.length === 8 &&
+    SHT.ALL_CHECKS.length === 23,
+    SHT.JUDGEABLE_CHECKS.length + '/' + SHT.OUT_OF_SCOPE_CHECKS.length);
+  assert('生成角色看不到学情（不给画像）', SHT.ROLES.generate.user({
+    bookName: 'PEP 四上', unit: SHT.curriculum,
+    plan: { kp: 'spelling · blackboard · oa + ar', ability: 'spelling', level: '辨',
+      cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' } }
+  }).indexOf('错过') < 0);
+  assert('生成角色被告知方向由课程定、不许自己改',
+    SHT.ROLES.generate.system().indexOf('方向不是你定的') >= 0 &&
+    SHT.ROLES.generate.system().indexOf('不许自己把考点挪到别处') >= 0);
+  assert('诊断角色只能取固定错因编号，不许自造说法',
+    SHT.ROLES.diagnose.system().indexOf('不许自己发明说法') >= 0 &&
+    SHT.ROLES.diagnose.system().indexOf('未掌握') >= 0);
+  assert('诊断角色不判对错、不改题',
+    SHT.ROLES.diagnose.system().indexOf('不判对错') >= 0);
+
+  /* 课程角色必须读到：诊断结论、错选、耗时、掌握概率、上一轮没过成的原因 */
+  const planCtx = SHT.ROLES.plan.user({
+    bookName: 'PEP 四上', bookMeta: SHT.BOOKS.current().meta, unit: SHT.curriculum,
+    count: 3, quota: SHT.quota.blank(), scope: [], stage: null,
+    brief: {
+      priority: [{
+        kp: 'spelling · blackboard · oa + ar', kpId: 'kp-1', missCount: 2, ability: 'spelling',
+        stage: 'variant-failed', pKnown: 0.31, lastPicked: 'blackbord', lastAnswer: 'blackboard',
+        lastMs: 15200, lastHint: 1,
+        diag: {
+          causeId: '形近混淆', causeLabel: '形近混淆', confidence: 0.72,
+          headline: '形近混淆 · 选了「blackbord」没选「blackboard」',
+          whyPicked: '只差 1 个字母',
+          eliminated: [{ letter: 'C', option: 'blakboard', why: '不在本单元词表里' }],
+          nextStep: '下一轮出同一组词形对比'
+        }
+      }],
+      mastered: [], blockedCells: [],
+      rejects: [{ kp: 'phonics · a / a-e · cake', times: 2, codes: ['C2'], text: 'C2 单元归属四查' }]
+    }
+  });
+  assert('课程角色读到诊断结论与置信度',
+    planCtx.indexOf('诊断：形近混淆') >= 0 && planCtx.indexOf('置信 72%') >= 0);
+  assert('课程角色读到上次错选与耗时', planCtx.indexOf('blackbord') >= 0 && planCtx.indexOf('15 秒') >= 0);
+  assert('课程角色读到掌握概率', planCtx.indexOf('掌握概率 0.31') >= 0);
+  assert('课程角色读到「他排掉了什么」', planCtx.indexOf('他排掉了') >= 0);
+  assert('课程角色读到验证角色的退回原因', planCtx.indexOf('上一轮没出成题') >= 0 && planCtx.indexOf('C2') >= 0);
+  assert('课程提示词写明 cause 是设计意图、不是诊断',
+    SHT.ROLES.plan.system().indexOf('设计意图') >= 0);
+
+  /* ================= 错因来源：诊断，不是出题意图 ================= */
+  console.log('--- 错因来源 ---');
+  const kpWithCause = SHT.KNOWLEDGE_POINTS.filter(function (k) { return k.cause; })[0] || { id: 'kp-x', cause: '形近混淆', label: 'x', ability: 'vocab' };
+  const upserted = SHT.upsertWrongCase([], {
+    studentId: 'S-001', unitId: 'U1', originalQuestionId: 'q-x',
+    kpId: kpWithCause.id, knowledgePoint: kpWithCause.label, ability: 'vocab',
+    category: '未掌握', causeSource: 'code', causeConfidence: 0.72,
+    intentCause: '语法错形',
+    diagnosis: { causeId: '未掌握', causeLabel: '尚未掌握', confidence: 0.72, headline: '没认出正确答案', whyPicked: '看不出关系', eliminated: [] },
+    errorCause: '没认出正确答案。看不出关系', questionSnapshot: '题干', studentAnswer: 'x',
+    correctAnswer: 'y', hintCount: 0, durationMs: 9000, at: new Date().toISOString()
+  });
+  const wc = upserted.list[0];
+  assert('错题本的错因来自诊断，不抄课程的 cause',
+    wc.category === '未掌握' && wc.category !== kpWithCause.cause, wc.category + ' / ' + kpWithCause.cause);
+  assert('出题意图单独留档，两者不混', wc.intentCause === '语法错形');
+  assert('错题本带上诊断全文与置信度',
+    !!wc.diagnosis && wc.causeConfidence === 0.72);
+  assert('首次作答的耗时被记下来（诊断要用）', wc.firstAttemptEvidence.durationMs === 9000);
 
   SHT.llm.call = REAL_CALL;
 
