@@ -414,7 +414,7 @@
   /* ---------- 没出成的题：按考点分组 ---------- */
   // 术语表：界面上不出现 V1 / C3 / QUOTA_OVER 这类只有写代码的人看得懂的编号。
   // 条款号仍然保留在 title 里，排查时能对上代码。
-  const STAGE_TEXT = { plan: '排考点', generate: '写题', validate: '自动检查', verify: '质检', giveup: '放弃' };
+  const STAGE_TEXT = { plan: '排考点', generate: '写题', validate: '自动检查', verify: '验证', giveup: '放弃' };
   const CODE_TEXT = {
     V1: '用了没教过的词', V2: '答案在选项里露了', V3: '选项不合规', V3b: '干扰项太好排除',
     V3c: '干扰拼写不像错拼', V4: '题干泄露答案', V5: '解析没说到点上', V6: '听力原文对不上',
@@ -429,7 +429,7 @@
     PLAN_SCOPE: '超出本轮范围', PLAN_DUP: '考点重复', PLAN_RETIRED: '考点已掌握',
     PLAN_LEVEL_CAP: '层次超过上限', PLAN_EMPTY: '没提到可用考点',
     QUOTA_OVER: '超出能力配额', QUOTA_SHORT: '配额没排满', QUOTA_OFF: '不在配额内',
-    GIVE_UP: '三次都没过', VERIFY_NO_CODE: '质检没说清理由', EXCEPTION: '程序出错'
+    GIVE_UP: '三次都没过', VERIFY_NO_CODE: '验证没说清理由', EXCEPTION: '程序出错'
   };
 
   /*
@@ -641,7 +641,7 @@
             return '<input data-field="option" data-index="' + i + '" value="' + esc(q.options[i] || '') + '" placeholder="' + String.fromCharCode(65 + i) + '">';
           }).join('') + '</div></div>' +
         '<div class="field-row"><label>答案</label><input data-field="answer" value="' + esc(q.answer) + '"></div>' +
-        '<div class="field-row"><label>质检</label><input value="' + esc(verdictOf(q)) + '" disabled></div>' +
+        '<div class="field-row"><label>验证结论</label><input value="' + esc(verdictOf(q)) + '" disabled></div>' +
         '<div class="field-row is-wide"><label>解析 · ≤25 字</label><textarea data-field="analysis" placeholder="错在哪 + 为什么 + 正确是什么">' + esc(q.analysis) + '</textarea></div>' +
         '<div class="field-row is-wide"><label>若再错 · 下一轮出什么</label><textarea data-field="nextIfWrong" placeholder="答不上来就不要出这道题">' + esc(q.nextIfWrong) + '</textarea></div>' +
       '</div>' +

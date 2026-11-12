@@ -131,7 +131,7 @@ function wrongIndex(q) {
     line('  题干', q.prompt + (q.audioText ? '　（听力原文：' + q.audioText + '）' : ''));
     line('  选项', q.options.map(function (o, i) { return String.fromCharCode(65 + i) + '. ' + o; }).join('　'));
     line('  答案', q.answer + '　解析：' + q.analysis);
-    line('  质检', q.modelVerdict + (q.checks.__verify ? ' / ' + q.checks.__verify : ''));
+    line('  验证', q.modelVerdict + (q.checks.__verify ? ' / ' + q.checks.__verify : ''));
   });
   // 真实模型通过率会抖：4 个考点里有时只成 2 个（大多是「答案不唯一」这类真问题，
   // 模型三轮改不好就放弃那一格）。所以这里不卡题量，卡「没成的那几格有没有说清原因」。
