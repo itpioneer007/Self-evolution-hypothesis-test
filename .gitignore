@@ -6,3 +6,6 @@ Thumbs.db
 sht-minimal-test-*.json
 .env
 .env.local
+
+# 页面分享打包产物（每次导出都会变，不进版本库）
+.trae-html-share-packages/
