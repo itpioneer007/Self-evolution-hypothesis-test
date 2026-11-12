@@ -59,6 +59,7 @@ require('../src/core/checklist.js');
 require('../src/core/wrongBook.js');
 require('../src/core/practice.js');
 require('../src/core/llm.js');
+require('../src/core/grade.js');
 require('../src/core/agents.js');
 require('../src/core/validate.js');
 require('../src/core/quota.js');
@@ -81,6 +82,11 @@ function fire(id, type, target) {
   handlers[id][type]({ target: Object.assign({ closest() { return null; }, matches() { return false; }, dataset: {} }, target) });
 }
 console.log('--- 初始化渲染 ---');
+// 日志时间是给人看的，必须是本地时间。记录存的是 UTC（ISO 带 Z），
+// 直接截字符串会把下午 4 点印成早上 8 点。这条用本地时钟构造输入，与时区无关。
+const localIso = new Date(2026, 10, 12, 16, 13).toISOString();
+assert('日志时间按本地时区显示，不是 UTC',
+  SHT.timeOf(localIso) === '16:13', SHT.timeOf(localIso));
 assert('三个智能体卡片 = 3', count('agentRail', 'data-role="') === 3, count('agentRail', 'data-role="'));
 assert('默认显示课程智能体的 5 行配额', count('agentPanel', 'class="plan-row') === 5, count('agentPanel', 'class="plan-row'));
 assert('错题卡 3 张，每题带 6 行出题要点', count('wrongList', 'class="wrong-card') === 3 && count('wrongList', 'class="brief-row"') === 18,
@@ -132,6 +138,66 @@ assert('写进去的错题带知识点与作答', nodes.wrongList.innerHTML.inde
 assert('作答记录进了日志信息流（答对/答错各有颜色）',
   (nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length >= 1,
   String((nodes.logFeed.innerHTML.match(/答对|答错/g) || []).length));
+
+console.log('--- 02 开放题：输入框 → 四段判定 → 冻结 ---');
+// 走真实事件路径把当前题改成开放题，不直接改内部状态——
+// 这样测的是「人点下拉框」这条路，而不是绕过界面。
+function pickTab(tab) {
+  fire('tabbar', 'click', {
+    closest(sel) { return sel === 'button[data-tab]' ? { dataset: { tab: tab } } : null; }
+  });
+}
+click('practiceCard', { action: 'restart-practice' });
+pickTab('agents');
+fire('agentRail', 'click', {
+  closest(sel) { return sel === 'button[data-role]' ? { dataset: { role: 'execute' } } : null; }
+});
+assert('01 执行智能体有「作答方式」这一项',
+  nodes.agentPanel.innerHTML.indexOf('data-field="answerMode"') >= 0);
+fire('agentPanel', 'change', { dataset: { field: 'answerMode' }, value: 'open' });
+pickTab('practice');
+
+const openQNow = SHT.sampleQuestions[0];
+assert('开放题给输入框，不给选项按钮',
+  count('practiceCard', 'class="open-input') === 1 && count('practiceCard', 'class="opt-btn') === 0,
+  count('practiceCard', 'class="open-input') + ' / ' + count('practiceCard', 'class="opt-btn'));
+assert('开放题不显示「划掉一个错的」（没有选项可划）',
+  nodes.practiceCard.innerHTML.indexOf('划掉一个错的') < 0);
+
+// 写对：本地第 1 段就判完，不调模型
+fire('practiceCard', 'input', { dataset: { role: 'open-input' }, value: openQNow.answer });
+click('practiceCard', { action: 'submit-answer' });
+assert('写对直接判对，判定来源写「与标准答案一致」',
+  count('practiceCard', 'class="verdict is-good"') === 1 &&
+  nodes.practiceCard.innerHTML.indexOf('与标准答案一致') >= 0,
+  nodes.practiceCard.innerHTML.slice(0, 200));
+assert('判完把学生写的内容原样显示出来',
+  nodes.practiceCard.innerHTML.indexOf(openQNow.answer) >= 0);
+// 规则判的（与答案一致）不说「冻结」——它本来就不可能变，
+// 说了是废话。只有模型判的才需要在界面上讲清「这条不会再判一次」。
+assert('规则判的判定条不啰嗦「冻结」', nodes.practiceCard.innerHTML.indexOf('不再重判') < 0);
+
+// 写成一个别的意思：本地判不了，要先问模型。此时界面必须给出「判定中」，
+// 不能让人以为点了没反应（这是上一轮连通性测试踩过的坑）。
+click('practiceCard', { action: 'restart-practice' });
+fire('practiceCard', 'input', { dataset: { role: 'open-input' }, value: 'This is a completely different sentence.' });
+click('practiceCard', { action: 'submit-answer' });
+assert('开放题判不了时进入「判定中」，按钮同时禁用',
+  nodes.practiceCard.innerHTML.indexOf('判定中…') >= 0 &&
+  nodes.practiceCard.innerHTML.indexOf('data-action="submit-answer" disabled') >= 0,
+  nodes.practiceCard.innerHTML.slice(-260));
+
+// 收尾：把这道题改回选择题、角色切回课程智能体。
+// 上面为了测开放题改过作答方式和当前角色，不收尾的话后面的用例会读到半路状态。
+pickTab('agents');
+fire('agentRail', 'click', {
+  closest(sel) { return sel === 'button[data-role]' ? { dataset: { role: 'execute' } } : null; }
+});
+fire('agentPanel', 'change', { dataset: { field: 'answerMode' }, value: 'choice' });
+fire('agentRail', 'click', {
+  closest(sel) { return sel === 'button[data-role]' ? { dataset: { role: 'course' } } : null; }
+});
+pickTab('practice');
 
 console.log('--- 教材知识库 ---');
 const BOOK = global.SHT_BOOK;
@@ -242,6 +308,57 @@ assert('答对判 true / 答错判 false',
   SHT.evaluateAnswer(q, 0).correct === true && SHT.evaluateAnswer(q, 1).correct === false);
 assert('没选答案直接拒答', SHT.evaluateAnswer(q, null).ok === false);
 assert('缺答案的题不能作答', SHT.evaluateAnswer({ options: ['a', 'b'], answer: '' }, 0).ok === false);
+
+console.log('--- 判分链路（本地 → 可接受答案 → 冻结） ---');
+// 开放题：答案是一句话，选项为空。这类题字符串比不完，才需要模型兜底。
+const openQ = {
+  qid: 'test-open-1', no: 1,
+  prompt: '用英语说：他很高。',
+  answer: 'He is tall.',
+  acceptable: ["He's tall."],
+  cell: { type: '对话补全', level: '用' }
+};
+assert('没有选项的题按开放题作答', SHT.grade.mode(openQ) === 'open');
+assert('有选项的题按选择题作答', SHT.grade.mode(q) === 'choice');
+assert('第 1 段：归一化相同直接判对（大小写、句号不敏感）',
+  SHT.grade.local(openQ, 'he is tall').correct === true &&
+  SHT.grade.local(openQ, 'he is tall').via === 'exact');
+assert('第 2 段：可接受写法命中，不用问模型',
+  SHT.grade.local(openQ, 'He’s tall.').decided === true &&
+  SHT.grade.local(openQ, 'He’s tall.').correct === true &&
+  SHT.grade.local(openQ, 'He’s tall.').via === 'acceptable',
+  JSON.stringify(SHT.grade.local(openQ, 'He’s tall.')));
+assert('第 3 段：开放题换了意思就交给模型，不硬判',
+  SHT.grade.local(openQ, 'He is very tall.').decided === false);
+assert('选择题选了别的项是死判断，不问模型',
+  SHT.grade.local(q, q.options[1]).decided === true &&
+  SHT.grade.local(q, q.options[1]).correct === false);
+assert('答案里的并列写法拆成多个可接受答案',
+  SHT.grade.splitAcceptable("He is tall. / He's tall.").length === 2 &&
+  SHT.grade.acceptable({ answer: 'A；B' }).length === 2);
+assert('a.m. 这种带点的缩写不会被斜杠拆坏',
+  SHT.grade.splitAcceptable('at 9 a.m./p.m.').length === 1);
+
+// 台账：一次判定落库后就不再改口。这条是整个判分链的地基。
+const ans1 = "He's quite tall indeed.";
+let led = SHT.grade.remember({}, openQ, ans1, { correct: true, via: 'model', reason: '同义表达' }, 1);
+const k1 = SHT.grade.ledgerKey(openQ, 1, ans1);
+assert('模型判定落库，键是题目 + 归一化答案', !!led[k1] && led[k1].correct === true, k1);
+assert('同一个答案大小写不同也算同一条记录',
+  SHT.grade.ledgerKey(openQ, 1, ans1.toUpperCase()) === k1);
+const reled = SHT.grade.remember(led, openQ, ans1, { correct: false, via: 'model' }, 1);
+assert('已有记录不被第二次判定覆盖（冻结）', reled === led && reled[k1].correct === true);
+assert('读台账拿到的是冻结结论，不是重算',
+  SHT.grade.read(led, openQ, ans1, 1).correct === true);
+const over = SHT.grade.override(led, openQ, ans1, false, '人工改判：他写的不是这个意思', 1);
+assert('人工可以改判，改的是同一条记录',
+  over[k1].correct === false && over[k1].via === 'human');
+assert('改判保留原来的模型判定，以后查得到',
+  over[k1].modelFirst && over[k1].modelFirst.correct === true);
+assert('台账只把模型判过 / 人工改过的条目列出来',
+  SHT.grade.modelEntries(over).length === 1);
+assert('台账有上限，不会无限长', SHT.grade.LEDGER_LIMIT > 0 && SHT.grade.LEDGER_LIMIT <= 2000);
+assert('空答案不判，免得把没作答记成答错', SHT.grade.local(openQ, '   ').decided === false);
 
 const variants = SHT.sampleQuestions.map(x => SHT.buildVariant(x, x.no));
 assert('U1 五道题都能接出变体', variants.every(Boolean),
@@ -1004,6 +1121,21 @@ assert('两个考点连续过不了闸 → 自动判 STALLED', stop2.stalled, st
   }
 
   SHT.llm.call = REAL_CALL;
+
+  /*
+   * 模型不可用时的判分。这条最要紧：ask 只能返回「失败」，不能返回任何
+   * correct 值——一旦往回编一个 false，调用方就会把「服务挂了」记成
+   * 「学生答错了」，错题本和考点推进跟着全错，而且因为冻结再也纠不回来。
+   */
+  const askFail = await SHT.grade.ask(
+    { qid: 't-ask-fail', prompt: '用英语说：他很高。', answer: 'He is tall.', cell: { type: '对话补全', level: '用' } },
+    'he is very tall'
+  );
+  assert('模型不可用时判分只报错，不给对错结论',
+    askFail.ok === false && askFail.decided === false && askFail.correct === undefined,
+    JSON.stringify(askFail));
+  assert('判分失败带着人能读的原因', /没填 API Key|密钥|网络|超时/.test(String(askFail.error || '')),
+    String(askFail.error || ''));
 
   console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
   process.exit(failed === 0 ? 0 : 1);

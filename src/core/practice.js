@@ -35,6 +35,11 @@
       .trim();
   };
 
+  /**
+   * 判一道选择题。这里只做本地能定的部分（归一化 / 可接受答案集合），
+   * 定不了就返回 needModel，由调用方去调一次模型并冻结结果。
+   * 判定规则本身在 grade.js，这个函数只负责把「选项下标」翻成「答案文本」。
+   */
   SHT.evaluateAnswer = function (question, pickedIndex) {
     const options = (question && question.options) || [];
     const expected = String((question && question.answer) || '').trim();
@@ -49,13 +54,24 @@
     const expectedIndex = options.reduce(function (acc, o, i) {
       return acc < 0 && SHT.normAnswer(o) === SHT.normAnswer(expected) ? i : acc;
     }, -1);
-    return {
+    const graded = SHT.grade.local(question, picked);
+    const out = {
       ok: true,
-      correct: SHT.normAnswer(picked) === SHT.normAnswer(expected),
       picked: picked,
       expected: expected,
       expectedIndex: expectedIndex
     };
+    if (graded.decided) {
+      out.correct = graded.correct;
+      out.via = graded.via;
+    } else {
+      // correct 留 null，别用 undefined：调用方一律 === true 判对，
+      // 未定的绝不能顺带算成答对或答错。
+      out.correct = null;
+      out.needModel = true;
+    }
+    out.key = graded.key;
+    return out;
   };
 
   /* ---------- 确定性取材 ---------- */

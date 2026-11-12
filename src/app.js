@@ -60,6 +60,12 @@
     return {
       cursor: 0,
       picked: null,
+      // 开放题的作答原文。选择题不用它，提交时从选项取。
+      draft: '',
+      // 正在等模型判定（第 3 段）。界面上要显示「判定中」，不能让人以为没反应。
+      grading: false,
+      // 模型判定失败时的原话。失败不判对错，也不能静默吞掉。
+      gradeError: '',
       hintUsed: false,
       hintGone: -1,
       revealed: null,
@@ -93,7 +99,10 @@
       // 每个考点考到哪一层、哪些已经退役，跨轮累积
       progress: SHT.progress.blank(),
       // 能力配额：这一轮各类能力各出几题。来源见 core/quota.js，接画像后只换来源
-      quota: SHT.quota.blank()
+      quota: SHT.quota.blank(),
+      // 判分台账：(题目, 归一化后的答案) → 判定结论。一次判定、落库冻结，
+      // 下游只读不重判。见 core/grade.js 顶部说明。
+      gradeLedger: {}
     };
   }
 
@@ -103,6 +112,8 @@
     if (!Array.isArray(parsed.kpScope)) parsed.kpScope = [];
     if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
+    // 老数据没有判分台账：给个空表，已有作答记录不受影响（它们自带 correct）
+    if (!parsed.gradeLedger || typeof parsed.gradeLedger !== 'object') parsed.gradeLedger = {};
     parsed.quota = SHT.quota.normalize(parsed.quota);
     if (!parsed.unitId) parsed.unitId = SHT.curriculum.id;
     if (!parsed.questionCounts || typeof parsed.questionCounts !== 'object') parsed.questionCounts = { 1: 5, 2: 5 };
@@ -402,11 +413,24 @@
     GIVE_UP: '三次都没过', VERIFY_NO_CODE: '质检没说清理由', EXCEPTION: '程序出错'
   };
 
+  /*
+   * 时间显示。记录统一存 ISO（带 Z，UTC），但人看的是本地时间。
+   * 以前这里直接从字符串里截 T 后面的时分，等于把 UTC 当本地时间印出来——
+   * 东八区所有时间戳都差 8 小时，下午 4 点跑的一轮日志上写着早上 8 点，
+   * 审查的人会以为数据是别的时段采的。必须走 Date 转本地。
+   */
   function timeOf(iso) {
-    const s = String(iso || '');
-    const m = s.match(/T(\d{2}:\d{2})/);
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) {
+      const pad = function (n) { return (n < 10 ? '0' : '') + n; };
+      return pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+    // 兜底：老数据里可能有非 ISO 的时间写法，能截出时分就截
+    const m = String(iso || '').match(/T(\d{2}:\d{2})/);
     return m ? m[1] : '';
   }
+  // 导出给冒烟测试用：时区换算这种错，只有测了才不会回来
+  SHT.timeOf = timeOf;
 
   function codeText(code) {
     return CODE_TEXT[code] || code;
@@ -587,6 +611,10 @@
         '<div class="field-row is-wide"><label>知识点</label><span class="cell-badge">' +
           esc(q.knowledgePoint || '（未填知识点）') + '</span></div>' +
         '<div class="field-row"><label>能力</label><input data-field="ability" value="' + esc(q.ability) + '"></div>' +
+        '<div class="field-row"><label>作答方式</label><select data-field="answerMode">' +
+          '<option value="choice"' + (SHT.grade.mode(q) === 'choice' ? ' selected' : '') + '>从选项里选</option>' +
+          '<option value="open"' + (SHT.grade.mode(q) === 'open' ? ' selected' : '') + '>自己写</option>' +
+        '</select></div>' +
         '<div class="field-row is-wide"><label>题目</label><textarea data-field="prompt" placeholder="只用本单元词表与句型">' + esc(q.prompt) + '</textarea></div>' +
         '<div class="field-row is-wide"><label>听力原文</label><input data-field="audioText" value="' + esc(q.audioText) + '" placeholder="非听力题留空"></div>' +
         '<div class="field-row is-wide"><label>选项</label><div class="opt-row">' +
@@ -657,13 +685,21 @@
     return r.practice;
   }
 
-  // 能作答的题：有题干、有答案、至少两个选项，且答案在选项里
+  // 能作答的题。
+  //   选择题：有题干、有答案、至少两个选项，且答案在选项里。
+  //   开放题：有题干、有答案（或可接受答案集合）就够，选项本来就不该有。
   function practiceable(q) {
+    if (!String(q.prompt || '').trim()) return false;
+    const hasAnswer = !!String(q.answer || '').trim() || ((q.acceptable || q.acceptableAnswers || []).length > 0);
+    if (!hasAnswer) return false;
+    if (SHT.grade.mode(q) === 'open') return true;
     const filled = (q.options || []).filter(function (o) { return String(o || '').trim(); });
     const answerInside = (q.options || []).some(function (o) {
       return SHT.normAnswer(o) === SHT.normAnswer(q.answer);
+    }) || SHT.grade.acceptable(q).some(function (want) {
+      return (q.options || []).some(function (o) { return SHT.normAnswer(o) === want; });
     });
-    return !!String(q.prompt || '').trim() && !!String(q.answer || '').trim() && filled.length >= 2 && answerInside;
+    return filled.length >= 2 && answerInside;
   }
 
   function practiceQuestions(round) {
@@ -730,6 +766,26 @@
     '</div>';
   }
 
+  // 作答区。选择题给选项按钮，开放题给输入框——开放题的答案不是一个字符串，
+  // 光靠选项装不下（看图说话、用英语回答、对话补全成句）。
+  function answerAreaHtml(q, p) {
+    if (SHT.grade.mode(q) !== 'open') return optionButtons(q, p);
+    const r = p.revealed;
+    if (r) {
+      return '<div class="open-answer is-locked">' +
+        '<div class="open-label">你的作答</div>' +
+        '<div class="open-text">' + (String(r.picked || '').trim() ? esc(r.picked) : '（没写）') + '</div>' +
+      '</div>';
+    }
+    return '<div class="open-answer">' +
+      '<label class="open-label" for="openInput">写下你的答案</label>' +
+      '<textarea id="openInput" class="open-input" rows="2" data-role="open-input"' +
+        (p.grading ? ' disabled' : '') +
+        ' placeholder="用英语写，写完点提交">' + esc(p.draft || '') + '</textarea>' +
+      '<div class="open-hint">判断题、拼写题写词就行；回答题写成一句话。大小写和句末标点不算错。</div>' +
+    '</div>';
+  }
+
   function optionButtons(q, p) {
     const r = p.revealed;
     return '<div class="opt-list">' + (q.options || []).map(function (o, i) {
@@ -749,10 +805,21 @@
     }).join('') + '</div>';
   }
 
+  // 这次判定是谁下的。冻结台账里 via 就是这个值。
+  // 写清楚的意义：看到「模型判定」就知道这条可以人改，看到「与答案一致」就知道
+  // 是死判断，不用怀疑。
+  const VIA_TEXT = {
+    exact: '与标准答案一致',
+    acceptable: '与可接受答案一致',
+    model: '模型判定',
+    human: '人工改判'
+  };
+
   function verdictHtml(q, p) {
     const r = p.revealed;
     // 这一题是上一轮错题的重出题（q.probe）时，结果直接决定那条错题的状态
     const isProbe = !!q.probe;
+    const isOpen = SHT.grade.mode(q) === 'open';
     let next = '';
     if (r.correct) {
       next = '<button type="button" class="btn btn-primary" data-action="next-step">换下一个考点</button>' +
@@ -767,15 +834,23 @@
       next = '<button type="button" class="btn btn-primary" data-action="next-step">写进错题，换下一个考点</button>' +
         '<span class="verdict-note">下一轮会按这个考点重新出题</span>';
     }
+    // 模型判的才给改判入口。规则判的（与答案一致）错不了，不需要这个按钮。
+    const canFlip = r.via === 'model'
+      ? '<button type="button" class="btn btn-quiet" data-action="flip-grade">判错了，改成' +
+        (r.correct ? '错' : '对') + '</button>'
+      : '';
     return '<div class="verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="verdict-top">' +
         '<span class="verdict-badge">' + (r.correct ? '对了' : '错了') + '</span>' +
-        '<span class="verdict-ans">你选 <b>' + esc(r.picked) + '</b>' +
+        '<span class="verdict-ans">你' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked) + '</b>' +
           (r.correct ? '' : '　正确 <b>' + esc(r.expected) + '</b>') +
           (r.hintCount ? '　用了提示' : '') + '</span>' +
       '</div>' +
+      '<div class="verdict-via">' + esc(VIA_TEXT[r.via] || '已判定') +
+        (r.gradeReason ? '　·　' + esc(r.gradeReason) : '') +
+        (r.via === 'model' ? '　·　这条已冻结，下次不再重判' : '') + '</div>' +
       (q.analysis ? '<div class="verdict-analysis">' + esc(q.analysis) + '</div>' : '') +
-      '<div class="verdict-next">' + next + '</div>' +
+      '<div class="verdict-next">' + next + canFlip + '</div>' +
     '</div>';
   }
 
@@ -800,13 +875,17 @@
         (q.audioText
           ? '<div class="q-audio">' + (r ? '听力原文　' + esc(q.audioText) : '听力题 · 由测试者朗读，提交后显示原文') + '</div>'
           : '') +
-        optionButtons(q, p) +
+        answerAreaHtml(q, p) +
         (r ? verdictHtml(q, p) :
           '<div class="verdict-next">' +
-            '<button type="button" class="btn btn-primary" data-action="submit-answer">提交</button>' +
-            '<button type="button" class="btn" data-action="use-hint"' + (p.hintUsed ? ' disabled' : '') + '>提示：划掉一个错的</button>' +
+            '<button type="button" class="btn btn-primary" data-action="submit-answer"' +
+              (p.grading ? ' disabled' : '') + '>' + (p.grading ? '判定中…' : '提交') + '</button>' +
+            (SHT.grade.mode(q) === 'choice'
+              ? '<button type="button" class="btn" data-action="use-hint"' + (p.hintUsed || p.grading ? ' disabled' : '') + '>提示：划掉一个错的</button>'
+              : '') +
             (st.state === 'unseen' ? '' : '<span class="verdict-note">当前判断：' + st.label + '</span>') +
           '</div>') +
+        (p.gradeError ? '<div class="grade-error">' + esc(p.gradeError) + '</div>' : '') +
       '</div>';
   }
 
@@ -887,31 +966,115 @@
     toast('划掉一个错的。用了提示，这题答对也不算独立答对');
   }
 
-  function submitAnswer() {
+  /*
+   * 判分四段（顺序不能换，前一段能定就不往下走）：
+   *   ① 冻结台账里有没有这条 (题目, 答案) —— 有就直接用，永不再判
+   *   ② 归一化比对 / 可接受答案集合 —— 本地能定就落库
+   *   ③ 都定不了才调模型，调完立刻落库冻结
+   *   ④ 下游（错题本、考点推进、统计）只读落库的这条，不重新调模型
+   *
+   * 第 ③ 步失败时不能默认判错：模型挂了不是学生的错。留着让他重试。
+   */
+  async function submitAnswer() {
     const p = practiceOf();
     const q = activePracticeQuestion();
-    if (!q || p.revealed) return;
-    const ev = SHT.evaluateAnswer(q, p.picked);
-    if (!ev.ok) { toast(ev.reason); return; }
+    if (!q || p.revealed || p.grading) return;
+
+    const isOpen = SHT.grade.mode(q) === 'open';
+    const raw = isOpen ? String(p.draft || '').trim() : String(q.options[p.picked] == null ? '' : q.options[p.picked]).trim();
+    if (!raw) {
+      toast(isOpen ? '先写下你的答案' : '先选一个答案');
+      return;
+    }
+
+    const roundNo = state.round;
+    p.gradeError = '';
+    let res = null;
+
+    // ① 冻结优先。判过一次的，不管这次是谁来问，答案都一样。
+    const frozen = SHT.grade.read(state.gradeLedger, q, raw, roundNo);
+    if (frozen) {
+      res = { correct: frozen.correct, via: frozen.via, reason: frozen.reason };
+    } else {
+      // ② 本地判定
+      const local = SHT.grade.local(q, raw, roundNo);
+      if (local.decided) {
+        res = { correct: local.correct, via: local.via, reason: local.reason };
+        state.gradeLedger = SHT.grade.remember(state.gradeLedger, q, raw, res, roundNo);
+      } else {
+        // ③ 模型兜底
+        p.grading = true;
+        save(); renderPractice();
+        const asked = await SHT.grade.ask(q, raw);
+        p.grading = false;
+        if (!asked.ok) {
+          p.gradeError = '这次判分没跑成：' + (asked.error || '未知原因') +
+            '。既不算对也不算错，可以再点一次提交。';
+          save(); renderPractice();
+          return;
+        }
+        res = { correct: asked.correct, via: 'model', reason: asked.reason, confidence: asked.confidence };
+        state.gradeLedger = SHT.grade.remember(state.gradeLedger, q, raw, res, roundNo);
+      }
+    }
+
     // 这一题是「上一轮错过、这一轮由模型重出的回练题」时记成 variant，
     // 它和上一轮的首答配成一对，才算得出「会不会」。一轮之内不再补第二枪。
     const stage = q.probe ? 'variant' : 'first';
     const kp = SHT.kpByLabel(q.knowledgePoint);
+    const expected = String(q.answer == null ? '' : q.answer).trim();
+    const expectedIndex = isOpen ? -1 : (q.options || []).reduce(function (acc, o, i) {
+      return acc < 0 && SHT.normAnswer(o) === SHT.normAnswer(expected) ? i : acc;
+    }, -1);
+
     p.attempts.push({
       no: q.no,
       stage: stage,
       probeOf: q.probe ? q.probe.kpId : '',
       kpId: kp ? kp.id : '',
       kpLabel: q.knowledgePoint || '',
-      picked: ev.picked,
-      expected: ev.expected,
-      expectedIndex: ev.expectedIndex,
-      correct: ev.correct,
+      picked: raw,
+      expected: expected,
+      expectedIndex: expectedIndex,
+      correct: !!res.correct,
+      // 判定来源与依据。冻结台账的键也存进来：以后要查「这条为什么算对」，
+      // 顺着 gradeKey 就能翻到原始判定，不用重跑。
+      via: res.via || '',
+      gradeReason: res.reason || '',
+      gradeKey: SHT.grade.ledgerKey(q, roundNo, raw),
+      answerMode: isOpen ? 'open' : 'choice',
       hintCount: p.hintUsed ? 1 : 0,
       at: new Date().toISOString()
     });
     p.revealed = p.attempts[p.attempts.length - 1];
+    p.gradeError = '';
     save(); renderAll();
+  }
+
+  /*
+   * 人工改判。只对模型判的那条开放——规则判的（与答案一致）不会错。
+   * 改判写进台账（via='human'，原模型判定存在 modelFirst 里），
+   * 同时改掉这一枪的 correct。此时还没点「下一个」，错题本尚未写入，所以安全。
+   */
+  function flipGrade() {
+    const p = practiceOf();
+    const q = activePracticeQuestion();
+    const r = p.revealed;
+    if (!q || !r || r.via !== 'model') return;
+    const next = !r.correct;
+    state.gradeLedger = SHT.grade.override(state.gradeLedger, q, r.picked, next,
+      '人工改判：' + (next ? '算对' : '算错'), state.round);
+    r.correct = next;
+    r.via = 'human';
+    r.gradeReason = '人工改判';
+    const list = p.attempts;
+    if (list.length) {
+      list[list.length - 1].correct = next;
+      list[list.length - 1].via = 'human';
+      list[list.length - 1].gradeReason = '人工改判';
+    }
+    save(); renderAll();
+    toast(next ? '已改成答对' : '已改成答错');
   }
 
   // 首答就错 → 当场写进 03 错题；这一轮不再塞一道代码拼出来的变体。
@@ -979,6 +1142,9 @@
     p.cursor += 1;
     p.revealed = null;
     p.picked = null;
+    p.draft = '';
+    p.grading = false;
+    p.gradeError = '';
     p.hintUsed = false;
     p.hintGone = -1;
     save(); renderAll();
@@ -1154,7 +1320,10 @@
             entries.push({
               round: rn, kind: a.correct ? 'pass' : 'reject', at: a.at || '',
               title: '第 ' + a.no + ' 题' + (a.stage === 'variant' ? ' 换个问法再考' : '') + (a.correct ? ' 答对' : ' 答错'),
-              detail: (a.correct ? '' : '选了「' + esc(a.picked) + '」，正确是「' + esc(a.expected) + '」') + (a.hintCount ? '　用了提示' : '')
+              detail: (a.correct ? '' : (a.answerMode === 'open' ? '写了「' : '选了「') + esc(a.picked) + '」，正确是「' + esc(a.expected) + '」') +
+                // 判定来源也带上：规则判的死判断不用管，模型判的可以人改
+                (a.via === 'model' ? '　模型判定' : a.via === 'human' ? '　人工改判' : '') +
+                (a.hintCount ? '　用了提示' : '')
             });
           });
       });
@@ -1174,6 +1343,40 @@
     // 没出成的题单独一块，按考点分组：哪一格、第几次、卡在哪一步、一句话原因
     const failBox = $('failDetail');
     if (failBox) failBox.innerHTML = failGroupsHtml();
+
+    const ledgerBox = $('gradeLedger');
+    if (ledgerBox) ledgerBox.innerHTML = gradeLedgerHtml();
+  }
+
+  /*
+   * 判分台账。只有「模型判过」和「人工改判」的条目会出现在这里——规则判的
+   * （与答案一致）没什么可看的，也不会变。列出来的意义是让人能看见：
+   * 哪些作答动了模型、判成什么、依据是什么、什么时候判的。
+   * 冻结的体现在于：同一条不会出现两次，也没有「重新判定」按钮。
+   */
+  function gradeLedgerHtml() {
+    const list = SHT.grade.modelEntries(state.gradeLedger);
+    if (!list.length) {
+      return '<div class="chart-empty">还没有需要模型判的作答。选择题与拼写题的答案能直接比对，不会走到模型。</div>';
+    }
+    return '<div class="ledger-list">' + list.map(function (e) {
+      const via = e.via === 'human' ? '人工改判' : '模型判定';
+      const first = e.modelFirst
+        ? '　原判：' + (e.modelFirst.correct ? '对' : '错') + (e.modelFirst.reason ? '（' + esc(e.modelFirst.reason) + '）' : '')
+        : '';
+      return '<div class="ledger-row">' +
+        '<span class="ledger-at">' + esc(timeOf(e.at)) + '</span>' +
+        '<span class="ledger-verdict ' + (e.correct ? 'is-good' : 'is-bad') + '">' +
+          (e.correct ? '算对' : '算错') + '</span>' +
+        '<span class="ledger-body">' +
+          '<span class="ledger-ans">' + esc(e.raw) + '</span>' +
+          '<span class="ledger-meta">' + esc(via) +
+            (e.confidence ? ' · 把握' + esc({ high: '高', medium: '中', low: '低' }[e.confidence] || e.confidence) : '') +
+            (e.reason ? '　' + esc(e.reason) : '') + first +
+          '</span>' +
+        '</span>' +
+      '</div>';
+    }).join('') + '</div>';
   }
 
   function renderRejectChart() {
@@ -1882,6 +2085,12 @@
       // 执行智能体九字段（不带 data-no）：只写内存，等「保存修改」按钮
       const q = currentQuestion();
       if (!q) return;
+      if (field === 'answerMode') {
+        // 作答方式决定判分走哪条链路：选一个答案走选项，自己写走输入框。
+        // 这一项改了要立刻生效，不能等「保存修改」——否则 02 页还是旧形态。
+        q.open = el.value === 'open';
+        save(); renderAll(); return;
+      }
       if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
       else q[field] = el.value;
     });
@@ -1913,10 +2122,19 @@
       if (action === 'pick-option') { pickOption(Number(b.dataset.index)); return; }
       if (action === 'use-hint') { useHint(); return; }
       if (action === 'submit-answer') { submitAnswer(); return; }
+      if (action === 'flip-grade') { flipGrade(); return; }
       if (action === 'next-step') { practiceNext(); return; }
       if (action === 'restart-practice') { restartPractice(); return; }
       if (action === 'goto-wrongbook') { state.tab = 'wrongbook'; save(); renderAll(); return; }
       if (action === 'goto-round2') { startRound2(); return; }
+    });
+
+    // 开放题的输入。只存草稿、不重渲染——重渲染会把光标顶到末尾，写到一半的人会疯。
+    $('practiceCard').addEventListener('input', function (e) {
+      const el = e.target;
+      if (!el || el.dataset.role !== 'open-input') return;
+      practiceOf().draft = el.value;
+      save();
     });
 
     $('addWrongForm').addEventListener('click', function (e) {

@@ -419,6 +419,9 @@
 
         const raw = generated.json;
         const question = {
+          // 稳定 id：判分台账拿它做键的一半。重新生成的题即使题号相同，
+          // 题面也变了，必须被当成另一道题——所以这里按生成时刻发号，不复用题号。
+          qid: 'g' + Date.now().toString(36) + '-' + (i + 1),
           no: i + 1,
           knowledgePoint: plan.kp,
           ability: plan.ability,
@@ -427,6 +430,12 @@
           audioText: String(raw.audioText || '').trim(),
           options: (Array.isArray(raw.options) ? raw.options : []).slice(0, 3).map(function (x) { return String(x == null ? '' : x).trim(); }),
           answer: String(raw.answer == null ? '' : raw.answer).trim(),
+          // 同一个答案的其它正确写法。判分第 2 段用，命中就不调模型。
+          acceptable: (Array.isArray(raw.acceptable) ? raw.acceptable : [])
+            .map(function (x) { return String(x == null ? '' : x).trim(); })
+            .filter(Boolean).slice(0, 6),
+          // 开放题：答案是一句话而不是三个选项之一。看图说词天然是这种。
+          open: plan.cell.type === '看图说词' || raw.open === true,
           analysis: String(raw.analysis || '').trim(),
           nextIfWrong: plan.nextIfWrong,
           keyword: String(raw.keyword || '').trim(),

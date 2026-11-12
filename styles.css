@@ -467,7 +467,9 @@ select { cursor: pointer; }
 .opt-btn.is-gone { opacity: .35; text-decoration: line-through; cursor: default; }
 .opt-btn.is-gone:hover { border-color: var(--line); background: var(--surface); }
 
-.verdict { margin-top: 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); padding: 13px 16px; }
+/* 判定卡。上一版漏了 text-align：计划表里的 .verdict 是居中的短标签，
+   判定卡复用了同一个类名，于是整段判定说明被居中，长句很难读。 */
+.verdict { margin-top: 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); padding: 13px 16px; text-align: left; }
 .verdict.is-good { border-color: var(--blue-line); background: var(--blue-soft); }
 .verdict.is-bad { border-color: #ecc9c9; background: var(--red-soft); }
 .verdict.is-warn { border-color: #f0dcb4; background: var(--amber-soft); }
@@ -478,9 +480,42 @@ select { cursor: pointer; }
 .verdict.is-warn .verdict-badge { color: var(--amber); }
 .verdict-ans { font-size: 12.5px; color: var(--ink-soft); }
 .verdict-ans b { color: var(--ink); font-weight: 650; }
-.verdict-analysis { font-size: 13px; color: var(--ink-soft); margin-top: 6px; }
+/* 解析和判定来源是两回事，字号接近容易看成一整段。给解析挂个小标签分开。 */
+.verdict-analysis { font-size: 13px; color: var(--ink-soft); margin-top: 7px; display: flex; gap: 8px; align-items: baseline; }
+.verdict-analysis::before {
+  content: '解析';
+  flex: none;
+  font-size: 11px; color: var(--ink-hint);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
+}
 .verdict-next { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .verdict-note { font-size: 12px; color: var(--ink-hint); }
+/* 这次判定是谁下的：与答案一致 / 可接受答案一致 / 模型判定 / 人工改判 */
+.verdict-via { font-size: 11.5px; color: var(--ink-hint); margin-top: 5px; }
+.btn-quiet { background: transparent; border-style: dashed; color: var(--ink-hint); }
+.btn-quiet:hover { color: var(--blue-deep); border-color: var(--blue-line); }
+
+/* 开放题作答：答案不是字符串，是一个意思，所以给输入框而不是选项 */
+.open-answer { display: grid; gap: 6px; }
+.open-label { font-size: 12px; color: var(--ink-hint); }
+.open-input {
+  width: 100%; font-family: inherit; font-size: 15px; line-height: 1.6;
+  color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 9px;
+  padding: 10px 13px; resize: vertical;
+}
+.open-input:focus { outline: 2px solid var(--blue-soft); border-color: var(--blue); }
+.open-input:disabled { background: var(--line-soft); color: var(--ink-hint); }
+.open-hint { font-size: 11.5px; color: var(--ink-hint); }
+.open-answer.is-locked .open-text {
+  border: 1px solid var(--line); border-radius: 9px; padding: 10px 13px;
+  font-size: 15px; background: var(--line-soft); white-space: pre-wrap;
+}
+.grade-error {
+  margin-top: 10px; font-size: 12.5px; color: var(--red);
+  background: var(--red-soft); border: 1px solid #ecc9c9;
+  border-radius: 8px; padding: 8px 11px;
+}
 
 .done-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; }
 .done-title { font-size: 17px; font-weight: 650; margin-bottom: 12px; }
@@ -799,6 +834,26 @@ select { cursor: pointer; }
 
 /* ---------- 没出成的题：按考点分组 ---------- */
 .fail-detail { padding: 0 15px 14px; display: flex; flex-direction: column; gap: 11px; }
+/* 判分台账：模型判过的那几条。规则判的不列——它们不会变，也没什么可看 */
+.grade-ledger { padding: 0 15px 14px; }
+.ledger-list { display: flex; flex-direction: column; gap: 2px; }
+.ledger-row {
+  display: grid; grid-template-columns: 46px 46px minmax(0, 1fr);
+  gap: 9px; align-items: baseline;
+  padding: 7px 2px; border-top: 1px dashed var(--line-soft);
+  font-size: 12px;
+}
+.ledger-row:first-child { border-top: 0; }
+.ledger-at { color: var(--ink-hint); font-variant-numeric: tabular-nums; }
+.ledger-verdict {
+  text-align: center; border-radius: 5px; padding: 1px 0;
+  font-weight: 600; font-size: 11.5px;
+}
+.ledger-verdict.is-good { background: var(--blue-soft); color: var(--blue-deep); }
+.ledger-verdict.is-bad { background: var(--red-soft); color: var(--red); }
+.ledger-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ledger-ans { color: var(--ink); font-weight: 550; word-break: break-word; }
+.ledger-meta { color: var(--ink-hint); font-size: 11.5px; }
 .fail-group { border: 1px solid var(--line-soft); border-radius: 9px; overflow: hidden; }
 .fail-kp-head {
   display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
