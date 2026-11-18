@@ -41,10 +41,8 @@ global.URL = class extends NativeURL {
 
 require('../src/data/books.js');
 require('../src/data/textbook.js');
-require('../src/data/books/hebei-g4a.js');
-require('../src/data/books/xiangshao-g4a.js');
-require('../src/data/curriculum.js');
 require('../src/data/knowledgePoints.js');
+require('../src/data/curriculum.js');
 require('../src/data/wrongCases.js');
 require('../src/core/enums.js');
 require('../src/core/fingerprint.js');
@@ -88,7 +86,7 @@ function wrongIndex(q) {
 (async function main() {
   const t0 = Date.now();
   SHT.llm.save({ baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', key: KEY, temperature: 0.6, maxTokens: 1600, timeoutMs: 90000 });
-  SHT.BOOKS.setCurrent('PEP-G4A');
+  SHT.BOOKS.setCurrent('COURSE-G4A');
   SHT.setUnit('U1');
 
   // ---------- 1 选定知识点范围 ----------
@@ -97,7 +95,7 @@ function wrongIndex(q) {
   const scope = allKps.slice(0, 4).map(function (k) {
     return { id: k.id, label: k.label, ability: k.ability, cell: k.cell };
   });
-  line('候选清单', allKps.length + ' 条（PEP 四上 U1）');
+  line('候选清单', allKps.length + ' 条（四上课程 U1）');
   scope.forEach(function (s, i) { line('范围 ' + (i + 1), s.label + '　·　' + s.ability + ' · ' + s.cell.type); });
 
   // ---------- 第一轮 ----------

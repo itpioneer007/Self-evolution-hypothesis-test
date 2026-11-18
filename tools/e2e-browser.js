@@ -167,8 +167,6 @@ function answerFor(role, user) {
 
 const PAGE = function () {
   const scripts = [
-    'src/data/books.js', 'src/data/textbook.js', 'src/data/books/hebei-g4a.js',
-    'src/data/books/xiangshao-g4a.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
     'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/grade.js', 'src/core/diagnose.js', 'src/core/agents.js',
     'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
@@ -182,7 +180,7 @@ const PAGE = function () {
     '(async function(){',
     '  try {',
     '    SHT.llm.save({baseUrl:"http://127.0.0.1:' + PORT + '",model:"mock-model",key:"mock-key",temperature:0.6,maxTokens:1600,timeoutMs:30000});',
-    '    SHT.setBook("HEB-G4A","U1");',
+    '    SHT.setBook("COURSE-G4A","U1");',
     '    var unit = SHT.curriculum;',
     '    var events = [];',
     // 显式给配额：这个用例要验的是「退回 → 留痕 → 重出 → 放弃」这条链，

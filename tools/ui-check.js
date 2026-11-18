@@ -87,7 +87,7 @@ function click(el) { if (el) el.click(); return !!el; }
   // 1 四张角色卡片
   rec('01 页渲染出 4 张角色卡片', qa('[data-role]').length === 4, qa('[data-role]').length);
 
-  // 2 候选知识点清单（PEP 四上 U1 有 8 条）
+  // 2 候选知识点清单（四上 U1 有 6 条）
   const scopeBtns = qa('[data-action="toggle-scope"]');
   rec('候选清单带「纳入」按钮', scopeBtns.length >= 3, scopeBtns.length);
 

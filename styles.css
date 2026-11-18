@@ -1439,6 +1439,7 @@ body.is-student .controls > #viewToggle { display: none; }
 }
 .st-opt:hover:not(:disabled) { border-color: var(--blue-line); background: #f7fbff; }
 .st-opt:disabled { cursor: default; }
+.st-opt.is-gone { opacity: .35; text-decoration: line-through; }
 .st-opt .k {
   width: 24px; height: 24px; flex: 0 0 24px;
   display: flex; align-items: center; justify-content: center;

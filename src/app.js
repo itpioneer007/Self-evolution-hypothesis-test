@@ -154,6 +154,58 @@
     save();
   }
 
+  function expectedIndexFor(q) {
+    const answer = SHT.normAnswer(q && q.answer);
+    return (q && q.options || []).reduce(function (acc, o, i) {
+      return acc < 0 && SHT.normAnswer(o) === answer ? i : acc;
+    }, -1);
+  }
+
+  function wrongHintIndexFor(q) {
+    const expected = expectedIndexFor(q);
+    return (q && q.options || []).reduce(function (acc, o, i) {
+      return acc < 0 && i !== expected && String(o || '').trim() ? i : acc;
+    }, -1);
+  }
+
+  function buildRetryHint(q, p) {
+    const custom = String((q && q.hint) || '').trim();
+    if (custom) return custom;
+    if (SHT.grade.mode(q) !== 'open') {
+      if (p.hintGone < 0) p.hintGone = wrongHintIndexFor(q);
+      return '已经划掉一个错误选项。再读一遍题干和剩余选项，重新选择一次。';
+    }
+    const answer = String((q && q.answer) || '').trim();
+    const first = (answer.match(/[A-Za-z]/) || [''])[0];
+    const letters = answer.replace(/[^A-Za-z]/g, '').length;
+    return '提示：答案以「' + (first || '…') + '」开头' +
+      (letters ? '，共 ' + letters + ' 个字母。' : '。') + '再写一次。';
+  }
+
+  function retryHintHtml(q, p) {
+    if (!p || !p.retry) return '';
+    return '<div class="st-tip is-muted"><b>再试一次：</b>' +
+      esc(p.retryHint || buildRetryHint(q, p)) + '</div>';
+  }
+
+  function finalAttempts(p) {
+    return ((p && p.attempts) || []).filter(function (a) {
+      return a && a.final !== false;
+    });
+  }
+
+  function attachDiagnosis(q, attempt, roundNo) {
+    const frozen = SHT.diagnose.read(state.diagnoses, q, attempt, roundNo);
+    if (frozen) {
+      attempt.diag = frozen;
+    } else {
+      const d = SHT.diagnose.judge({ question: q, attempt: attempt, unit: SHT.curriculum });
+      state.diagnoses = SHT.diagnose.remember(state.diagnoses, q, attempt, roundNo, d);
+      attempt.diag = d;
+    }
+    return attempt.diag;
+  }
+
   function blankRound() {
     return {
       questions: [], stopSignals: [], endReason: '', closed: false,
@@ -170,7 +222,7 @@
   function defaultState() {
     return {
       // v3：错题本不再预置示例数据，老存档在 normalizeState 里一次性清洗
-      version: 3,
+      version: 4,
       bookId: SHT.BOOKS.current().meta.id,
       unitId: SHT.curriculum.id,
       /*
@@ -244,7 +296,28 @@
   }
 
   function normalizeState(parsed) {
-    if (!parsed.bookId) parsed.bookId = 'PEP-G4A';    if (!Array.isArray(parsed.failures)) parsed.failures = [];
+    if (!parsed.bookId) parsed.bookId = 'COURSE-G4A';
+    if (parsed.bookId !== 'COURSE-G4A' || (parsed.version || 0) < 4) {
+      // 课程源已切换为四上课程大纲：旧教材的题目、错题、轨迹和决策不能混入新课程。
+      parsed.bookId = 'COURSE-G4A';
+      parsed.unitId = 'U1';
+      parsed.rounds = { 1: blankRound(), 2: blankRound() };
+      parsed.rounds[1].questions = cloneSample(parsed.unitId, 5);
+      parsed.events = [];
+      parsed.eventSeq = 0;
+      parsed.wrongCases = [];
+      parsed.progress = SHT.progress.blank();
+      parsed.gradeLedger = {};
+      parsed.diagnoses = {};
+      parsed.questionHistory = [];
+      parsed.decisions = [];
+      parsed.levelCap = null;
+      parsed.decisionReason = '';
+      parsed.agentMemory = SHT.agentMemory.blank();
+      parsed.quota = SHT.quota.blank();
+      parsed.learnerModel = null;
+    }
+    if (!Array.isArray(parsed.failures)) parsed.failures = [];
     if (!Array.isArray(parsed.kpScope)) parsed.kpScope = [];
     if (!parsed.agentMemory || !parsed.agentMemory.plan) parsed.agentMemory = SHT.agentMemory.blank();
     if (!parsed.progress || !parsed.progress.points) parsed.progress = SHT.progress.blank();
@@ -495,7 +568,7 @@
 
   function kpFoldHtml() {
     const list = unitKps();
-    // 只有 PEP 四上入库了候选清单；冀教、湘少版的考点由模型现场提，不给假候选
+    // 当前四上课程已入库候选清单；不借其他教材或外单元考点。
     if (!list.length) {
       return '<div class="kp-empty">这本教材没有预先整理的考点清单，考点由模型现场提</div>';
     }
@@ -1129,7 +1202,7 @@
 
   function roundPracticeSummary(round) {
     const p = (round && round.practice) || blankPractice();
-    const out = { total: 0, tested: 0, mastered: 0, passed: 0, assisted: 0, fragile: 0, wrong: 0, unseen: 0, attempts: (p.attempts || []).length };
+    const out = { total: 0, tested: 0, mastered: 0, passed: 0, assisted: 0, fragile: 0, wrong: 0, unseen: 0, attempts: finalAttempts(p).length };
     practiceQuestions(round).forEach(function (q) {
       const st = pointStateOf(q, round);
       out[st.state] = (out[st.state] || 0) + 1;
@@ -1187,7 +1260,7 @@
         cls += ' is-gone';
       }
       return '<button type="button" class="' + cls + '" data-action="pick-option" data-index="' + i + '"' +
-        (r ? ' disabled' : '') + '>' +
+        (r || (!r && p.hintGone === i) ? ' disabled' : '') + '>' +
         '<span class="opt-key">' + String.fromCharCode(65 + i) + '</span><span>' + esc(o) + '</span></button>';
     }).join('') + '</div>';
   }
@@ -1313,6 +1386,7 @@
         '<div class="q-kp">' + esc(q.knowledgePoint || '（未填知识点）') +
           (r ? '　·　这个考点：' + esc(pointStateOf(q).label) : '') + '</div>' +
         '<div class="q-prompt">' + esc(q.prompt) + '</div>' +
+        retryHintHtml(q, p) +
         (q.audioText
           ? '<div class="q-audio">' + (r ? '听力原文　' + esc(q.audioText) : '听力题 · 由测试者朗读，提交后显示原文') + '</div>'
           : '') +
@@ -1320,7 +1394,7 @@
         (r ? verdictHtml(q, p) :
           '<div class="verdict-next">' +
             '<button type="button" class="btn btn-primary" data-action="submit-answer"' +
-              (p.grading ? ' disabled' : '') + '>' + (p.grading ? '判定中…' : '提交') + '</button>' +
+              (p.grading ? ' disabled' : '') + '>' + (p.grading ? '判定中…' : (p.retry ? '再提交一次' : '提交')) + '</button>' +
             (SHT.grade.mode(q) === 'choice'
               ? '<button type="button" class="btn" data-action="use-hint"' + (p.hintUsed || p.grading ? ' disabled' : '') + '>提示：划掉一个错的</button>'
               : '') +
@@ -1469,18 +1543,72 @@
       }
     }
 
-    // 这一题是「上一轮错过、这一轮由模型重出的回练题」时记成 variant，
-    // 它和上一轮的首答配成一对，才算得出「会不会」。一轮之内不再补第二枪。
+    const isRetry = !!p.retryFirst;
     const stage = q.probe ? 'variant' : 'first';
     const kp = SHT.kpByLabel(q.knowledgePoint);
     const expected = String(q.answer == null ? '' : q.answer).trim();
-    const expectedIndex = isOpen ? -1 : (q.options || []).reduce(function (acc, o, i) {
-      return acc < 0 && SHT.normAnswer(o) === SHT.normAnswer(expected) ? i : acc;
-    }, -1);
+    const expectedIndex = expectedIndexFor(q);
+    const now = new Date().toISOString();
+    const durationMs = p.shownAt ? Math.min(300000, Math.max(0, Date.now() - p.shownAt)) : 0;
 
-    p.attempts.push({
+    /*
+     * 第一次答错时不直接进入“已判完”，而是保留首答证据，给提示，原地再选一次。
+     * 首答错误不会被后续答对覆盖，掌握度会记为“看提示才会”。
+     */
+    if (!isRetry && !res.correct) {
+      const first = {
+        no: q.no,
+        qid: String(q.qid || ''),
+        stage: stage,
+        attemptIndex: 1,
+        final: false,
+        retryOf: '',
+        probeOf: q.probe ? q.probe.kpId : '',
+        kpId: kp ? kp.id : '',
+        kpLabel: q.knowledgePoint || '',
+        picked: raw,
+        expected: expected,
+        expectedIndex: expectedIndex,
+        correct: false,
+        firstCorrect: false,
+        retryCorrect: null,
+        via: res.via || '',
+        gradeReason: res.reason || '',
+        gradeKey: SHT.grade.ledgerKey(q, roundNo, raw),
+        answerMode: isOpen ? 'open' : 'choice',
+        hintCount: p.hintUsed ? 1 : 0,
+        durationMs: durationMs,
+        at: now
+      };
+      attachDiagnosis(q, first, roundNo);
+      p.attempts.push(first);
+      emitEvent('submit', q, {
+        picked: first.picked, expected: first.expected,
+        correct: false, final: false, attemptIndex: 1,
+        via: first.via, durationMs: first.durationMs,
+        hintUsed: !!first.hintCount, stage: first.stage,
+        kp: first.kpLabel, gradeKey: first.gradeKey
+      });
+      p.retryFirst = first;
+      p.retry = { firstPicked: first.picked, firstAt: first.at };
+      p.retryHint = buildRetryHint(q, p);
+      p.hintUsed = true;
+      p.picked = null;
+      p.draft = '';
+      p.shownAt = Date.now();
+      emitEvent('hint', q, { auto: true, retry: true, hint: p.retryHint });
+      save(); renderAll();
+      return;
+    }
+
+    const first = p.retryFirst;
+    const final = {
       no: q.no,
+      qid: String(q.qid || ''),
       stage: stage,
+      attemptIndex: isRetry ? 2 : 1,
+      final: true,
+      retryOf: isRetry ? String(q.qid || '') : '',
       probeOf: q.probe ? q.probe.kpId : '',
       kpId: kp ? kp.id : '',
       kpLabel: q.knowledgePoint || '',
@@ -1488,45 +1616,44 @@
       expected: expected,
       expectedIndex: expectedIndex,
       correct: !!res.correct,
-      // 判定来源与依据。冻结台账的键也存进来：以后要查「这条为什么算对」，
-      // 顺着 gradeKey 就能翻到原始判定，不用重跑。
+      firstCorrect: isRetry ? false : !!res.correct,
+      retryCorrect: isRetry ? !!res.correct : null,
+      firstPicked: first ? first.picked : '',
+      firstDurationMs: first ? first.durationMs : 0,
+      retryPicked: isRetry ? raw : '',
+      retryDurationMs: isRetry ? durationMs : 0,
       via: res.via || '',
       gradeReason: res.reason || '',
       gradeKey: SHT.grade.ledgerKey(q, roundNo, raw),
       answerMode: isOpen ? 'open' : 'choice',
-      hintCount: p.hintUsed ? 1 : 0,
-      // 耗时是诊断的一条证据：3 秒内选错和想了 20 秒选错，不是同一回事。
-      // 上限 5 分钟：中间去干别的了就别假装是在想，超过就按「没测到」算。
-      durationMs: p.shownAt ? Math.min(300000, Math.max(0, Date.now() - p.shownAt)) : 0,
-      at: new Date().toISOString()
-    });
-    const attempt = p.attempts[p.attempts.length - 1];
-    // 提交成功才记事件：判分模型挂掉、或者没选就点提交，都不算一次作答。
-    // 前者在下面 return 之前不会走到这里，后者更早就被挡住了。
-    emitEvent('submit', q, {
-      picked: attempt.picked, expected: attempt.expected,
-      correct: attempt.correct, via: attempt.via,
-      durationMs: attempt.durationMs, hintUsed: !!attempt.hintCount,
-      stage: attempt.stage, kp: attempt.kpLabel, gradeKey: attempt.gradeKey
-    });
-    emitEvent('reveal', q, { correct: attempt.correct });
-
-    /*
-     * 诊断：答完立刻算一次，落库冻结。键与判分台账同一个（题目 + 归一化答案），
-     * 所以同一个答案只诊断一次；改答案重答是另一个事件，各诊断各的。
-     * 这里只跑代码；代码证据不足时（confidence < 0.4）界面会给出「请诊断角色再看一眼」，
-     * 模型补的那一份是追加，不改写已经冻结的结论。
-     */
-    const frozenDiag = SHT.diagnose.read(state.diagnoses, q, attempt, roundNo);
-    if (frozenDiag) {
-      attempt.diag = frozenDiag;
-    } else {
-      const d = SHT.diagnose.judge({ question: q, attempt: attempt, unit: SHT.curriculum });
-      state.diagnoses = SHT.diagnose.remember(state.diagnoses, q, attempt, roundNo, d);
-      attempt.diag = d;
+      hintCount: isRetry ? 1 : (p.hintUsed ? 1 : 0),
+      durationMs: durationMs,
+      at: now
+    };
+    if (isRetry && first) {
+      // 错题本和诊断都保留第一次错误，不用第二次改对的答案覆盖原始证据。
+      final.firstAttempt = Object.assign({}, first);
+      final.diag = first.diag || attachDiagnosis(q, first, roundNo);
+    } else if (!final.correct) {
+      attachDiagnosis(q, final, roundNo);
     }
+    p.attempts.push(final);
 
-    p.revealed = attempt;
+    emitEvent('submit', q, {
+      picked: final.picked, expected: final.expected,
+      correct: final.correct, final: true, attemptIndex: final.attemptIndex,
+      retry: isRetry, firstCorrect: final.firstCorrect,
+      retryCorrect: final.retryCorrect,
+      via: final.via, durationMs: final.durationMs,
+      hintUsed: !!final.hintCount, stage: final.stage,
+      kp: final.kpLabel, gradeKey: final.gradeKey
+    });
+    emitEvent('reveal', q, { correct: final.correct, retry: isRetry });
+
+    p.revealed = final;
+    p.retry = null;
+    p.retryFirst = null;
+    p.retryHint = '';
     p.gradeError = '';
     save(); renderAll();
   }
@@ -1702,21 +1829,33 @@
     const r = p.revealed;
     if (!r) return;
     const q = activePracticeQuestion();
+    const wrongEvidence = r.firstAttempt || r;
     if (q.probe) {
       const after = recordProbeResult(q, r);
       if (r.correct) {
         toast(after && after.masteryState === 'mastered'
           ? '连对两次，这个考点算真会，下一轮不再出'
-          : '回练答对，记一次；下一轮再对一次才算真会');
+          : (r.retried ? '提示后回练答对，记为待验证；下一轮再独立答对才算真会' :
+            '回练答对，记一次；下一轮再对一次才算真会'));
       } else {
-        toast('回练还是错，已记为待订正，下一轮再出一次');
+        toast(r.retried ? '提示后回练还是错，下一轮再出一次' : '回练还是错，已记为待订正，下一轮再出一次');
       }
+    } else if (r.firstCorrect === false || r.retried) {
+      // 首答错误即使提示后改对，也要留下原始错误证据；掌握度只到“看提示才会”。
+      writeWrongFromPractice(q, wrongEvidence);
+      toast(r.retryCorrect ? '提示后改对，已记一次；这次只算看提示才会' : '提示后还是没有答对，已写进错题');
     } else if (r.correct) {
-      toast('答对了，换下一个考点');
+      toast('独立答对了，换下一个考点');
     } else {
       writeWrongFromPractice(q, r);
     }
-    emitEvent('leave', q, { nextCursor: p.cursor + 1, correct: !!r.correct });
+    emitEvent('leave', q, {
+      nextCursor: p.cursor + 1,
+      correct: !!r.correct,
+      firstCorrect: r.firstCorrect !== false,
+      retry: !!r.retried,
+      retryCorrect: r.retryCorrect == null ? null : !!r.retryCorrect
+    });
     p.cursor += 1;
     p.revealed = null;
     p.picked = null;
@@ -1725,7 +1864,9 @@
     p.gradeError = '';
     p.hintUsed = false;
     p.hintGone = -1;
-    // 下一题的计时从它出现的这一刻开始
+    p.retry = null;
+    p.retryFirst = null;
+    p.retryHint = '';
     p.shownAt = 0;
     p.shownEventFor = '';
     save(); renderAll();
@@ -2176,8 +2317,20 @@
 
   function stStats() {
     const p = practiceOf();
-    const right = p.attempts.filter(function (a) { return a.correct; }).length;
-    return { total: stQuestions().length, done: p.attempts.length, right: right, wrong: p.attempts.length - right };
+    const attempts = finalAttempts(p);
+    const right = attempts.filter(function (a) { return a.correct; }).length;
+    const assisted = attempts.filter(function (a) { return a.correct && a.retried; }).length;
+    const independent = attempts.filter(function (a) {
+      return a.correct && !a.retried && !(a.hintCount || 0);
+    }).length;
+    return {
+      total: stQuestions().length,
+      done: attempts.length,
+      right: right,
+      wrong: attempts.length - right,
+      assisted: assisted,
+      independent: independent
+    };
   }
 
   function stField(label, chips, cls) {
@@ -2193,10 +2346,10 @@
         '</button>';
     }).join('');
     const unitChips = book.units.map(function (u, i) {
-      const zh = u.titleZh ? ' · ' + u.titleZh : '';
+      const title = u.title ? ' · ' + u.title : '';
       return '<button type="button" class="st-chip' + (u.id === state.unitId ? ' is-on' : '') +
-        '" data-st-action="unit" data-id="' + u.id + '">第 ' + (u.no || i + 1) + ' 单元' +
-        esc(zh) + '</button>';
+        '" data-st-action="unit" data-id="' + u.id + '">Unit ' + (u.no || i + 1) +
+        esc(title) + '</button>';
     }).join('');
     const levelChips = ST_LEVELS.map(function (l) {
       return '<button type="button" class="st-chip' + (state.learningLayer === l.id ? ' is-on' : '') +
@@ -2247,9 +2400,11 @@
         else if (SHT.normAnswer(o) === SHT.normAnswer(r.picked)) cls += ' is-wrong';
       } else if (p.picked === i) {
         cls += ' is-picked';
+      } else if (p.hintGone === i) {
+        cls += ' is-gone';
       }
       return '<button type="button" class="' + cls + '" data-st-action="pick" data-index="' + i + '"' +
-        (r ? ' disabled' : '') + '><span class="k">' + String.fromCharCode(65 + i) + '</span>' +
+        (r || (!r && p.hintGone === i) ? ' disabled' : '') + '><span class="k">' + String.fromCharCode(65 + i) + '</span>' +
         '<span>' + esc(o) + '</span></button>';
     }).join('') + '</div>';
   }
@@ -2270,22 +2425,32 @@
   function stVerdictHtml(q, p) {
     const r = p.revealed;
     const isOpen = SHT.grade.mode(q) === 'open';
-    /*
-     * 以前这里会列「你选 X：说明」「正确 Y：说明」两行，和上面那句
-     * 「你选 X 正确 Y」说的是同一件事；而说明常常只是占位（「doktor 的说明」），
-     * 看起来像系统在重复自己。现在只留一句真正的解析，没有就不显示。
-     */
+    const first = r && r.firstAttempt;
+    const retried = !!(r && r.retried);
     const why = String(q.analysis || '').trim();
-    const tip = r.correct
-      ? (q.probe ? '上次错过，这次对了。' : '')
-      : (q.probe ? '还是错，之后再练一次。' : '记下了，下次换个问法再考。');
+    let badge = r.correct ? '答对了' : '答错了';
+    let answer = '你' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
+      (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>');
+    let tip = '';
+    if (retried) {
+      badge = r.correct ? '提示后答对' : '提示后仍错';
+      answer = '第一次' + (isOpen ? '写' : '选') + ' <b>' + esc((first && first.picked) || '') + '</b>' +
+        '　提示后再' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
+        (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>');
+      tip = r.correct
+        ? '首答错误已经保留；这次只记作「看提示才会」，之后还要用新题独立验证。'
+        : '首答和提示后的作答都记下了，下一轮会换新题再考一次。';
+    } else {
+      tip = r.correct
+        ? (q.probe ? '上次错过，这次独立答对了。' : '')
+        : (q.probe ? '还是错，之后再练一次。' : '记下了，下次换个问法再考。');
+    }
     return '<div class="st-verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="st-verdict-top">' +
-        '<span class="st-badge">' + (r.correct ? '答对了' : '答错了') + '</span>' +
-        '<span class="st-verdict-ans">你' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
-          (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>') + '</span>' +
+        '<span class="st-badge">' + badge + '</span>' +
+        '<span class="st-verdict-ans">' + answer + '</span>' +
       '</div>' +
-      (!r.correct && why ? '<div class="st-tip">' + esc(why) + '</div>' : '') +
+      ((!r.correct || retried) && why ? '<div class="st-tip">' + esc(why) + '</div>' : '') +
       (tip ? '<div class="st-tip is-muted">' + esc(tip) + '</div>' : '') +
     '</div>';
   }
@@ -2307,6 +2472,7 @@
       '</div>' +
       '<div class="st-bar"><span style="width:' + pct + '%"></span></div>' +
       '<div class="st-prompt">' + esc(q.prompt) + '</div>' +
+      retryHintHtml(q, p) +
       (isOpen ? stOpenInput(q, p) : stOptionBtns(q, p)) +
       (p.gradeError ? '<div class="st-tip" style="color:var(--red)">' + esc(p.gradeError) + '</div>' : '') +
       (r ? stVerdictHtml(q, p) : '') +
@@ -2315,7 +2481,7 @@
           ? '<button type="button" class="st-primary" data-st-action="next">' +
               (last ? '看本轮结果' : '下一题') + '</button>'
           : '<button type="button" class="st-primary" data-st-action="submit"' + (p.grading ? ' disabled' : '') + '>' +
-              (p.grading ? '判分中…' : '提交') + '</button>') +
+              (p.grading ? '判分中…' : (p.retry ? '再提交一次' : '提交')) + '</button>') +
       '</div>' +
     '</div></div>';
   }
@@ -2325,7 +2491,7 @@
     const p = practiceOf();
     // 错题列表只写中文短语：「vocab · baby brother / puppy · 幼小成员」→「幼小成员」
     const wrongKps = [];
-    p.attempts.forEach(function (a) {
+    finalAttempts(p).forEach(function (a) {
       if (a.correct || !a.kpLabel) return;
       const label = friendlyKp(a.kpLabel);
       if (wrongKps.indexOf(label) < 0) wrongKps.push(label);
@@ -2354,7 +2520,7 @@
       '<div class="st-sum">' +
         '<div class="st-eyebrow">第 ' + state.round + ' 轮结束' + (finished ? ' · 全部完成' : '') + '</div>' +
         '<div class="st-sum-num">' + s.right + '<small> / ' + s.done + ' 答对</small></div>' +
-        '<div class="st-sum-label">' + (s.wrong ? '有 ' + s.wrong + ' 道要再练' : '这一轮全对') + '</div>' +
+        '<div class="st-sum-label">' + (s.wrong ? '有 ' + s.wrong + ' 道要再练' : (s.assisted ? '有 ' + s.assisted + ' 道提示后改对，建议再验证' : '这一轮全对')) + '</div>' +
       '</div>' +
       capLine +
       (wrongKps.length

@@ -215,6 +215,10 @@
       b.totalMs += e.durationMs;
       b.qids.push(e.qid);
       b.eventSeqs = b.eventSeqs.concat(e.eventSeqs).slice(-60);
+      // 原地重选题保留两枪：第一枪错误先更新一次，提示后的第二枪再更新一次。
+      if (e.retried) {
+        b.sequence.push({ qid: e.qid, seq: e.seq, correct: e.firstCorrect, hint: e.firstHintUsed });
+      }
       b.sequence.push({ qid: e.qid, seq: e.seq, correct: e.correct, hint: e.hintUsed });
     });
 
