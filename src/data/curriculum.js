@@ -63,11 +63,12 @@
    * 这不是固定题库，只是没有模型时的可作答演示。
    */
   function sampleU1() {
-    const k1 = kpFor('U1', '01');
-    const k2 = kpFor('U1', '02');
-    const k3 = kpFor('U1', '03');
-    const k4 = kpFor('U1', '04');
-    const k5 = kpFor('U1', '05');
+    const list = SHT.kpsOf ? SHT.kpsOf('U1') : [];
+    const k1 = list.filter(function (k) { return k.targetType === 'word'; })[0] || {};
+    const k2 = list.filter(function (k) { return k.pathStage === 1 && k.targetType === 'sentence'; })[0] || {};
+    const k3 = list.filter(function (k) { return k.pathStage === 2 && k.targetType === 'word'; })[0] || {};
+    const k4 = list.filter(function (k) { return k.pathStage === 2 && k.targetType === 'sentence'; })[0] || {};
+    const k5 = list.filter(function (k) { return k.targetType === 'phonics'; })[0] || {};
     const cell = function (kp, fallback) { return kp.cell || fallback; };
     return [
       {
@@ -81,29 +82,29 @@
       },
       {
         no: 2, bookId: 'COURSE-G4A', unitId: 'U1',
-        knowledgePoint: k2.label || 'spelling · music room · 拼写',
-        ability: 'spelling', cell: cell(k2, { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' }),
-        prompt: '选出「教室」的正确拼写。', audioText: '',
-        options: ['classroom', 'classrom', 'clasroom'], answer: 'classroom',
-        analysis: 'class + room = classroom。',
+        knowledgePoint: k2.label || 'sentence · This is our … · 核心句型理解',
+        ability: 'sentence', cell: cell(k2, { type: '选词填空', scene: '学校', level: '用', distractor: '母语负迁移' }),
+        prompt: 'This is our ___.', audioText: '',
+        options: ['classroom', 'library', 'playground'], answer: 'classroom',
+        analysis: 'This is our classroom. 介绍教室。',
         nextIfWrong: k2.nextIfWrong || '先确认词义，再拆开拼写'
       },
       {
         no: 3, bookId: 'COURSE-G4A', unitId: 'U1',
-        knowledgePoint: k3.label || 'sentence · This is our … · 句型理解',
-        ability: 'sentence', cell: cell(k3, { type: '选词填空', scene: '学校', level: '用', distractor: '母语负迁移' }),
-        prompt: 'This is our ___.', audioText: '',
-        options: ['classroom', 'library', 'playground'], answer: 'classroom',
-        analysis: 'This is our classroom. 介绍教室。',
+        knowledgePoint: k3.label || 'vocab · office / story / a lot of · 第二组词义识别',
+        ability: 'vocab', cell: cell(k3, { type: '中英匹配', scene: '学校', level: '辨', distractor: '同类不同物' }),
+        prompt: '选出「办公室」的英文。', audioText: '',
+        options: ['office', 'story', 'canteen'], answer: 'office',
+        analysis: 'office 是办公室。',
         nextIfWrong: k3.nextIfWrong || '替换一个校园场所词再读一遍'
       },
       {
         no: 4, bookId: 'COURSE-G4A', unitId: 'U1',
-        knowledgePoint: k4.label || 'sentence · There is … · 句型运用',
+        knowledgePoint: k4.label || 'sentence · This is / That is · 第二句型运用',
         ability: 'sentence', cell: cell(k4, { type: '对话补全', scene: '学校', level: '用', distractor: '语法错形' }),
-        prompt: 'There is a ___ here.', audioText: '',
-        options: ['library', 'classroom', 'playground'], answer: 'library',
-        analysis: 'There is a library. 有一个图书馆。',
+        prompt: 'This is the ___.', audioText: '',
+        options: ['playground', 'classroom', 'library'], answer: 'playground',
+        analysis: 'This is the playground. 介绍操场。',
         nextIfWrong: k4.nextIfWrong || '用 There is / There are 各说一句'
       },
       {

@@ -381,60 +381,91 @@
     const L = levels();
     const count = Math.max(1, Math.floor(num(o.count, 5)));
     const capInfo = levelCapOf(model, o.layer);
-    const kps = o.kps || [];
+    const kps = (o.kps || []).slice().sort(function (a, b) {
+      return (a.pathStage || 9) - (b.pathStage || 9) || (a.pathStep || 0) - (b.pathStep || 0);
+    });
     const retired = o.retired || [];
     const items = [];
     const usedKp = Object.create(null);
+    const stageList = [];
+    kps.forEach(function (k) {
+      const st = k.pathStage || 1;
+      if (stageList.indexOf(st) < 0) stageList.push(st);
+    });
+    stageList.sort(function (a, b) { return a - b; });
 
-    // 已测考点：按弱点分数排。真会的也要出一道进阶题（层次升到当前上限），
-    // 不能整条跳过 —— 否则学生越会、题目反而越回到「认」层，进阶就看不见了。
-    ((model && model.queue) || []).forEach(function (q) {
-      if (items.length >= count) return;
-      if (retired.indexOf(q.kp) >= 0 || usedKp[q.kp]) return;
-      const b = model.byKp[q.kp];
-      if (!b) return;
+    function addItem(k, b) {
+      const label = k.label || '';
+      if (!label || usedKp[label] || retired.indexOf(label) >= 0) return false;
+      usedKp[label] = true;
+      if (!b) {
+        const cold = items.length === 0 && !(model && model.eventCount);
+        const rule = cold ? RULES.COLD_START : RULES.EXPLORE;
+        items.push({
+          kp: label, kpId: k.id || '', ability: k.ability || 'vocab',
+          targetType: k.targetType || '', targetId: k.targetId || '',
+          pathStage: k.pathStage || null, pathLabel: k.pathLabel || '',
+          action: 'explore', level: L[0], distractor: '同类不同物',
+          rule: rule.id, ruleText: rule.text,
+          evidence: {
+            eventSeqs: [], qids: [], pKnown: null, attempts: 0, correct: 0, wrong: 0,
+            fastWrong: 0, slowWrong: 0, guessRight: 0, changes: 0, hintUsed: 0,
+            avgMs: 0, tendency: 'unseen', score: 0,
+            note: '这个路径目标还没有作答记录'
+          },
+          reason: '按学习路径进入「' + (k.pathLabel || '当前阶段') + '」；这个目标还没有作答记录'
+        });
+        return true;
+      }
       const rule = ruleOf(b.tendency);
       const level = levelFor(b, capInfo.cap);
       const distractor = DISTRACTOR_BY_TENDENCY[b.tendency] || '同类不同物';
-      const fromKps = kps.filter(function (k) { return k.label === q.kp; })[0];
-      usedKp[q.kp] = true;
-      items.push({
-        kp: q.kp,
-        kpId: (fromKps && fromKps.id) || '',
-        ability: (fromKps && fromKps.ability) || 'vocab',
-        action: actionOf(b.tendency),
-        level: level,
-        distractor: distractor,
-        rule: rule.id,
-        ruleText: rule.text,
-        evidence: evidenceOfDecision(b),
-        reason: reasonFor(b, rule, level, distractor)
-      });
-    });
-
-    // 名额没满 → 换没测过的考点，不靠模型随便编一个字符串
-    const known = Object.keys((model && model.byKp) || {});
-    kps.forEach(function (k) {
-      if (items.length >= count) return;
-      const label = k.label || '';
-      if (!label || usedKp[label] || known.indexOf(label) >= 0 || retired.indexOf(label) >= 0) return;
-      usedKp[label] = true;
-      const cold = items.length === 0 && known.length === 0;
-      const rule = cold ? RULES.COLD_START : RULES.EXPLORE;
       items.push({
         kp: label, kpId: k.id || '', ability: k.ability || 'vocab',
-        action: 'explore', level: L[0], distractor: '同类不同物',
+        targetType: k.targetType || '', targetId: k.targetId || '',
+        pathStage: k.pathStage || null, pathLabel: k.pathLabel || '',
+        action: actionOf(b.tendency), level: level, distractor: distractor,
         rule: rule.id, ruleText: rule.text,
-        evidence: {
-          eventSeqs: [], qids: [], pKnown: null, attempts: 0, correct: 0, wrong: 0,
-          fastWrong: 0, slowWrong: 0, guessRight: 0, changes: 0, hintUsed: 0,
-          avgMs: 0, tendency: 'unseen', score: 0,
-          note: '这个考点在 ' + ((model && model.eventCount) || 0) + ' 条轨迹事件里一次都没出现过'
-        },
-        reason: '这个考点从未测过（轨迹 ' + ((model && model.eventCount) || 0) +
-          ' 条事件里无记录）→ ' + rule.text + '；出「' + L[0] + '」层'
+        evidence: evidenceOfDecision(b),
+        reason: reasonFor(b, rule, level, distractor) + '；路径：' + (k.pathLabel || '')
       });
-    });
+      return true;
+    }
+
+    // 第一遍只补未测目标：先把当前阶段的每个具体单词/句型/拼读目标露出一次，
+    // 再进入下一阶段。这样 5 题一轮也不会把某个单词永久漏掉。
+    for (let si = 0; si < stageList.length && items.length < count; si += 1) {
+      const stage = stageList[si];
+      const stageKps = kps.filter(function (k) { return (k.pathStage || 1) === stage; });
+      const unseen = stageKps.filter(function (k) {
+        return !(model && model.byKp && model.byKp[k.label]);
+      });
+      unseen.forEach(function (k) {
+        if (items.length >= count) return;
+        addItem(k, model && model.byKp && model.byKp[k.label]);
+      });
+    }
+
+    // 第二遍才处理已经露过一次但还不稳的目标。
+    if (items.length < count) {
+      for (let si = 0; si < stageList.length && items.length < count; si += 1) {
+        const stage = stageList[si];
+        kps.filter(function (k) { return (k.pathStage || 1) === stage; }).forEach(function (k) {
+          if (items.length >= count || usedKp[k.label]) return;
+          const b = model && model.byKp && model.byKp[k.label];
+          if (b && b.tendency !== 'solid') addItem(k, b);
+        });
+      }
+    }
+
+    // 所有目标都覆盖过且没有待补弱项后，才回到已掌握目标做保持或进阶。
+    if (items.length < count) {
+      kps.forEach(function (k) {
+        if (items.length >= count) return;
+        const b = model && model.byKp && model.byKp[k.label];
+        if (!b || b.tendency === 'solid') addItem(k, b || null);
+      });
+    }
 
     const capText = capInfo.delta > 0 ? '按表现升 1 档' :
       (capInfo.delta < 0 ? '按表现降 1 档' : '按表现持平');
@@ -442,7 +473,7 @@
       items: items,
       levelCap: capInfo,
       reason: '本轮 ' + items.length + ' 条选题，依据 ' + ((model && model.eventCount) || 0) +
-        ' 条轨迹事件；水平上限「' + capInfo.cap + '」（起始 ' + capInfo.startCap + '，' + capText +
+        ' 条轨迹事件；按学习路径先处理未覆盖目标；水平上限「' + capInfo.cap + '」（起始 ' + capInfo.startCap + '，' + capText +
         '，基于 ' + capInfo.basedOn + ' 次作答' +
         (capInfo.avgPKnown == null ? '' : '、平均掌握概率 ' + Math.round(capInfo.avgPKnown * 100) + '%') + '）' +
         (items.length ? '；首条依据：' + items[0].reason : '')

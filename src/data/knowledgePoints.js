@@ -1,126 +1,107 @@
 /*
- * 四上课程候选知识点。
+ * 四上课程候选学习目标。
  *
- * 唯一来源：src/data/textbook.js 的 10 个单元，数据来自
- * D:/English/C端产品内容设计.xlsx 的「四上 单元内容」表。
- * 不再保存 PEP / 冀教 / 湘少的旧考点，也不把外单元的词混进来。
+ * 来源：C端产品内容设计.xlsx 的「四上 单元内容」；
+ * 顺序来源：「（新）路径分层」「湘少4上 单元学习路径」。
  *
- * 每个单元生成 6 个可出题起点：核心词义、拼写、两个核心句型、自然拼读、
- * 同类词辨识。它们是出题起点，不是固定答案库；具体题干仍由模型按当前单元生成。
+ * 路径阶段不是单个知识点，而是一个容器；容器内每个单词、句型、自然拼读词
+ * 都是独立 target，必须分别获得作答证据。这样才不会有单词被“词义组”掩盖。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
-
   SHT.KP_GROUPS = [
-    { id: 'unit', name: '本单元课程考点', note: '只来自当前四上课程大纲' }
+    { id: 'path1', name: '单元自学1', note: '核心词 + 第一个句型' },
+    { id: 'path2', name: '单元自学2', note: '第二组词 + 第二个句型' },
+    { id: 'path3', name: '单元自学3', note: '剩余词 + 第三个句型 + 自然拼读' }
   ];
 
-  function clean(value) {
-    return String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  function clean(value) { return String(value == null ? '' : value).replace(/\s+/g, ' ').trim(); }
+  function short(value, n) { const s = clean(value); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+  function wordAt(unit, i) { return (unit.words || [])[i] || { en: '', zh: '' }; }
+  function addTarget(list, unit, target) {
+    list.push(Object.assign({
+      unit: unit.id,
+      pathLabel: '单元自学' + target.pathStage,
+      targetId: target.targetId,
+      taskForms: target.taskForms || ['认']
+    }, target));
   }
-
-  function short(value, n) {
-    const s = clean(value);
-    return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  function wordTarget(unit, word, stage, step, group, suffix) {
+    return {
+      id: 'course-' + unit.id + '-' + suffix,
+      targetId: unit.id + ':word:' + word.en,
+      targetType: 'word', pathStage: stage, pathStep: step, group: group,
+      taskForms: ['认', '听', '拼写'],
+      label: 'vocab · ' + word.en + ' · ' + unit.id + ' 词义识别',
+      ability: 'vocab', cause: '同类不同物',
+      why: '这是单元自学' + stage + '的一个独立词汇目标，必须单独获得作答证据。',
+      source: unit.id + ' 课程大纲 · 单词',
+      example: '「' + (word.zh || word.en) + '」的英文是？',
+      cell: { type: '中英匹配', scene: unit.topicDomain || '学校', level: '认', distractor: '同类不同物' },
+      nextIfWrong: '回到本单元的单词卡和句型，再认一次这个具体单词'
+    };
   }
-
-  function wordsOf(unit, from, to) {
-    return (unit.words || []).slice(from, to)
-      .map(function (w) { return w.en; })
-      .filter(Boolean)
-      .join(' / ');
+  function sentenceTarget(unit, pattern, stage, step, group, suffix) {
+    return {
+      id: 'course-' + unit.id + '-' + suffix,
+      targetId: unit.id + ':sentence:' + suffix,
+      targetType: 'sentence', pathStage: stage, pathStep: step, group: group,
+      taskForms: ['认', '用', '表达'],
+      label: 'sentence · ' + short(pattern, 42) + ' · ' + unit.id + ' 句型',
+      ability: 'sentence', cause: '母语负迁移',
+      why: '这是单元自学' + stage + '的一个独立句型目标，要单独用到完整语境中。',
+      source: unit.id + ' 课程大纲 · 句型',
+      example: '用本单元句型完成：' + short(pattern, 60),
+      cell: { type: '选词填空', scene: unit.topicDomain || '学校', level: '用', distractor: '母语负迁移' },
+      nextIfWrong: '保留句型骨架，先替换一个词，再回到完整句子'
+    };
   }
-
-  function wordAt(unit, index) {
-    return (unit.words || [])[index] || { en: '', zh: '' };
+  function phonicsTarget(unit, word, stage, step, group, suffix) {
+    return {
+      id: 'course-' + unit.id + '-' + suffix,
+      targetId: unit.id + ':phonics:' + word,
+      targetType: 'phonics', pathStage: stage, pathStep: step, group: group,
+      taskForms: ['辨', '读'],
+      label: 'phonics · ' + word + ' · ' + unit.id + ' 自然拼读',
+      ability: 'phonics', cause: '音近混淆',
+      why: '这是单元自学3的一个独立自然拼读目标，要单独听辨和认读。',
+      source: unit.id + ' 课程大纲 · 自然拼读',
+      example: '听音，认出 ' + word + ' 的自然拼读',
+      cell: { type: '字母组合辨音', scene: unit.topicDomain || '学校', level: '辨', distractor: '音近' },
+      nextIfWrong: '先看词形找共同字母，再回到音形对应'
+    };
   }
 
   function buildUnitKps(unit) {
-    const first = wordAt(unit, 0);
-    const second = wordAt(unit, 1);
-    const third = wordAt(unit, 2);
-    const fourth = wordAt(unit, 3);
-    const fifth = wordAt(unit, 4);
+    const words = unit.words || [];
     const patterns = unit.sentencePatterns || [];
-    const p0 = patterns[0] || '本单元核心句型';
-    const p1 = patterns[1] || p0;
     const phonics = (unit.phonics && unit.phonics.extras) || [];
-    const phWords = phonics.slice(0, 4).join(' / ');
-    const sourceWords = unit.id + ' 课程大纲 · 单词';
-    const sourcePatterns = unit.id + ' 课程大纲 · 句型';
-    const sourcePhonics = unit.id + ' 课程大纲 · 自然拼读';
-    const scene = unit.topicDomain || '学校';
-
-    return [
-      {
-        id: 'course-' + unit.id + '-01', unit: unit.id, group: 'unit',
-        label: 'vocab · ' + wordsOf(unit, 0, 3) + ' · 词义识别',
-        ability: 'vocab', cause: '同类不同物',
-        why: '这些是本单元最先需要认读的核心词，先把中文意思和英文词形对应起来。',
-        source: sourceWords,
-        example: '「' + (first.zh || first.en) + '」的英文是？　' +
-          [first.en, second.en, third.en].filter(Boolean).join(' / '),
-        cell: { type: '中英匹配', scene: scene, level: '认', distractor: '同类不同物' },
-        nextIfWrong: '先做词义匹配，再把三个词放进本单元句型里读一遍'
-      },
-      {
-        id: 'course-' + unit.id + '-02', unit: unit.id, group: 'unit',
-        label: 'spelling · ' + (fourth.en || '本单元核心词') + ' · 拼写',
-        ability: 'spelling', cause: '形近混淆',
-        why: '本单元核心词要能脱离选项写出来，先检查首尾字母和容易漏掉的字母。',
-        source: sourceWords,
-        example: '选出 ' + (fourth.en || '本单元核心词') + ' 的正确拼写',
-        cell: { type: '拼写补全', scene: scene, level: '辨', distractor: '形近' },
-        nextIfWrong: '回到中英匹配确认词义，再拆音节拼写'
-      },
-      {
-        id: 'course-' + unit.id + '-03', unit: unit.id, group: 'unit',
-        label: 'sentence · ' + short(p0, 38) + ' · 句型理解',
-        ability: 'sentence', cause: '母语负迁移',
-        why: '先理解本单元第一个核心句型的语序和固定搭配，再替换单词说。',
-        source: sourcePatterns,
-        example: '用本单元句型完成：' + short(p0, 55),
-        cell: { type: '选词填空', scene: scene, level: '用', distractor: '母语负迁移' },
-        nextIfWrong: '只保留句型骨架，先替换一个词，不一次改多处'
-      },
-      {
-        id: 'course-' + unit.id + '-04', unit: unit.id, group: 'unit',
-        label: 'sentence · ' + short(p1, 38) + ' · 句型运用',
-        ability: 'sentence', cause: '语法错形',
-        why: '第二个句型用来检查是否能从理解走到运用，尤其注意 be 动词、助动词和复数。',
-        source: sourcePatterns,
-        example: '换一个本单元的词，完成：' + short(p1, 55),
-        cell: { type: '对话补全', scene: scene, level: '用', distractor: '语法错形' },
-        nextIfWrong: '对照第一个句型，先保留结构，再换主语或宾语'
-      },
-      {
-        id: 'course-' + unit.id + '-05', unit: unit.id, group: 'unit',
-        label: 'phonics · ' + phWords + ' · 发音辨识',
-        ability: 'phonics', cause: '音近混淆',
-        why: '本单元自然拼读词要能听出共同音，并区分同一组里的不同词。',
-        source: sourcePhonics,
-        example: '听一个词，选出属于本组自然拼读的单词：' + phWords,
-        cell: { type: '字母组合辨音', scene: scene, level: '辨', distractor: '音近' },
-        nextIfWrong: '先看词形找共同字母，再听音辨词'
-      },
-      {
-        id: 'course-' + unit.id + '-06', unit: unit.id, group: 'unit',
-        label: 'vocab · ' + wordsOf(unit, 4, 8) + ' · 同类词辨识',
-        ability: 'vocab', cause: '近义混淆',
-        why: '这些词都属于本单元同一个主题，容易只记住“同类”而分不清具体对象。',
-        source: sourceWords,
-        example: '从本单元词表中选出与「' + (fifth.zh || fifth.en) + '」对应的英文',
-        cell: { type: '中英匹配', scene: scene, level: '辨', distractor: '语义近' },
-        nextIfWrong: '用图片或本单元课文语境重新确认每个词的具体所指'
-      }
-    ];
+    const out = [];
+    let n = 0;
+    function nextSuffix() { return String(++n).padStart(2, '0'); }
+    function addWords(from, to, stage, group) {
+      words.slice(from, to).forEach(function (word, i) {
+        addTarget(out, unit, wordTarget(unit, word, stage, i + 1, group, nextSuffix()));
+      });
+    }
+    addWords(0, 6, 1, 'path1');
+    addTarget(out, unit, sentenceTarget(unit, patterns[0] || '本单元核心句型', 1, 7, 'path1', nextSuffix()));
+    addWords(6, 9, 2, 'path2');
+    addTarget(out, unit, sentenceTarget(unit, patterns[1] || patterns[0] || '本单元核心句型', 2, 4, 'path2', nextSuffix()));
+    addWords(9, words.length, 3, 'path3');
+    addTarget(out, unit, sentenceTarget(unit, patterns[2] || patterns[1] || patterns[0] || '本单元核心句型', 3, (words.length - 9) + 1, 'path3', nextSuffix()));
+    phonics.forEach(function (word, i) {
+      addTarget(out, unit, phonicsTarget(unit, word, 3, (words.length - 9) + 2 + i, 'path3', nextSuffix()));
+    });
+    return out;
   }
 
   const book = (SHT.BOOKS && SHT.BOOKS.current) ? SHT.BOOKS.current() : null;
   const units = (book && book.units) || [];
   const all = [];
-  units.forEach(function (unit) {
-    Array.prototype.push.apply(all, buildUnitKps(unit));
+  units.forEach(function (unit) { Array.prototype.push.apply(all, buildUnitKps(unit)); });
+  all.sort(function (a, b) {
+    return a.unit === b.unit ? (a.pathStage - b.pathStage || a.pathStep - b.pathStep) : (a.unit < b.unit ? -1 : 1);
   });
 
   SHT.KNOWLEDGE_POINTS = all;
@@ -128,11 +109,10 @@
   if (book) SHT.KPS_BY_BOOK[book.meta.id] = all;
   SHT.ALL_KPS = function () { return SHT.KNOWLEDGE_POINTS.slice(); };
   SHT.kpsOf = function (unitId) {
-    return SHT.ALL_KPS().filter(function (k) { return k.unit === unitId; });
+    return SHT.ALL_KPS().filter(function (k) { return k.unit === unitId; })
+      .sort(function (a, b) { return a.pathStage - b.pathStage || a.pathStep - b.pathStep; });
   };
-  SHT.kpById = function (id) {
-    return SHT.ALL_KPS().filter(function (k) { return k.id === id; })[0] || null;
-  };
+  SHT.kpById = function (id) { return SHT.ALL_KPS().filter(function (k) { return k.id === id; })[0] || null; };
   SHT.kpByLabel = function (label) {
     const key = clean(label);
     if (!key) return null;

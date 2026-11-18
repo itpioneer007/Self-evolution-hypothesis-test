@@ -34,6 +34,7 @@
     <button type="button" data-tab="wrongbook" class="tab"><span class="tab-no">03</span>错题</button>
     <button type="button" data-tab="loop" class="tab"><span class="tab-no">04</span>日志</button>
     <button type="button" data-tab="audit" class="tab"><span class="tab-no">05</span>审计台</button>
+    <button type="button" data-tab="profile" class="tab"><span class="tab-no">06</span>用户画像</button>
   </nav>
 
   <main class="stage">
@@ -106,6 +107,10 @@
       内容由 src/dev/audit.js 渲染（左侧导航 + 右侧详情），
       样式在 styles.css 末尾的「05 审计台」区块，与上面四个浅色页签同一套变量。
     -->
+    <section class="stage-page" id="page-profile">
+      <div class="profile-root" id="profileRoot"></div>
+    </section>
+
     <section class="stage-page" id="page-audit">
       <div class="audit-root" id="auditRoot"></div>
     </section>
@@ -148,10 +153,12 @@
 <script src="src/core/bkt.js"></script>
 <script src="src/core/learner.js"></script>
 <script src="src/core/progress.js"></script>
+<script src="src/core/assessment.js"></script>
 <script src="src/core/agentMemory.js"></script>
 <script src="src/core/pipeline.js"></script>
 <script src="src/core/audit.js"></script>
 <script src="src/dev/audit.js"></script>
+<script src="src/dev/profile.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

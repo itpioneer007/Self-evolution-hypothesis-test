@@ -209,7 +209,7 @@
   function blankRound() {
     return {
       questions: [], stopSignals: [], endReason: '', closed: false,
-      practice: blankPractice(), progressCommitted: false,
+      practice: blankPractice(), progressCommitted: false, report: null,
       /*
        * 这一轮课程角色给的原始考点（不是题）。审计要看「课程给了什么、
        * 执行角色怎么理解它」，光有题上的知识点标签看不出来——
@@ -373,6 +373,7 @@
       if (!r.practice.shownAt) r.practice.shownAt = 0;
       if (r.progressCommitted == null) r.progressCommitted = false;
       if (!Array.isArray(r.plans)) r.plans = [];
+      if (!r.report || typeof r.report !== 'object') r.report = null;
     });
     if (!parsed.learningLayer) parsed.learningLayer = SHT.sampleLearningLayer || 'B';
     if (!parsed.tab) parsed.tab = 'agents';
@@ -613,7 +614,8 @@
                 '<button type="button" class="btn btn-mini' + (inScope ? ' is-on' : '') + '" data-action="toggle-scope" data-id="' + esc(k.id) + '">' +
                   (inScope ? '移出' : '纳入') + '</button>' +
                 '<button type="button" class="btn btn-mini" data-action="pick-kp" data-id="' + esc(k.id) + '">写进第 ' + state.activeNo + ' 题</button></div>' +
-              '<div class="kp-why">' + esc(k.why) + '　<span>依据：' + esc(k.source) + '</span></div>' +
+              '<div class="kp-why">' + esc(k.why) + '　<span>依据：' + esc(k.source) + '</span>' +
+                (k.pathLabel ? '<span class="kp-path">' + esc(k.pathLabel) + '</span>' : '') + '</div>' +
               '<div class="kp-meta">建议出题角度：' + esc(k.cell.type) + ' / ' + esc(k.cell.level) + ' / ' + esc(k.cell.distractor) +
                 '　·　可以这样问：' + esc(k.example) + '</div>' +
             '</div>';
@@ -1886,7 +1888,15 @@
     p.shownAt = 0;
     p.shownEventFor = '';
     // 这一轮答完了：把成绩补进会话记录（只补一次），之后才轮得到「看本轮结果」
-    if (p.cursor >= practiceQuestions().length) noteRoundDone();
+    if (p.cursor >= practiceQuestions().length) {
+      noteRoundDone();
+      if (SHT.assessment) {
+        currentRound().report = SHT.assessment.buildRoundReport({
+          round: currentRound(), events: state.events || [],
+          learnerModel: SHT.learner.build(state.events || [])
+        });
+      }
+    }
     save(); renderAll();
   }
 
@@ -2337,7 +2347,7 @@
     const p = practiceOf();
     const attempts = finalAttempts(p);
     const right = attempts.filter(function (a) { return a.correct; }).length;
-    const assisted = attempts.filter(function (a) { return a.correct && a.retried; }).length;
+    const assisted = attempts.filter(function (a) { return a.correct && (a.retried || (a.hintCount || 0)); }).length;
     const independent = attempts.filter(function (a) {
       return a.correct && !a.retried && !(a.hintCount || 0);
     }).length;
@@ -2508,28 +2518,25 @@
     '</div></div>';
   }
 
+  function currentRoundReport() {
+    const round = currentRound();
+    if (!SHT.assessment) return null;
+    const learnerModel = SHT.learner ? SHT.learner.build(state.events || []) : {};
+    const report = SHT.assessment.buildRoundReport({
+      round: round,
+      events: state.events || [],
+      learnerModel: learnerModel
+    });
+    round.report = report;
+    return report;
+  }
+
   function stSummaryHtml() {
     const s = stStats();
-    const p = practiceOf();
-    // 错题列表只写中文短语：「vocab · baby brother / puppy · 幼小成员」→「幼小成员」
-    const wrongKps = [];
-    finalAttempts(p).forEach(function (a) {
-      if (a.correct || !a.kpLabel) return;
-      const label = friendlyKp(a.kpLabel);
-      if (wrongKps.indexOf(label) < 0) wrongKps.push(label);
-    });
-    const items = wrongKps.slice(0, 5).map(function (k) {
-      return '<div class="st-sum-item"><span class="dot">·</span><span>' + esc(k) + '</span></div>';
-    }).join('');
+    const report = currentRoundReport();
     const isLastRound = state.round >= 2;
     const isLastGroup = state.stGroup >= MAX_GROUPS;
     const finished = isLastRound && isLastGroup;
-    const cap = state.levelCap;
-    // 难度变化只说结果，不说「水平上限」「掌握概率」这些内部口径
-    const capLine = cap && cap.delta
-      ? '<div class="st-tip is-muted">' +
-        (cap.delta > 0 ? '练得不错，后面会难一点。' : '这轮有点吃力，后面会简单一点。') + '</div>'
-      : '';
     let action;
     if (!isLastRound) {
       action = '<button type="button" class="st-primary" data-st-action="next-round">下一轮</button>';
@@ -2538,17 +2545,41 @@
     } else {
       action = '<button type="button" class="st-primary" data-st-action="restart">重新开始</button>';
     }
-    return '<div class="st-page"><div class="st-card">' +
-      '<div class="st-sum">' +
-        '<div class="st-eyebrow">第 ' + state.round + ' 轮结束</div>' +
-        '<div class="st-sum-num">' + s.right + '<small> / ' + s.done + ' 答对</small></div>' +
-        '<div class="st-sum-label">' + (s.wrong ? '有 ' + s.wrong + ' 道要再练' : (s.assisted ? '有 ' + s.assisted + ' 道提示后改对，建议再验证' : '这一轮全对')) + '</div>' +
+    if (!report) {
+      return '<div class="st-page"><div class="st-card"><div class="st-title">本轮结果</div>' +
+        '<div class="st-tip">评价模块尚未加载。</div><div class="st-actions">' + action + '</div></div></div>';
+    }
+    const d = report.dimensions;
+    const score = report.performanceScore == null ? '样本不足' : report.performanceScore;
+    const dim = function (label, value, note, tone) {
+      const p = value == null ? '—' : Math.round(value * 100) + '%';
+      return '<div class="st-report-dim"><div><span>' + esc(label) + '</span><b>' + p + '</b></div>' +
+        '<div class="st-report-bar"><i class="' + (tone || '') + '" style="width:' + (value == null ? 0 : Math.round(value * 100)) + '%"></i></div>' +
+        '<small>' + esc(note) + '</small></div>';
+    };
+    const kpRows = report.knowledgePoints.map(function (k) {
+      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
+        '<div class="st-report-kp-head"><strong>' + esc(friendlyKp(k.kp)) + '</strong><span>' + esc(k.stateLabel) + (k.pathLabel ? ' · ' + esc(k.pathLabel) : '') + '</span></div>' +
+        '<div class="st-report-kp-meta">掌握概率：' + (k.mastery == null ? '待积累' : Math.round(k.mastery * 100) + '%') +
+          '　·　' + (k.evidence || []).join('；') + '</div>' +
+        '<div class="st-report-kp-next">下一步：' + esc(k.nextAction.action) + '</div>' +
+      '</div>';
+    }).join('');
+    return '<div class="st-page"><div class="st-card st-report-card">' +
+      '<div class="st-report-head"><div><div class="st-eyebrow">第 ' + state.round + ' 轮学习评价单' + (finished ? ' · 全部完成' : '') + '</div>' +
+        '<h2 class="st-title">本轮学习表现</h2></div><div class="st-report-score"><b>' + score + '</b><span>表现分</span></div></div>' +
+      '<div class="st-report-sub">独立答对 ' + s.independent + '　提示后答对 ' + s.assisted + '　答错 ' + s.wrong + '　共 ' + s.done + ' 题</div>' +
+      '<div class="st-report-formula">' + esc(report.scoreFormula) + '</div>' +
+      '<div class="st-report-dims">' +
+        dim('独立掌握率', d.independentRate, '首答正确、无提示、无重试', 'is-good') +
+        dim('提示后改对率', d.assistedRate, '提示后重新选择正确', 'is-warn') +
+        dim('答错率', d.wrongRate, '提示后仍未答对', 'is-bad') +
+        dim('覆盖率', d.coverage, '已完成 ' + d.completed + ' / ' + d.total, '') +
       '</div>' +
-      capLine +
-      // 列表本身就是「哪几道要再练」，不再补一句机制说明
-      (wrongKps.length
-        ? '<div class="st-sum-list">' + items + '</div>'
-        : '<div class="st-sum-empty">' + (finished ? '这个单元练完了。' : '这一轮全对。') + '</div>') +
+      '<div class="st-report-section-title">知识点评价</div>' +
+      '<div class="st-report-kps">' + (kpRows || '<div class="st-tip is-muted">本轮还没有知识点记录。</div>') + '</div>' +
+      '<div class="st-report-pending">熟练度：平均作答 ' + Math.round(d.averageMs / 100) / 10 + ' 秒，待接入题目预计时长　·　保持度：待验证　·　迁移度：待验证</div>' +
+      '<div class="st-report-caveat">' + report.caveats.map(esc).join('　') + '</div>' +
       '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
   }
@@ -2780,6 +2811,7 @@
     renderStop();
     // 审计台只在选中时才重绘：它要算台账复算与变体对照，代价比别的页签高
     if (state.tab === 'audit' && SHT.devAudit) SHT.devAudit.render();
+    if (state.tab === 'profile' && SHT.devProfile) SHT.devProfile.render();
     // 学生端顶栏只留产品名。教材/单元/轮次是内部口径，页面上已有更直白的表达，
     // 全都堆在副标题里只会让人先读一串编号。
     $('brandSub').textContent = state.view === 'student' ? '' :
@@ -3706,6 +3738,10 @@
 
   // 审计台需要读存档、写存档、弹提示、收留痕：四个回调一次性交给它，
   // 免得它反过来依赖 app.js 的内部函数（那样换界面就得改两处）。
+  if (SHT.devProfile) {
+    SHT.devProfile.state = function () { return state; };
+  }
+
   if (SHT.devAudit) {
     SHT.devAudit.state = function () { return state; };
     SHT.devAudit.save = save;
