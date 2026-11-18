@@ -327,7 +327,7 @@ DEEPSEEK_API_KEY=sk-xxx node tools/live-run.js
 DEEPSEEK_API_KEY=sk-xxx node tools/ui-check.js
 ```
 
-当前状态：`smoke-test` **284 项全绿**，`e2e-browser` **8 项全绿**。
+当前状态：`smoke-test` **410 项全绿**，`e2e-browser` **13 项全绿**。两套都不需要 key；真实模型的两条脚本（`live-run` / `ui-check`）要 `DEEPSEEK_API_KEY` 才跑。
 
 新增判据请同时补断言。这个项目里反复出现过同一类问题——判据自己误判却看起来像模型出错（例如把占位符当成超纲词、把 `nears` 当成没学过的词），只有断言能拦住回归。
 
