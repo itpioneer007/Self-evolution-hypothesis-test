@@ -105,6 +105,9 @@
       gradeError: '',
       hintUsed: false,
       hintGone: -1,
+      // 这一题里改了几次选项（含把已选的取消）。犹豫是最便宜的一条「不会但不敢确定」的证据：
+      // 秒错且没改选才像手滑，改选过再错就不能按手滑算，所以这个数必须一路带到权重里去。
+      changes: 0,
       revealed: null,
       // 这一题是什么时候出现在屏幕上的。作答耗时要靠它算——耗时是诊断的一条证据：
       // 3 秒内选错和想了 20 秒选错，不是同一回事。
@@ -253,7 +256,7 @@
       view: 'student',
       // 学生端是否已经开始过一次（决定停在「选画像」还是直接续答）
       stStarted: false,
-      // 第几组练习。一组 = 两轮，最多 MAX_GROUPS 组，跑完给终态，不再无限「再练一组」
+      // 第几组练习。一组 = 两轮；默认两组，错题还没掌握最多续到四组（MAX_GROUPS_HARD）
       stGroup: 1,
       // 上一次出题失败的原因。学生端没有「失败记录」页，得在画像页上直接说清楚
       stFail: '',
@@ -1493,9 +1496,10 @@
     const q = activePracticeQuestion();
     const prev = p.picked;
     p.picked = p.picked === index ? null : index;
-    // 第一次选记 pick，之后再动就是 change。改选次数是「犹豫」最直接的证据，
-    // 覆盖式地只留最终选项的话，这条信息永久丢失。
+    // 第一次选记 pick，之后再动（换选项，或把已选的取消）都是 change。
+    // 改选次数是「犹豫」最直接的证据，覆盖式地只留最终选项的话，这条信息永久丢失。
     if (q) emitEvent(prev == null ? 'pick' : 'change', q, { index: p.picked, prevIndex: prev });
+    if (prev != null) p.changes = Number(p.changes || 0) + 1;
     save(); renderPractice();
   }
 
@@ -1604,6 +1608,7 @@
         answerMode: isOpen ? 'open' : 'choice',
         hintCount: p.hintUsed ? 1 : 0,
         durationMs: durationMs,
+        changes: Number(p.changes || 0),
         at: now
       };
       attachDiagnosis(q, first, roundNo);
@@ -1621,6 +1626,9 @@
       p.hintUsed = true;
       p.picked = null;
       p.draft = '';
+      // 重试是新的一枪：改选次数从头计，首答的犹豫已经记在 first 里了。
+      // 不重置的话，首答的三次乱点会被算到提示后这一枪头上，判成「犹豫着还是错」。
+      p.changes = 0;
       p.shownAt = Date.now();
       emitEvent('hint', q, { auto: true, retry: true, hint: p.retryHint });
       save(); renderAll();
@@ -1654,6 +1662,7 @@
       answerMode: isOpen ? 'open' : 'choice',
       hintCount: isRetry ? 1 : (p.hintUsed ? 1 : 0),
       durationMs: durationMs,
+      changes: Number(p.changes || 0),
       at: now
     };
     if (isRetry && first) {
@@ -1676,9 +1685,17 @@
       hintCount: final.hintCount || 0,
       retried: !!isRetry,
       durationMs: isRetry ? (final.retryDurationMs || final.durationMs) : final.durationMs,
-      changes: 0,
+      changes: Number(final.changes || 0),
       at: final.at
     });
+    /*
+     * 把这道题让权重动了多少，顺手记在这条作答上。
+     * 导出时「他第 3 题答对，这一类从 42% 升到 56%」能直接读到，
+     * 不用再拿整份事件流重放一遍才敢说「难度确实跟着动了」。
+     */
+    const kpCell = state.weights.kp[final.kpLabel || ''];
+    final.weightAfter = kpCell ? kpCell.w : null;
+    final.weightDelta = kpCell ? kpCell.lastDelta : null;
 
     emitEvent('submit', q, {
       picked: final.picked, expected: final.expected,
@@ -1913,6 +1930,7 @@
     p.gradeError = '';
     p.hintUsed = false;
     p.hintGone = -1;
+    p.changes = 0;
     p.retry = null;
     p.retryFirst = null;
     p.retryHint = '';
@@ -2356,8 +2374,23 @@
     { id: 'A', label: '较好', note: '想多练一点' }
   ];
 
-  // 一组 = 两轮。跑完最多两组就给终态，不再无限「再练一组」。
+  /*
+   * 一组 = 两轮。
+   *
+   * 以前跑满两组就硬停：不管错题掌握没掌握，都只能「重新开始」。
+   * 但闭环的意义是「答完再看下一步」，题还有没会的就该继续，没得练了才停。
+   * 所以现在分两道线：默认两组；如果错题本里还有没掌握的，最多续到四组。
+   * 四组是硬上限，避免又回到「无限出下一轮」那种没有终点的状态。
+   */
   const MAX_GROUPS = 2;
+  const MAX_GROUPS_HARD = 4;
+
+  /** 错题本里还没掌握的条数。判断「还要不要再练」用它，比数总题数好解释。 */
+  function stWeakCount() {
+    return (state.wrongCases || []).filter(function (c) {
+      return !c.demo && c.masteryState !== 'mastered';
+    }).length;
+  }
 
   function stQuestions() { return practiceQuestions(); }
 
@@ -2390,6 +2423,30 @@
       assisted: assisted,
       independent: independent
     };
+  }
+
+  /*
+   * 一句话交代「下一轮会怎么变」。
+   *
+   * 这是整个闭环里唯一给学生看的反馈环节：他答完题，需要知道自己刚才那几题
+   * 改变了什么。界面上不出现「权重」「掌握概率」「难度档」这些词——学生只需要
+   * 知道题会难一点还是简单一点，以及凭的是什么（这轮对了几题、预计答对率多少）。
+   */
+  function nextRoundHintText() {
+    const w = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
+    if (!w.answered) return '';
+    const order = SHT.LEVELS || [];
+    const start = ((SHT.progress && SHT.progress.CAP_OF_LAYER) || {})[state.learningLayer] || '';
+    const s = stStats();
+    const fact = '这一轮 ' + s.done + ' 题答对 ' + s.right + ' 题';
+    const rate = '预计答对率 ' + Math.round((w.weight || 0) * 100) + '%';
+    if (start && order.indexOf(w.cap) > order.indexOf(start)) {
+      return '下一轮会难一点：' + fact + '，比预计的稳（' + rate + '）。';
+    }
+    if (start && order.indexOf(w.cap) < order.indexOf(start)) {
+      return '下一轮会简单一点：' + fact + '，这几类还没稳住（' + rate + '）。';
+    }
+    return '下一轮难度不变：' + fact + '，再考几道同类的题确认一下（' + rate + '）。';
   }
 
   function stField(label, chips, cls) {
@@ -2585,13 +2642,20 @@
       '</div>';
     }).join('');
     const isLastRound = state.round >= 2;
-    const isLastGroup = state.stGroup >= MAX_GROUPS;
-    const finished = isLastRound && isLastGroup;
+    /*
+     * 停不停，看两件事：组数到没到硬上限，以及错题本里还有没有没掌握的内容。
+     * 「还有 3 处没掌握」这种话学生一看就懂，也知道为什么还让他再练一组。
+     */
+    const weak = stWeakCount();
+    const stop = state.stGroup >= MAX_GROUPS_HARD ||
+      (state.stGroup >= MAX_GROUPS && weak === 0);
+    const finished = isLastRound && stop;
     let action;
     if (!isLastRound) {
       action = '<button type="button" class="st-primary" data-st-action="next-round">下一轮</button>';
-    } else if (!isLastGroup) {
-      action = '<button type="button" class="st-primary" data-st-action="regroup">再练一组</button>';
+    } else if (!stop) {
+      action = '<button type="button" class="st-primary" data-st-action="regroup">' +
+        (weak > 0 ? '还有 ' + weak + ' 处没掌握，再练一组' : '再练一组') + '</button>';
     } else {
       action = '<button type="button" class="st-primary" data-st-action="restart">重新开始</button>';
     }
@@ -2600,6 +2664,8 @@
         '<div class="st-tip">评价模块尚未加载。</div><div class="st-actions">' + action + '</div></div></div>';
     }
     const d = report.dimensions;
+    // 学生唯一能看到的「闭环反馈」：他这几题让下一轮变难还是变简单
+    const nextHint = nextRoundHintText();
     const score = report.performanceScore == null ? '样本不足' : report.performanceScore;
     const dim = function (label, value, note, tone) {
       const p = value == null ? '—' : Math.round(value * 100) + '%';
@@ -2607,8 +2673,7 @@
         '<div class="st-report-bar"><i class="' + (tone || '') + '" style="width:' + (value == null ? 0 : Math.round(value * 100)) + '%"></i></div>' +
         '<small>' + esc(note) + '</small></div>';
     };
-    const kpRows = report.knowledgePoints.map(function (k) {
-      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
+    const kpRows = report.knowledgePoints.map(function (k) {      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
         '<div class="st-report-kp-head"><strong>' + esc(friendlyKp(k.kp)) + '</strong><span>' + esc(k.stateLabel) + (k.pathLabel ? ' · ' + esc(k.pathLabel) : '') + '</span></div>' +
         '<div class="st-report-kp-meta">掌握概率：' + (k.mastery == null ? '待积累' : Math.round(k.mastery * 100) + '%') +
           '　·　' + (k.evidence || []).join('；') + '</div>' +
@@ -2616,7 +2681,8 @@
       '</div>';
     }).join('');
     return '<div class="st-page"><div class="st-card st-report-card">' +
-      '<div class="st-report-head"><div><div class="st-eyebrow">第 ' + state.round + ' 轮学习评价单' + (finished ? ' · 全部完成' : '') + '</div>' +
+      '<div class="st-report-head"><div><div class="st-eyebrow">第 ' + state.round + ' 轮学习评价单' +
+        (finished ? (weak === 0 ? ' · 全部完成' : ' · 本次练到这里') : '') + '</div>' +
         '<h2 class="st-title">本轮学习表现</h2></div><div class="st-report-score"><b>' + score + '</b><span>表现分</span></div></div>' +
       '<div class="st-report-sub">独立答对 ' + s.independent + '　提示后答对 ' + s.assisted + '　答错 ' + s.wrong + '　共 ' + s.done + ' 题</div>' +
       '<div class="st-report-formula">' + esc(report.scoreFormula) + '</div>' +
@@ -2633,6 +2699,7 @@
           '<div class="st-sum-list">' + wrongItems + '</div>'
         : '') +
       '<div class="st-report-pending">熟练度：平均作答 ' + Math.round(d.averageMs / 100) / 10 + ' 秒，待接入题目预计时长　·　保持度：待验证　·　迁移度：待验证</div>' +
+      (nextHint ? '<div class="st-next-hint">' + esc(nextHint) + '</div>' : '') +
       '<div class="st-report-caveat">' + report.caveats.map(esc).join('　') + '</div>' +
       '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
@@ -2802,9 +2869,17 @@
     runModelRound(false);
   }
 
-  // 两轮跑完后再练一组：题目重来，错题与轨迹保留。组数有上限，跑完就是终态。
+  // 两轮跑完后再练一组：题目重来，错题与轨迹保留。错题还有没掌握的才允许续，最多四组。
   function stRegroup() {
-    if (state.stGroup >= MAX_GROUPS) return;
+    if (state.stGroup >= MAX_GROUPS_HARD) {
+      toast('已经练满 ' + MAX_GROUPS_HARD + ' 组了，先歇一会儿');
+      return;
+    }
+    if (state.stGroup >= MAX_GROUPS && stWeakCount() === 0) {
+      // 没有可练的了就不硬凑一组：再出也只会是「已经会了的题」，浪费时间。
+      toast('错题都掌握了，不用再练一组');
+      return;
+    }
     if (!SHT.llm.isReady()) { openModel(); toast('先在右上角「设置」里填好密钥'); return; }
     state.stGroup += 1;
     state.round = 1;
@@ -3345,31 +3420,37 @@
     const learnerModel = SHT.learner.build(state.events || []);
     const retiredKps = Object.keys((state.progress && state.progress.points) || {})
       .filter(function (k) { return state.progress.points[k].retired; });
+    /*
+     * 难度上限的优先级：权重累积够多（≥5 次作答）就以它为准，否则用本轮 learner 的判断。
+     * 理由：前几题样本太少，按权重调档等于让一道题决定整轮难度；
+     * 攒够证据以后，跨轮权重比「本轮重算的掌握概率」更稳，也更贴近「答对升、答错降」的直觉。
+     *
+     * 注意这段必须在 decide 之前算。以前是先 decide（按掌握概率把每条题的层次定死）、
+     * 再改 capInfo.cap —— 只改了一个数字，题目层次一条都没动，等于权重没生效。
+     */
+    const weightsView = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
+    state.weightsView = weightsView;
+    const useWeights = weightsView.answered >= 5 && SHT.LEVELS.indexOf(weightsView.cap) >= 0;
     const decisionSet = SHT.learner.decide(learnerModel, {
       unit: SHT.curriculum,
       layer: state.learningLayer,
       kps: unitKps(),
       count: countFor(state.round),
-      retired: retiredKps
+      retired: retiredKps,
+      // 权重直接定这一轮的难度档，也决定「同层里先出哪道最弱的」
+      weights: state.weights || SHT.weights.blank(),
+      capOverride: useWeights ? weightsView.cap : ''
     });
     state.decisions = decisionSet.items;
-    /*
-     * 难度上限的优先级：权重累积够多（≥5 次作答）就以它为准，否则用本轮 learner 的判断。
-     * 理由：前几题样本太少，按权重调档等于让一道题决定整轮难度；
-     * 攒够证据以后，跨轮权重比「本轮重算的掌握概率」更稳，也更贴近「答对升、答错降」的直觉。
-     */
-    const weightsView = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
-    state.weightsView = weightsView;
-    const useWeights = weightsView.answered >= 5 && SHT.LEVELS.indexOf(weightsView.cap) >= 0;
     const capInfo = Object.assign({}, decisionSet.levelCap, {
-      learnerCap: decisionSet.levelCap && decisionSet.levelCap.cap,
+      learnerCap: (decisionSet.levelCap && decisionSet.levelCap.learnerCap) ||
+        (decisionSet.levelCap && decisionSet.levelCap.cap),
       weightsCap: weightsView.cap,
       weightsAnswered: weightsView.answered,
       weight: weightsView.weight,
       source: useWeights ? 'weights' : 'learner',
       reason: useWeights ? weightsView.reason : (decisionSet.levelCap && decisionSet.levelCap.reason) || ''
     });
-    if (useWeights) capInfo.cap = weightsView.cap;
     state.levelCap = capInfo;
     state.decisionReason = decisionSet.reason;
     state.learnerModel = SHT.learner.digest(learnerModel, 8);

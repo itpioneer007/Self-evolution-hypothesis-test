@@ -178,6 +178,119 @@ assert('U10 的考点只来自 U10', SHT.kpsOf('U10').every(k => k.unit === 'U10
  * 字段名写错、isRetry 取错、忘了 save，纯函数测试全绿也发现不了。
  * 加载 app.js 需要最小 DOM 桩，所以放在文件末尾，不影响前面的纯函数段。
  */
+console.log('--- 答题过后重出题：证据有没有真的进模型 ---');
+(function () {
+  const EV = function (seq, qid, kp, type, payload) {
+    return { seq: seq, qid: qid, kp: kp, studentId: 'S-001', round: 1, ts: 1000 + seq * 100, type: type, payload: payload || {} };
+  };
+  /*
+   * 学生端真实的一条作答链是两枪：先答错 → 系统给提示 → 同一题再答一次。
+   * 所以「一题」在事件流里有两条 submit。这里把两种结局都造出来。
+   */
+  const retriedWrong = [
+    EV(1, 'q-a', 'library · 图书馆', 'shown', {}),
+    EV(2, 'q-a', 'library · 图书馆', 'pick', { index: 1 }),
+    EV(3, 'q-a', 'library · 图书馆', 'submit', { correct: false, final: false, attemptIndex: 1, durationMs: 1200, hintUsed: false }),
+    EV(4, 'q-a', 'library · 图书馆', 'hint', { auto: true }),
+    EV(5, 'q-a', 'library · 图书馆', 'pick', { index: 2 }),
+    EV(6, 'q-a', 'library · 图书馆', 'submit', { correct: false, final: true, retry: true, firstCorrect: false, durationMs: 400, hintUsed: true })
+  ];
+  const ma = SHT.learner.build(retriedWrong).byKp['library · 图书馆'];
+  assert('提示后仍错被单独记下来（以前这条证据丢了）',
+    ma && ma.retriedWrong === 1, ma && JSON.stringify({ rw: ma.retriedWrong, t: ma.tendency }));
+  assert('提示后仍错判成「没掌握」，不判成粗心',
+    ma && ma.tendency === 'unknown', ma && ma.tendency);
+
+  // 同样一题，先错后提示答对：只能算「看提示才会」，掌握概率必须低于一眼答对。
+  const retriedRight = retriedWrong.slice(0, 4).concat([
+    EV(5, 'q-b', 'library · 图书馆', 'pick', { index: 0 }),
+    EV(6, 'q-b', 'library · 图书馆', 'submit', { correct: true, final: true, retry: true, firstCorrect: false, durationMs: 900, hintUsed: true })
+  ]);
+  const mb = SHT.learner.build(retriedRight).byKp['library · 图书馆'];
+  const clean = [
+    EV(1, 'q-c', 'library · 图书馆', 'shown', {}),
+    EV(2, 'q-c', 'library · 图书馆', 'pick', { index: 0 }),
+    EV(3, 'q-c', 'library · 图书馆', 'submit', { correct: true, final: true, attemptIndex: 1, durationMs: 6000, hintUsed: false })
+  ];
+  const mc = SHT.learner.build(clean).byKp['library · 图书馆'];
+  assert('先错后提示答对，掌握概率低于独立答对',
+    mb && mc && mb.pKnown < mc.pKnown,
+    '提示后 ' + (mb && mb.pKnown) + ' vs 独立 ' + (mc && mc.pKnown));
+
+  // 先选 A、改 B、改 C，再一路秒错：有改选就不是手滑，不能被判成 slip。
+  const changed = [
+    EV(1, 'q-d', 'library · 图书馆', 'shown', {}),
+    EV(2, 'q-d', 'library · 图书馆', 'pick', { index: 0 }),
+    EV(3, 'q-d', 'library · 图书馆', 'change', { index: 1, prevIndex: 0 }),
+    EV(4, 'q-d', 'library · 图书馆', 'change', { index: 2, prevIndex: 1 }),
+    EV(5, 'q-d', 'library · 图书馆', 'submit', { correct: false, final: false, attemptIndex: 1, durationMs: 800, hintUsed: false })
+  ];
+  const md = SHT.learner.build(changed).byKp['library · 图书馆'];
+  assert('改选过再秒错，不算「手滑」',
+    md && md.fastWrong === 0 && md.tendency !== 'slip',
+    md && JSON.stringify({ fast: md.fastWrong, t: md.tendency }));
+
+  /*
+   * 权重侧：同一道题「提示后还是错」应该比「没提示、秒错」掉得更狠。
+   * 以前重试那枪耗时很短又被当成秒错，只降半格，两者降幅一样 —— 这是反的。
+   */
+  const wRetry = SHT.weights.build([{ kp: 'k', ability: 'vocab', correct: false, retried: true, durationMs: 400, changes: 0 }]);
+  const wSlip = SHT.weights.build([{ kp: 'k', ability: 'vocab', correct: false, retried: false, durationMs: 400, changes: 0 }]);
+  assert('提示后仍错的降幅大于没提示的秒错',
+    wRetry.kp.k.w < wSlip.kp.k.w,
+    '重试 ' + wRetry.kp.k.w + ' vs 秒错 ' + wSlip.kp.k.w);
+
+  /*
+   * 最关键的一条：权重算出来的难度档，必须真的换掉这一轮出题的层次。
+   * 以前 decide 先用掌握概率把层次定死，之后才改 cap 的数字，题一条没变。
+   */
+  const K = [
+    { id: 'k1', label: 'weak · 弱考点', ability: 'vocab', pathStage: 1, pathLabel: '阶段 1' },
+    { id: 'k2', label: 'strong · 强考点', ability: 'vocab', pathStage: 1, pathLabel: '阶段 1' },
+    { id: 'k3', label: 'mid · 中考点', ability: 'vocab', pathStage: 1, pathLabel: '阶段 1' }
+  ];
+  const cell = function (kp) {
+    return {
+      kp: kp, attempts: 3, correct: 3, wrong: 0, fastWrong: 0, slowWrong: 0,
+      guessRight: 0, retriedWrong: 0, retriedRight: 0, changes: 0, hintUsed: 0,
+      avgMs: 5000, pKnown: 0.8, tendency: 'solid', score: 10,
+      eventSeqs: [1, 2], qids: ['q1']
+    };
+  };
+  const solidModel = {
+    eventCount: 30, answeredCount: 3,
+    byKp: { 'weak · 弱考点': cell('weak · 弱考点'), 'strong · 强考点': cell('strong · 强考点'), 'mid · 中考点': cell('mid · 中考点') }
+  };
+  const ws = { version: 1, answered: 8, updatedAt: '', ability: { vocab: { w: 0.3, n: 8, correct: 2 } }, kp: {} };
+  const dLow = SHT.learner.decide(solidModel, { layer: 'A', kps: K, count: 2, capOverride: '认', weights: ws });
+  const dHigh = SHT.learner.decide(solidModel, { layer: 'A', kps: K, count: 2, capOverride: '表达', weights: ws });
+  assert('难度档按权重覆盖：低权重出「认」层',
+    dLow.levelCap.cap === '认' && dLow.items.every(i => i.level === '认'),
+    dLow.levelCap.cap + ' / ' + dLow.items.map(i => i.level).join(','));
+  assert('难度档按权重覆盖：高权重出「表达」层',
+    dHigh.levelCap.cap === '表达' && dHigh.items.every(i => i.level === '表达'),
+    dHigh.levelCap.cap + ' / ' + dHigh.items.map(i => i.level).join(','));
+  assert('原掌握概率算出的档留在记录里，方便核对为什么改档',
+    dLow.levelCap.source === 'weights' && dLow.levelCap.learnerCap === '表达',
+    JSON.stringify({ src: dLow.levelCap.source, learnerCap: dLow.levelCap.learnerCap }));
+
+  // 同一阶段里，权重最低的考点排最前面 —— 那是最该验的地方。
+  const ws2 = {
+    version: 1, answered: 9, updatedAt: '', ability: {},
+    kp: {
+      'weak · 弱考点': { w: 0.2, n: 3, correct: 0 },
+      'mid · 中考点': { w: 0.5, n: 3, correct: 2 },
+      'strong · 强考点': { w: 0.9, n: 3, correct: 3 }
+    }
+  };
+  const dOrder = SHT.learner.decide(solidModel, { layer: 'A', kps: K, count: 3, capOverride: '表达', weights: ws2 });
+  assert('同层里先出权重最低的考点',
+    dOrder.items[0] && dOrder.items[0].kp === 'weak · 弱考点',
+    dOrder.items.map(i => i.kp + '@' + i.evidence.weight).join(' , '));
+  assert('每条选题都写着出题当时的权重，能事后核对',
+    dOrder.items.every(i => typeof i.evidence.weight === 'number'));
+})();
+
 console.log('--- 权重接线（加载 app.js） ---');
 (function () {
   const handlers = {};
@@ -283,6 +396,16 @@ console.log('--- 权重接线（加载 app.js） ---');
   const saved = JSON.parse(disk['sht-minimal-test-v2'] || '{}');
   assert('权重随存档落盘（刷新不丢）', saved.weights && saved.weights.answered === 2,
     JSON.stringify(saved.weights || {}).slice(0, 80));
+
+  /*
+   * 闭环的最后一段：答完一轮，学生得看到「下一轮会怎么变」。
+   * 上面已经点完两题（一题对、一题提示后仍错），游标走到末尾，界面应该落在评价单上。
+   */
+  const summary = nodes['studentRoot'].innerHTML || '';
+  assert('答完一轮，评价单上写着下一轮难度会怎么变',
+    /下一轮(会难一点|会简单一点|难度不变)/.test(summary), summary.slice(0, 160));
+  assert('这句反馈带具体依据（答了几题、对了几题）',
+    /这一轮 \d+ 题答对 \d+ 题/.test(summary));
 })();
 
 console.log('\n' + (failed ? 'FAILED ' + failed : 'ALL PASS'));
