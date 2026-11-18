@@ -1788,6 +1788,18 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     nodes.studentRoot.innerHTML.slice(0, 60));
   assert('学生端不出现开发话语（配额 / 角色分工）',
     nodes.studentRoot.innerHTML.indexOf('配额') < 0 && nodes.studentRoot.innerHTML.indexOf('角色') < 0);
+  /*
+   * 单元名用课本原文。以前这里显示的是我们自己译的中文（titleZh），
+   * 学生对着书找不到「第 6 单元 · 见见我的家人」这种写法。
+   */
+  assert('单元标题用课本原文，不用自己译的中文',
+    (function () {
+      const bk = SHT.BOOKS.get(st0.bookId) || SHT.BOOKS.current();
+      const u = bk.units[0];
+      const html = nodes.studentRoot.innerHTML;
+      return !!u && !!u.title && html.indexOf(u.title) >= 0 && (!u.titleZh || html.indexOf(u.titleZh) < 0);
+    })(),
+    nodes.studentRoot.innerHTML.slice(0, 200));
 
   // 出题：模型桩按 计划 → 题 → 验证 的顺序应答；选项取本单元真实词，否则代码闸会判假干扰项
   let stCalls = 0;
@@ -1838,6 +1850,10 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     stCalls >= 2 && nodes.studentRoot.innerHTML.indexOf('第 1 / 1 题') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf(stWord) >= 0,
     '模型调用 ' + stCalls + ' 次 / ' + nodes.studentRoot.innerHTML.slice(0, 80));
+  // 上手快：没选就点不动提交，少一次「点了没反应」的试探
+  assert('没选选项时提交按钮是禁用的',
+    /data-st-action="submit"[^>]*disabled/.test(nodes.studentRoot.innerHTML),
+    nodes.studentRoot.innerHTML.slice(0, 200));
 
   // 答错：选第 2 项
   fire('studentRoot', 'click', {
@@ -1851,9 +1867,9 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   for (let i = 0; i < 300 && nodes.studentRoot.innerHTML.indexOf('答错了') < 0; i += 1) {
     await Promise.resolve();
   }
-  assert('答错后给判定、正确答案与去向说明',
+  assert('答错后给判定、正确答案与一句去向说明',
     nodes.studentRoot.innerHTML.indexOf('答错了') >= 0 &&
-    nodes.studentRoot.innerHTML.indexOf('记下了') >= 0,
+    nodes.studentRoot.innerHTML.indexOf('记下') >= 0,
     nodes.studentRoot.innerHTML.slice(0, 120));
 
   fire('studentRoot', 'click', {
@@ -1864,6 +1880,27 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     nodes.studentRoot.innerHTML.indexOf('轮结束') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf('data-st-action="next-round"') >= 0,
     nodes.studentRoot.innerHTML.slice(0, 120));
+
+  /*
+   * 会话记录：界面不展示，但「这次练习多久、成绩怎么走、难度有没有动」
+   * 只能从这上面算。没有它，之后想复盘学习曲线就只剩零散事件。
+   */
+  const stSess = SHT.devAudit.state();
+  const sess0 = (stSess.sessions || [])[0];
+  assert('会话记录：点开始就建一条，起止/机型/起始水平齐全',
+    !!sess0 && sess0.id && sess0.startedAt && !sess0.endedAt &&
+    sess0.bookId === stSess.bookId && sess0.unitId === stSess.unitId &&
+    !!sess0.startLevel,
+    JSON.stringify(sess0 || {}).slice(0, 160));
+  assert('会话记录：这一轮出了几题、答对几道、用了哪些决策规则都落进去',
+    !!sess0 && sess0.rounds.length === 1 &&
+    sess0.rounds[0].count === 1 && (sess0.rounds[0].right + sess0.rounds[0].wrong) === 1 &&
+    !!sess0.rounds[0].answeredAt && (sess0.rounds[0].rules || []).length >= 1,
+    JSON.stringify(sess0 && sess0.rounds[0] || {}).slice(0, 160));
+  assert('这些记录不上界面（学生看不到自己的行为统计与规则编号）',
+    nodes.studentRoot.innerHTML.indexOf('profileChanges') < 0 &&
+    nodes.studentRoot.innerHTML.indexOf('R-') < 0 &&
+    nodes.studentRoot.innerHTML.indexOf('ss-') < 0);
 
   // 下一轮：错题要进 brief，probe 要指回第一轮那道题
   const beforeNext = stCalls;
@@ -1922,6 +1959,20 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     nodes.studentRoot.innerHTML.indexOf('没能出成题') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf('data-st-action="start"') >= 0,
     nodes.studentRoot.innerHTML.slice(0, 100));
+
+  // 会话封口：真实点过「开始」的这份状态里，重新开始要记结束时间与结束档
+  const stEnd = SHT.devAudit.state();
+  stEnd.stGroup = 2;
+  stEnd.round = 2;
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'restart' } } : null),
+    matches() { return false; }
+  });
+  assert('重新开始给会话封口：记结束时间、结束档与原因',
+    (stEnd.sessions || []).some(function (s) {
+      return !!s.endedAt && s.endReason === 'restart' && !!s.endLevel;
+    }),
+    JSON.stringify((stEnd.sessions || []).slice(-1)));
 
   // 收尾：模型桩换回真的，别影响后面的断言
   SHT.llm.call = REAL_CALL;
@@ -2211,10 +2262,13 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   stA.stGroup = 2;
   stA.rounds[2].questions = [qA];
   stA.rounds[2].practice.cursor = 1;
-  stClick('level', { id: 'B' });
+  stClick('level', { id: 'A' });
   const sumHtml = nodes.studentRoot.innerHTML;
+  assert('画像变更留痕：改水平写进 profileLog（界面不显示这条）',
+    (stA.profileLog || []).some(function (x) { return x.kind === 'level' && x.to === 'A'; }) &&
+    nodes.studentRoot.innerHTML.indexOf('profileLog') < 0,
+    JSON.stringify((stA.profileLog || []).slice(-2)));
   assert('两组两轮跑完给终态，不再有「再练一组」的无限循环',
-    sumHtml.indexOf('全部完成') >= 0 &&
     sumHtml.indexOf('data-st-action="restart"') >= 0 &&
     sumHtml.indexOf('data-st-action="regroup"') < 0 &&
     sumHtml.indexOf('第 2 轮结束') >= 0,

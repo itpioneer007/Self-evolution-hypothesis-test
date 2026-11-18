@@ -199,6 +199,18 @@
       stGroup: 1,
       // 上一次出题失败的原因。学生端没有「失败记录」页，得在画像页上直接说清楚
       stFail: '',
+      /*
+       * 画像变更日志与练习会话摘要：界面不展示，导出与分析要读。
+       *   profileLog：学生每改一次教材/单元/水平记一条（from → to）。
+       *     改得越多，越说明画像这一层有选择困难，是可用性问题最直接的证据。
+       *   sessions：一次练习从「开始」到「重新开始」的摘要（起止时间、起始水平、
+       *     每轮成绩、决策规则、难度档变化、产生多少条轨迹）。
+       *     学习曲线、调整是否有效、题目难度是否跟上，都只能从这上面算。
+       * 两者都不进学生界面：学生不需要看自己的行为统计。
+       */
+      profileLog: [],
+      sessions: [],
+      sessionSeq: 0,
       checkLayer: 0,
       round: 1,
       activeNo: 1,
@@ -308,6 +320,10 @@
     if (!parsed.levelCap) parsed.levelCap = null;
     if (typeof parsed.decisionReason !== 'string') parsed.decisionReason = '';
     if (!Number.isFinite(parsed.stGroup)) parsed.stGroup = 1;
+    // 记录类字段：老存档补空表，不反推（反推出来的不是证据）
+    if (!Array.isArray(parsed.profileLog)) parsed.profileLog = [];
+    if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
+    if (!Number.isFinite(parsed.sessionSeq)) parsed.sessionSeq = parsed.sessions.length;
     return parsed;
   }
 
@@ -1728,6 +1744,8 @@
     // 下一题的计时从它出现的这一刻开始
     p.shownAt = 0;
     p.shownEventFor = '';
+    // 这一轮答完了：把成绩补进会话记录（只补一次），之后才轮得到「看本轮结果」
+    if (p.cursor >= practiceQuestions().length) noteRoundDone();
     save(); renderAll();
   }
 
@@ -2192,11 +2210,15 @@
         '" data-st-action="book" data-id="' + b.id + '">' + esc(b.shortName || b.name) +
         '</button>';
     }).join('');
+    /*
+     * 单元标题用课本原文。它是教材内容，不是我们编的界面术语，译成中文反而
+     * 让学生对不上书上的目录。titleZh 留在数据里给检索与分析用，不上界面。
+     */
     const unitChips = book.units.map(function (u, i) {
-      const zh = u.titleZh ? ' · ' + u.titleZh : '';
+      const title = u.title ? ' · ' + u.title : '';
       return '<button type="button" class="st-chip' + (u.id === state.unitId ? ' is-on' : '') +
         '" data-st-action="unit" data-id="' + u.id + '">第 ' + (u.no || i + 1) + ' 单元' +
-        esc(zh) + '</button>';
+        esc(title) + '</button>';
     }).join('');
     const levelChips = ST_LEVELS.map(function (l) {
       return '<button type="button" class="st-chip' + (state.learningLayer === l.id ? ' is-on' : '') +
@@ -2229,9 +2251,9 @@
   }
 
   function stGeneratingHtml() {
+    // 等待页只说「在做什么」。上一轮错什么、这轮怎么补，属于机制解释，写完题自然见分晓。
     return '<div class="st-page"><div class="st-card is-center">' +
       '<h2 class="st-title">正在出题</h2>' +
-      '<p class="st-sub">' + (state.round > 1 ? '上一轮做错的，这轮会再考一次。' : '') + '马上就好。</p>' +
       '<div class="st-bar"><span style="width:62%"></span></div>' +
       '<div class="st-step">' + esc(stStepText(state.llmStep)) + '</div>' +
     '</div></div>';
@@ -2276,9 +2298,13 @@
      * 看起来像系统在重复自己。现在只留一句真正的解析，没有就不显示。
      */
     const why = String(q.analysis || '').trim();
+    /*
+     * 一句「然后呢」就够了。回练答对值得说一句（他确实把这个考点补上了），
+     * 其余情况只回答「记没记住」，不解释系统内部怎么排下一轮。
+     */
     const tip = r.correct
       ? (q.probe ? '上次错过，这次对了。' : '')
-      : (q.probe ? '还是错，之后再练一次。' : '记下了，下次换个问法再考。');
+      : (q.probe ? '这个考点再练一次。' : '已记下。');
     return '<div class="st-verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="st-verdict-top">' +
         '<span class="st-badge">' + (r.correct ? '答对了' : '答错了') + '</span>' +
@@ -2314,7 +2340,9 @@
         (r
           ? '<button type="button" class="st-primary" data-st-action="next">' +
               (last ? '看本轮结果' : '下一题') + '</button>'
-          : '<button type="button" class="st-primary" data-st-action="submit"' + (p.grading ? ' disabled' : '') + '>' +
+          // 没选就不能提交：少一次「点了没反应」的试探，也少一条空作答
+          : '<button type="button" class="st-primary" data-st-action="submit"' +
+              (p.grading || (!isOpen && p.picked == null) ? ' disabled' : '') + '>' +
               (p.grading ? '判分中…' : '提交') + '</button>') +
       '</div>' +
     '</div></div>';
@@ -2352,19 +2380,15 @@
     }
     return '<div class="st-page"><div class="st-card">' +
       '<div class="st-sum">' +
-        '<div class="st-eyebrow">第 ' + state.round + ' 轮结束' + (finished ? ' · 全部完成' : '') + '</div>' +
+        '<div class="st-eyebrow">第 ' + state.round + ' 轮结束</div>' +
         '<div class="st-sum-num">' + s.right + '<small> / ' + s.done + ' 答对</small></div>' +
         '<div class="st-sum-label">' + (s.wrong ? '有 ' + s.wrong + ' 道要再练' : '这一轮全对') + '</div>' +
       '</div>' +
       capLine +
+      // 列表本身就是「哪几道要再练」，不再补一句机制说明
       (wrongKps.length
-        ? '<div class="st-sum-list">' + items + '</div>' +
-          '<div class="st-tip">' + (finished
-            ? '这次就到这儿。下次可以先练这几个。'
-            : '下一轮换个问法再考一次。') + '</div>'
-        : '<div class="st-sum-empty">' + (finished
-            ? '这一轮全对，这个单元练完了。'
-            : '这一轮全对。下一轮换新题再验一次。') + '</div>') +
+        ? '<div class="st-sum-list">' + items + '</div>'
+        : '<div class="st-sum-empty">' + (finished ? '这个单元练完了。' : '这一轮全对。') + '</div>') +
       '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
   }
@@ -2383,10 +2407,114 @@
 
   /* ---------- 学生端：动作 ---------- */
 
+  /*
+   * 会话与画像变更的记录。
+   *
+   * 这些数据一律不上界面：学生不需要看自己的行为统计，界面上多一行解释
+   * 只是噪音。但它们是之后做分析与改进的唯一依据 ——
+   *   「这次练习从 12:30 到 12:48，答了 10 题，起始基础，结束时升到了中等」
+   *   「画像改了 5 次才开练，说明这一层选择让人犹豫」
+   * 这类结论没法从单条作答看出来，只能从会话级数据算。
+   */
+  function sessionList() {
+    if (!Array.isArray(state.sessions)) state.sessions = [];
+    return state.sessions;
+  }
+
+  function activeSession() {
+    const list = sessionList();
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (!list[i].endedAt) return list[i];
+    }
+    return null;
+  }
+
+  function beginSession() {
+    if (activeSession()) closeSession('restart');
+    state.sessionSeq = Number(state.sessionSeq || 0) + 1;
+    const s = {
+      id: 'ss-' + state.sessionSeq,
+      startedAt: new Date().toISOString(),
+      endedAt: '',
+      endReason: '',
+      bookId: state.bookId,
+      unitId: state.unitId,
+      startLevel: state.learningLayer,
+      endLevel: '',
+      /*
+       * 起始上限取「这一档默认能考到哪一层」，结束上限取本轮实际算出来的上限。
+       * 两个值不一样，才说明难度真的跟着表现动了；只记档位看不出这件事。
+       */
+      startCap: (SHT.progress.CAP_OF_LAYER || {})[state.learningLayer] || '',
+      endCap: '',
+      // 这次练习里改过几次画像（教材/单元/水平）
+      profileChanges: 0,
+      // 本次产生的事件序号区间，能回查轨迹
+      eventFrom: Number(state.eventSeq || 0) + 1,
+      eventTo: 0,
+      rounds: []
+    };
+    sessionList().push(s);
+    if (sessionList().length > 50) state.sessions = sessionList().slice(-50);
+    return s;
+  }
+
+  function closeSession(reason) {
+    const s = activeSession();
+    if (!s) return null;
+    s.endedAt = new Date().toISOString();
+    s.endReason = reason || '';
+    s.endLevel = state.learningLayer;
+    s.endCap = (state.levelCap && state.levelCap.cap) || '';
+    s.eventTo = Number(state.eventSeq || 0);
+    return s;
+  }
+
+  /**
+   * 画像变更。kind = book / unit / level。
+   * 只在真的换了值时记一条，点同一个选项不算。
+   */
+  function noteProfile(kind, from, to) {
+    if (String(from == null ? '' : from) === String(to == null ? '' : to)) return;
+    state.profileLog = (state.profileLog || []).concat([{
+      ts: new Date().toISOString(),
+      kind: kind,
+      from: String(from == null ? '' : from),
+      to: String(to == null ? '' : to)
+    }]).slice(-200);
+    const s = activeSession();
+    if (s) s.profileChanges = Number(s.profileChanges || 0) + 1;
+  }
+
+  /** 一轮题出成时落一条；答完再由 noteRoundDone 补成绩。 */
+  function noteSessionRound(rec) {
+    const s = activeSession();
+    if (!s) return;
+    s.rounds.push(Object.assign({ at: new Date().toISOString() }, rec));
+  }
+
+  function noteRoundDone() {
+    const s = activeSession();
+    if (!s || !s.rounds.length) return;
+    const r = s.rounds[s.rounds.length - 1];
+    if (r.answeredAt) return;
+    const p = practiceOf();
+    const right = p.attempts.filter(function (a) { return a.correct; }).length;
+    r.right = right;
+    r.wrong = p.attempts.length - right;
+    r.answeredAt = new Date().toISOString();
+    r.events = Math.max(0, Number(state.eventSeq || 0) - Number(s.eventFrom || 0));
+  }
+
   // 换教材/单元：只重建题目与计划，错题记录跟着学生走，不清
   function applyProfile(bookId, unitId) {
     const leaving = activePracticeQuestion();
     if (leaving) emitEvent('leave', leaving, { reason: 'unit-change' });
+    // 画像变了要留痕：换得多说明这一层让人犹豫，是可用性证据，不是噪音
+    if (bookId && bookId !== state.bookId) noteProfile('book', state.bookId, bookId);
+    if (unitId && unitId !== state.unitId) noteProfile('unit', state.unitId, unitId);
+    // 换单元等于换一次练习：旧会话封口，新题重新计时
+    closeSession('unit-change');
     const b = SHT.BOOKS.get(bookId) || SHT.BOOKS.current();
     const unit = b.getUnit(unitId) || b.units[0];
     SHT.setBook(b.meta.id, unit.id);
@@ -2407,6 +2535,8 @@
   function stStart() {
     if (!SHT.llm.isReady()) { openModel(); toast('先在右上角「设置」里填好密钥'); return; }
     state.stStarted = true;
+    // 一次练习从这里开始计时；后面两组两轮的题和成绩都记在这条会话上
+    beginSession();
     const r = currentRound();
     r.questions = [];
     r.practice = blankPractice();
@@ -2443,6 +2573,8 @@
 
   // 全部组跑完：回到画像页开新的一组。轨迹、错题、考点推进、历史题都跟着学生走，不清。
   function stRestart() {
+    // 这次练习到此为止：会话摘要封口，下一条从「开始」重新计
+    closeSession('restart');
     state.stGroup = 1;
     state.stStarted = false;
     state.round = 1;
@@ -3048,6 +3180,23 @@
         round.questions = res.questions.map(function (q, i) {
           return Object.assign({}, q, { no: i + 1 });
         });
+        /*
+         * 会话记录：这一轮出了几题、用了哪些决策规则、有几题是从错题长出来的、
+         * 有几格没出成。界面不显示，但「题目是不是真按他的轨迹出的」只能靠这些核。
+         */
+        noteSessionRound({
+          group: state.stGroup,
+          no: state.round,
+          count: round.questions.length,
+          // 规则取本轮真正算出来的决策单，不从 plans 反推：
+          // 第一轮没有历史可挂时 plans 上没有 decision，但选题规则其实已经生效了
+          rules: (decisionSet.items || []).map(function (d) { return d.rule; })
+            .filter(function (x, i, arr) { return x && arr.indexOf(x) === i; }),
+          cap: (decisionSet.levelCap && decisionSet.levelCap.cap) || '',
+          probes: (res.questions || []).filter(function (q) { return q.parentQid; }).length,
+          failures: (res.failures || []).length,
+          right: 0, wrong: 0, answeredAt: ''
+        });
         // 跨轮、跨组去重的历史。只留能算内容指纹与格子的字段，别把整份题塞进存档。
         state.questionHistory = (state.questionHistory || []).concat(
           round.questions.map(function (q) {
@@ -3132,7 +3281,12 @@
         return;
       }
       if (a === 'unit') { applyProfile(state.bookId, b.dataset.id); return; }
-      if (a === 'level') { state.learningLayer = b.dataset.id; save(); renderAll(); return; }
+      if (a === 'level') {
+        noteProfile('level', state.learningLayer, b.dataset.id);
+        state.learningLayer = b.dataset.id;
+        save(); renderAll();
+        return;
+      }
       if (a === 'start') { stStart(); return; }
       if (a === 'pick') { pickOption(Number(b.dataset.index)); return; }
       if (a === 'submit') { submitAnswer(); return; }
