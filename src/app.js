@@ -141,6 +141,8 @@
       view: 'student',
       // 学生端是否已经开始过一次（决定停在「选画像」还是直接续答）
       stStarted: false,
+      // 上一次出题失败的原因。学生端没有「失败记录」页，得在画像页上直接说清楚
+      stFail: '',
       checkLayer: 0,
       round: 1,
       activeNo: 1,
@@ -237,6 +239,7 @@
     // 老存档没有视图字段：一律先给到学生端（它才是主入口），要看内部再点「开发视图」
     if (parsed.view !== 'dev' && parsed.view !== 'student') parsed.view = 'student';
     if (typeof parsed.stStarted !== 'boolean') parsed.stStarted = false;
+    if (typeof parsed.stFail !== 'string') parsed.stFail = '';
     return parsed;
   }
 
@@ -2101,6 +2104,7 @@
       '<button type="button" class="st-primary" data-st-action="start">开始答题</button>' +
       '<div class="st-foot">每轮 ' + countFor(1) + ' 道题 · 答完直接进下一轮</div>' +
       (noKey ? '<div class="st-foot is-warn">还没配置模型：点右上角「模型」填 API Key 才能出题</div>' : '') +
+      (state.stFail ? '<div class="st-foot is-warn">' + esc(state.stFail) + '</div>' : '') +
     '</div></div>';
   }
 
@@ -2886,6 +2890,7 @@
         round.practice = blankPractice();
         state.activeNo = 1;
         state.agent = 'execute';
+        state.stFail = '';
         const left = res.plans.length - res.questions.length;
         toast('出了 ' + res.questions.length + ' 题' +
           (res.benchUsed ? '（替补顶上 ' + res.benchUsed + ' 次）' : '') +
@@ -2901,7 +2906,9 @@
         toast('规划好了 ' + res.plans.length + ' 条，格子已分配' +
           (res.bench && res.bench.length ? '，另备 ' + res.bench.length + ' 条替补' : ''));
       } else {
-        toast('这一轮没出成，看失败记录里的原因');
+        // 学生端没有「失败记录」页，原因要能在画像页上直接看到
+        state.stFail = '这次没能出成题（可能是网络或模型繁忙），再点一次「开始答题」试试。';
+        if (state.view !== 'student') toast('这一轮没出成，看失败记录里的原因');
         state.agent = 'course';
       }
     } catch (err) {
@@ -2909,7 +2916,8 @@
         at: new Date().toISOString(), stage: 'generate', attempt: 1,
         codes: ['EXCEPTION'], reason: String(err && err.message || err), detail: ''
       }].concat(state.failures || []).slice(0, 200);
-      toast('出错了：' + (err && err.message ? err.message : err));
+      state.stFail = '出题时出错了：' + String(err && err.message || err);
+      if (state.view !== 'student') toast('出错了：' + (err && err.message ? err.message : err));
     } finally {
       if (token === runToken) {
         state.llmBusy = false;

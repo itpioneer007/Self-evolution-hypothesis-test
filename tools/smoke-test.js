@@ -1868,6 +1868,23 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     nodes.studentRoot.innerHTML.indexOf('出题日志') < 0 &&
     nodes.studentRoot.innerHTML.indexOf('审计') < 0);
 
+  // 出题失败时不能静默退回首页：学生端没有「失败记录」页，原因要写在画像页上
+  SHT.llm.call = async function (opts) {
+    if (opts.role === 'plan') return { ok: false, errorType: 'network', message: '网络超时' };
+    return { ok: false, message: '网络超时' };
+  };
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'regroup' } } : null),
+    matches() { return false; }
+  });
+  for (let i = 0; i < 300 && nodes.studentRoot.innerHTML.indexOf('没能出成题') < 0; i += 1) {
+    await Promise.resolve();
+  }
+  assert('出题失败时在画像页给出原因，并允许再试一次',
+    nodes.studentRoot.innerHTML.indexOf('没能出成题') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('data-st-action="start"') >= 0,
+    nodes.studentRoot.innerHTML.slice(0, 100));
+
   // 收尾：模型桩换回真的，别影响后面的断言
   SHT.llm.call = REAL_CALL;
 
