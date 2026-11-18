@@ -83,6 +83,11 @@
   }
 
   function distractorFor(plan, i) {
+    // 学习者模型给这条计划指定了干扰项类型时优先用它：这是有证据的决策，
+    // 比按「题号取模」或按模型自己写的 cause 猜更靠谱。
+    if (plan && plan.cellDistractor && SHT.DISTRACTORS.indexOf(plan.cellDistractor) >= 0) {
+      return plan.cellDistractor;
+    }
     const causes = SHT.ERROR_TO_CELL || [];
     const hit = causes.filter(function (c) {
       return plan.cause && String(plan.cause).indexOf(c.pattern) >= 0;
@@ -366,6 +371,22 @@
     // 考点推进：会过的考点退役、升层的考点带上目标层次、学生分层给层次上限
     const progress = (o.progress && o.progress.points) ? o.progress : SHT.progress.blank();
     const hint = SHT.progress.planHint(progress, { layer: (o.stage && o.stage.layer) || 'B', scope: scope });
+    /*
+     * 层次上限改由学习者模型给：planHint 的 cap 是画像页选的固定 A/B/C，
+     * 学生连对几轮也不会变。levelCap 由真实作答轨迹算，会按表现升/降一档。
+     */
+    if (o.levelCap && o.levelCap.cap && SHT.LEVELS.indexOf(o.levelCap.cap) >= 0) {
+      hint.cap = o.levelCap.cap;
+      hint.levelCapSource = 'learner';
+    }
+
+    // 跨轮去重：以前 buildExclusionList / contentFingerprint 都写好了却没接进来，
+    // used 只装当前轮已有的题，模型把上一轮的题干照抄一遍也照样过闸。
+    const history = (o.history || []).filter(function (q) { return q && q.prompt; });
+    const historyFps = Object.create(null);
+    history.forEach(function (q) { historyFps[SHT.contentFingerprint(q)] = true; });
+    const usedFps = Object.create(null);
+    const decisions = o.decisions || (o.brief && o.brief.decisions) || [];
     const scopeAlive = scope.filter(function (s) { return hint.retired.indexOf(s.label) < 0; });
     hint.retiredInScope.forEach(function (kp) {
       failures.push(fail({
@@ -560,8 +581,31 @@
     // 替补顶上来时同样要对上那一枪，否则「他到底是不是真会了」配不成对
     bench.forEach(markProbe);
 
+    /*
+     * 代码决策覆盖模型的「凭感觉」：层次与干扰项类型由学习者模型按轨迹算出来，
+     * 挂到 plan 上，生成时会一并写进题里。模型仍负责写题面，但不再决定考多难。
+     * matchPriority 的三层对齐（exact / contain / near）复用错题挂接那套，
+     * 模型把考点措辞改了也还能对上；对不上就保留模型给的值，不硬套。
+     */
+    const applyDecision = function (p) {
+      if (!decisions.length) return;
+      const hit = SHT.pipeline.matchPriority(p, decisions);
+      if (!hit || !hit.item) return;
+      const d = hit.item;
+      if (SHT.LEVELS.indexOf(d.level) >= 0) p.level = d.level;
+      if (SHT.DISTRACTORS.indexOf(d.distractor) >= 0) p.cellDistractor = d.distractor;
+      p.decision = {
+        kp: d.kp, rule: d.rule, ruleText: d.ruleText, action: d.action,
+        evidence: d.evidence, reason: d.reason, match: hit.match
+      };
+    };
+    plans.forEach(applyDecision);
+    bench.forEach(applyDecision);
+
     // ---------- 分格（代码，不让模型碰） ----------
-    const used = (o.existing || []).map(function (q) { return q.cell; }).filter(Boolean);
+    // 已用格子 = 本轮已有题 + 历史所有轮。历史格子进 used，跨轮换格子才真的生效。
+    const used = (o.existing || []).map(function (q) { return q.cell; }).filter(Boolean)
+      .concat(history.map(function (q) { return q.cell; }).filter(Boolean));
     plans.forEach(function (p, i) {
       p.cell = SHT.pickCell(p, used, unit, i);
       used.push(p.cell);
@@ -765,6 +809,9 @@
           probe: plan.probe || null,
           // 审计用：这道题从第一轮哪道错题演化来。空 = 不是变体（广度探索那一轮）
           parentQid: (plan.probe && plan.probe.parentQid) || '',
+          // 凭什么出这道题：命中的规则、参与计算的数值、原始事件 seq。
+          // 导出与审计台靠它把「题目 → 决策 → 轨迹」串成一条可回查的证据链。
+          decision: plan.decision || null,
           // 日志要显示「什么时候出的这道题」，生成时刻在这里落下
           createdAt: now(),
           checks: {},
@@ -781,6 +828,21 @@
         if (needsAudio && !question.audioText && /^[A-Za-z'’\- ]+$/.test(question.answer)) {
           question.audioText = question.answer;
           question.checks.__audioFilled = 'auto';
+        }
+
+        // 内容指纹闸：题干 + 选项 + 答案全同就是「上一轮那道题又来一遍」。
+        // 格子不同但题面照抄也拦得住 —— 只靠 usedCells 管不住这种重复。
+        const fp = SHT.contentFingerprint(question);
+        if (historyFps[fp] || usedFps[fp]) {
+          failures.push(fail({
+            stage: 'validate', planKp: plan.kp, attempt: attempt,
+            codes: ['V_DUP'], reason: '与之前出过的题内容完全相同，退回重出',
+            detail: JSON.stringify({ prompt: question.prompt, options: question.options, answer: question.answer })
+          }));
+          feedback = '这道题和之前出过的一模一样（题干 / 选项 / 答案全同）。必须换题面、换选项或换答案，不能只调整顺序。';
+          slotCodes.push('V_DUP');
+          onEvent({ phase: 'reject', index: i, codes: ['V_DUP'], text: '第 ' + (i + 1) + ' 题与历史题重复，退回重出' });
+          continue;
         }
 
         // 代码闸：有通过权
@@ -913,6 +975,7 @@
         // 换过考点或替补顶上来的，plans 里那一格要跟着换，否则下游按 plan.kp 记账会对不上
         plans[i] = plan;
         questions.push(adopted);
+        usedFps[SHT.contentFingerprint(adopted)] = true;
         onEvent({ phase: 'adopted', index: i, text: '第 ' + (i + 1) + ' 题通过' });
       } else {
         const tried = (switched ? '换过相近考点、' : '') + (benched || plan.fromBench ? '替补也顶上过，' : '');

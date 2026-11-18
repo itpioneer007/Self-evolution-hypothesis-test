@@ -118,8 +118,43 @@ rows.forEach((r) => {
   }
 });
 
-/* ---------- 6 结论 ---------- */
-hr('六 可以说出口的结论');
+/* ---------- 6 选题凭据：凭什么出这些题 ---------- */
+hr('六 凭什么出这些题（决策证据链）');
+const decisions = Array.isArray(j.decisions) ? j.decisions : [];
+const cap = j.levelCap || null;
+if (cap) {
+  line('水平上限：' + cap.cap + '（起始 ' + cap.startCap + '，' +
+    (cap.delta > 0 ? '按表现升 1 档' : cap.delta < 0 ? '按表现降 1 档' : '持平') +
+    '；基于 ' + cap.basedOn + ' 次作答' +
+    (cap.avgPKnown == null ? '' : '，平均掌握概率 ' + Math.round(cap.avgPKnown * 100) + '%') + '）');
+}
+if (!decisions.length) {
+  line('这份导出没有 decisions（老版本文件）。无法核对「凭什么出这题」，请重新导出一次。');
+} else {
+  decisions.forEach(function (d, i) {
+    const ev = d.evidence || {};
+    line('D' + (i + 1) + '　' + shortKp(d.kp) + '　[' + (d.rule || '无规则') + ']　' +
+      (d.level || '') + ' 层 / ' + (d.distractor || ''));
+    line('    数值：掌握概率 ' + (ev.pKnown == null ? '未测' : Math.round(ev.pKnown * 100) + '%') +
+      ' · 作答 ' + (ev.attempts || 0) + ' 次（对 ' + (ev.correct || 0) + ' / 错 ' + (ev.wrong || 0) + '）' +
+      ' · 秒错 ' + (ev.fastWrong || 0) + ' · 久想仍错 ' + (ev.slowWrong || 0) +
+      ' · 改选 ' + (ev.changes || 0) + ' · 提示 ' + (ev.hintUsed || 0) + ' · 平均 ' + (ev.avgMs || 0) + 'ms');
+    const seqs = ev.eventSeqs || [];
+    const found = (j.events || []).filter(function (e) { return seqs.indexOf(e.seq) >= 0; }).length;
+    line('    凭据：事件 seq ' + (seqs.length ? seqs.slice(-8).join(',') : '（无，未测考点）') +
+      (seqs.length ? '，本文件里能查到 ' + found + ' / ' + seqs.length + ' 条' : ''));
+    line('    判据：' + (d.ruleText || ''));
+  });
+  const withDecision = qs.filter(function (q) { return q.decision; }).length;
+  line('题面核对：本轮 ' + qs.length + ' 道题里，' + withDecision + ' 道带着同一份决策记录。');
+  if (qs.length && withDecision < qs.length) {
+    line('注意：有题没挂上决策，多半是模型改写了考点名导致没匹配上。');
+  }
+}
+line('');
+
+/* ---------- 7 结论 ---------- */
+hr('七 可以说出口的结论');
 const canProve = !!(prev && Array.isArray(wc));
 line('本轮 ' + qs.length + ' 道题里，' + hit + ' 道挂接到历史错题（parentQid 非空）。');
 if (hit > 0 && canProve) {

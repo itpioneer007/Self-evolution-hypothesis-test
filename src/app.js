@@ -180,6 +180,12 @@
        */
       events: [],
       eventSeq: 0,
+      // 本轮的选题决策（含规则、数值证据、原始事件 seq）与由轨迹算出的水平上限
+      decisions: [],
+      levelCap: null,
+      decisionReason: '',
+      // 跨轮/跨组出过的题。只存能算指纹与格子的字段，供下一轮去重
+      questionHistory: [],
       tab: 'agents',
       agent: 'course',
       /*
@@ -189,6 +195,8 @@
       view: 'student',
       // 学生端是否已经开始过一次（决定停在「选画像」还是直接续答）
       stStarted: false,
+      // 第几组练习。一组 = 两轮，最多 MAX_GROUPS 组，跑完给终态，不再无限「再练一组」
+      stGroup: 1,
       // 上一次出题失败的原因。学生端没有「失败记录」页，得在画像页上直接说清楚
       stFail: '',
       checkLayer: 0,
@@ -295,6 +303,11 @@
         return Math.max(n, Number(e && e.seq) || 0);
       }, 0);
     }
+    if (!Array.isArray(parsed.decisions)) parsed.decisions = [];
+    if (!Array.isArray(parsed.questionHistory)) parsed.questionHistory = [];
+    if (!parsed.levelCap) parsed.levelCap = null;
+    if (typeof parsed.decisionReason !== 'string') parsed.decisionReason = '';
+    if (!Number.isFinite(parsed.stGroup)) parsed.stGroup = 1;
     return parsed;
   }
 
@@ -2131,11 +2144,20 @@
    * 所以两边的作答、判分、错题落账完全一致，不存在两套数据。
    * ============================================================ */
 
+  /*
+   * A/B/C 是算法里的分层：A 层上限「表达」、认证阈值 90，C 层上限「辨」、阈值 70
+   * （见 core/progress.js 的 CAP_OF_LAYER 与 core/wrongBook.js 的 stopThreshold）。
+   * 以前这里的标签写反了：A 标成「基础」、C 标成「较好」，
+   * 结果选「基础」的学生被按最高层出题。id 必须跟算法语义对齐，只改显示文字没用。
+   */
   const ST_LEVELS = [
-    { id: 'A', label: '基础', note: '先跟着课本走' },
+    { id: 'C', label: '基础', note: '先跟着课本走' },
     { id: 'B', label: '中等', note: '课内正常进度' },
-    { id: 'C', label: '较好', note: '想多练一点' }
+    { id: 'A', label: '较好', note: '想多练一点' }
   ];
+
+  // 一组 = 两轮。跑完最多两组就给终态，不再无限「再练一组」。
+  const MAX_GROUPS = 2;
 
   function stQuestions() { return practiceQuestions(); }
 
@@ -2170,12 +2192,12 @@
     return '<div class="st-page"><div class="st-card">' +
       '<div class="st-eyebrow">开始前先选一下</div>' +
       '<h1 class="st-title">今天练哪个单元？</h1>' +
-      '<p class="st-sub">选好教材、单元和你的水平，系统会按这些出题；上一轮做错的考点会被优先再考一次。你只管答题。</p>' +
+      '<p class="st-sub">选好教材、单元和起始水平。系统会按答题表现调整难度：做错的考点换个问法再考，连续答对就往上升一层。你只管答题。</p>' +
       stField('教材', bookChips) +
       stField('单元', unitChips, ' is-grid') +
-      stField('我的水平', levelChips) +
+      stField('起始水平', levelChips) +
       '<button type="button" class="st-primary" data-st-action="start">开始答题</button>' +
-      '<div class="st-foot">每轮 ' + countFor(1) + ' 道题 · 答完直接进下一轮</div>' +
+      '<div class="st-foot">每轮 ' + countFor(1) + ' 道题 · 一组两轮，最多 ' + MAX_GROUPS + ' 组</div>' +
       (noKey ? '<div class="st-foot is-warn">还没配置模型：点右上角「模型」填 API Key 才能出题</div>' : '') +
       (state.stFail ? '<div class="st-foot is-warn">' + esc(state.stFail) + '</div>' : '') +
     '</div></div>';
@@ -2314,23 +2336,45 @@
       return '<div class="st-sum-item"><span class="dot">·</span><span>' + esc(k) + '</span></div>';
     }).join('');
     const isLastRound = state.round >= 2;
+    const isLastGroup = state.stGroup >= MAX_GROUPS;
+    const finished = isLastRound && isLastGroup;
+    const cap = state.levelCap;
+    const capLine = cap
+      ? '<div class="st-tip">当前水平上限「' + esc(cap.cap) + '」' +
+        (cap.delta > 0
+          ? '（起始 ' + esc(cap.startCap) + '，按 ' + cap.basedOn + ' 次作答升 1 档）'
+          : cap.delta < 0
+            ? '（起始 ' + esc(cap.startCap) + '，按 ' + cap.basedOn + ' 次作答降 1 档）'
+            : '（起始水平，作答量还不够调档）') + '</div>'
+      : '';
+    let action;
+    if (!isLastRound) {
+      action = '<button type="button" class="st-primary" data-st-action="next-round">出下一轮题目</button>' +
+        '<span class="st-note">第 ' + state.stGroup + ' / ' + MAX_GROUPS + ' 组 · 还剩 1 轮</span>';
+    } else if (!isLastGroup) {
+      action = '<button type="button" class="st-primary" data-st-action="regroup">再练一组（第 ' +
+        (state.stGroup + 1) + ' / ' + MAX_GROUPS + ' 组）</button>' +
+        '<span class="st-note">这组两轮跑完了，下一组换新题、保留错题</span>';
+    } else {
+      action = '<button type="button" class="st-primary" data-st-action="restart">回到画像，重新开始</button>' +
+        '<span class="st-note">' + MAX_GROUPS + ' 组 × 2 轮已完成，本单元练习结束</span>';
+    }
     return '<div class="st-page"><div class="st-card">' +
       '<div class="st-sum">' +
-        '<div class="st-eyebrow">第 ' + state.round + ' 轮结束</div>' +
+        '<div class="st-eyebrow">第 ' + state.stGroup + ' / ' + MAX_GROUPS + ' 组 · 第 ' + state.round + ' / 2 轮结束</div>' +
         '<div class="st-sum-num">' + s.right + '<small> / ' + s.done + ' 答对</small></div>' +
         '<div class="st-sum-label">' + (s.wrong ? '有 ' + s.wrong + ' 道需要再练' : '这一轮全对') + '</div>' +
       '</div>' +
+      capLine +
       (wrongKps.length
         ? '<div class="st-sum-list">' + items + '</div>' +
-          '<div class="st-tip">下一轮会先出这些考点，换个问法再考一次——同样对一次可能是记住了这道题，连着对才算真会。</div>'
-        : '<div class="st-sum-empty">这一轮没有错题。下一轮换新题再验一次，确认是真会而不是记住了这道题。</div>') +
-      '<div class="st-actions">' +
-        (isLastRound
-          ? '<button type="button" class="st-primary" data-st-action="regroup">再练一组</button>' +
-            '<span class="st-note">两轮跑完了，再练会保留错题</span>'
-          : '<button type="button" class="st-primary" data-st-action="next-round">出下一轮题目</button>' +
-            '<span class="st-note">' + (wrongKps.length ? '按上面的错题出' : '换新题再验一次') + '</span>') +
-      '</div>' +
+          '<div class="st-tip">' + (finished
+            ? '这次练习留下来了这几个还要再练的考点；重新开始一组时会接着按它们出题。'
+            : '下一轮会先出这些考点，换个问法再考一次——同样对一次可能是记住了这道题，连着对才算真会。') + '</div>'
+        : '<div class="st-sum-empty">' + (finished
+            ? '这一轮没有错题，本次练习完成。'
+            : '这一轮没有错题。下一轮换新题再验一次，确认是真会而不是记住了这道题。') + '</div>') +
+      '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
   }
 
@@ -2392,9 +2436,11 @@
     runModelRound(false);
   }
 
-  // 两轮跑完后再练一组：题目重来，错题与考点推进保留
+  // 两轮跑完后再练一组：题目重来，错题与轨迹保留。组数有上限，跑完就是终态。
   function stRegroup() {
+    if (state.stGroup >= MAX_GROUPS) return;
     if (!SHT.llm.isReady()) { openModel(); toast('先填模型 API Key'); return; }
+    state.stGroup += 1;
     state.round = 1;
     state.activeNo = 1;
     state.rounds = { 1: blankRound(), 2: blankRound() };
@@ -2402,6 +2448,22 @@
     state.quota = SHT.quota.blank();
     save();
     runModelRound(false);
+  }
+
+  // 全部组跑完：回到画像页开新的一组。轨迹、错题、考点推进、历史题都跟着学生走，不清。
+  function stRestart() {
+    state.stGroup = 1;
+    state.stStarted = false;
+    state.round = 1;
+    state.activeNo = 1;
+    state.rounds = { 1: blankRound(), 2: blankRound() };
+    state.failures = [];
+    state.quota = SHT.quota.blank();
+    state.decisions = [];
+    state.levelCap = null;
+    state.stFail = '';
+    save();
+    renderAll();
   }
 
   function renderAll() {
@@ -2901,6 +2963,29 @@
     });
     brief.levelHint = brief.levelHint || '持平';
 
+    /*
+     * 下一轮出什么题，由代码按答题轨迹算，不交给模型自由发挥。
+     * 每条选题带命中的规则、参与计算的数值、原始事件 seq，导出时能顺着 seq
+     * 回查到「他上次几秒选错、改选几次」——不是一句「模型觉得他可能不会」。
+     */
+    const learnerModel = SHT.learner.build(state.events || []);
+    const retiredKps = Object.keys((state.progress && state.progress.points) || {})
+      .filter(function (k) { return state.progress.points[k].retired; });
+    const decisionSet = SHT.learner.decide(learnerModel, {
+      unit: SHT.curriculum,
+      layer: state.learningLayer,
+      kps: unitKps(),
+      count: countFor(state.round),
+      retired: retiredKps
+    });
+    state.decisions = decisionSet.items;
+    state.levelCap = decisionSet.levelCap;
+    state.decisionReason = decisionSet.reason;
+    state.learnerModel = SHT.learner.digest(learnerModel, 8);
+    // 课程角色仍读这份 brief；决策作为硬约束挂在旁边，生成时被代码覆盖
+    brief.decisions = decisionSet.items;
+    brief.levelCap = decisionSet.levelCap;
+
     // 勾选范围内已经全考过 → 自动扩池：把没考过的候选补进来，一次只考一点
     let scopeNow = kpScopePayload();
     const retired = (state.progress && state.progress.points) || {};
@@ -2919,6 +3004,9 @@
         unit: SHT.curriculum,
         count: countFor(state.round),
         brief: brief,
+        decisions: decisionSet.items,
+        levelCap: decisionSet.levelCap,
+        history: (state.questionHistory || []).slice(),
         scope: scopeNow,
         memory: state.agentMemory,
         progress: state.progress,
@@ -2957,12 +3045,23 @@
             no: p.no, kp: p.kp, ability: p.ability, cause: p.cause,
             whyThisOne: p.whyThisOne, level: p.level, cell: p.cell,
             switchedFrom: p.switchedFrom || '', fromBench: !!p.fromBench,
+            decision: p.decision || null,
             probe: p.probe ? { parentQid: p.probe.parentQid, prevPrompt: p.probe.prevPrompt, missCount: p.probe.missCount } : null
           };
         });
         round.questions = res.questions.map(function (q, i) {
           return Object.assign({}, q, { no: i + 1 });
         });
+        // 跨轮、跨组去重的历史。只留能算内容指纹与格子的字段，别把整份题塞进存档。
+        state.questionHistory = (state.questionHistory || []).concat(
+          round.questions.map(function (q) {
+            return {
+              qid: q.qid, prompt: q.prompt, audioText: q.audioText,
+              options: q.options, answer: q.answer, cell: q.cell,
+              knowledgePoint: q.knowledgePoint
+            };
+          })
+        ).slice(-200);
         // 题目换了，作答进度作废，避免拿旧记录判新题
         round.practice = blankPractice();
         state.activeNo = 1;
@@ -3044,6 +3143,7 @@
       if (a === 'next') { practiceNext(); return; }
       if (a === 'next-round') { stNextRound(); return; }
       if (a === 'regroup') { stRegroup(); return; }
+      if (a === 'restart') { stRestart(); return; }
     });
 
     // 开放题的输入：和 02 页共用 p.draft，切换视图不会丢草稿

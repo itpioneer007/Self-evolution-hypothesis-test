@@ -271,11 +271,11 @@ src/
   core/                     全部无 DOM 依赖，可单独 require
     llm.js                  DeepSeek 调用，12 类错误分类，不抛异常
     agents.js               四个角色（课程 / 生成 / 验证 / 诊断）的 system / user / memory
-    validate.js             代码闸 V1–V8（有通过权）
-    pipeline.js             课程 → 分格 → 生成 → 闸 → 验证 → 退回
+    validate.js             代码闸 V1–V8 + V_DUP（跨轮内容重复）
+    pipeline.js             课程 → 代码决策覆盖 → 分格 → 生成 → 闸 → 验证 → 退回
     quota.js                能力配额（画像 / 错题 / 范围 / 本册 / 手工）
     bkt.js                  掌握概率（贝叶斯知识追踪）
-    learner.js              答题轨迹 → 学习者模型（纯函数、可复算；事件流见 app.js emitEvent）
+    learner.js              轨迹 → 学习者模型 → 证据化选题单（纯函数、可复算）
     audit.js                审计：四条达标线的判定（纯函数，可复算）
     progress.js             层次推进、退役、重试队列、停止判据
     agentMemory.js          四个角色各自的记忆（由代码搬运）
@@ -381,8 +381,10 @@ DEEPSEEK_API_KEY=sk-xxx node tools/ui-check.js
 - **逐项说明依赖生成时输出**：`optionNotes` 是生成角色写的，老题与本地兜底题没有就退回一句解析。缺说明的项宁可不显示，也不补一句编的。
 - **答对不归因，所以「他是不是真会」只能靠连对两次**：这是刻意的，代价是要多跑一轮才能确认。
 - **拦截演练已从界面移除**：它塞坏题验「拦不拦得住」，本质是一次性自测，不属于流水审计；需要的场景用 `tools/shot-audit.js` 或直接看 03 段的真实拦截记录。
-- **导出的 JSON 要看复用，先跑摘要**：`node tools/audit-digest.js audit-xxx.json` 把一份导出压成一页，按「第一轮答错 → 错题本 → 本轮 probe/parentQid」三段核一遍，并明确告诉你这份文件能不能自证。导出内容自本轮起包含 `prevRound` 与 `wrongCases`，老文件没有这两段，脚本会报「无法核对」而不是谎报复用率 0%。导出另含 `events`（原始答题轨迹）与 `learner`（由轨迹算出的模型摘要：掌握概率、倾向、弱点排序、一句人话理由）。
-- **学习者模型目前只算不用**：`core/learner.js` 读完整事件流（`shown / pick / change / hint / draft / submit / reveal / leave`），能区分秒错（粗心）、久想仍错（未掌握）、靠提示或改选才对（蒙对不稳定），但结果**还没接进选题决策**。现在决定「下一轮考什么」的仍是 `pipeline.buildBrief` + `wrongBook.priorityScore`，后者只数错次数。所以「不同学生拿到不同题」目前还没有算法保证，只有模型随机性带来的差异。
+- **导出的 JSON 要看复用，先跑摘要**：`node tools/audit-digest.js audit-xxx.json` 把一份导出压成一页，按「第一轮答错 → 错题本 → 本轮 probe/parentQid」三段核一遍，并明确告诉你这份文件能不能自证。导出内容自本轮起包含 `prevRound` 与 `wrongCases`，老文件没有这两段，脚本会报「无法核对」而不是谎报复用率 0%。导出另含 `events`（原始答题轨迹）、`learner`（模型摘要）、`decisions`（本轮选题单，含规则与证据 seq）、`levelCap`、`questionHistory`。摘要脚本第六段按「水平上限 → 每条决策的数值 → 事件 seq 在文件里能查到几条 → 判据 → 题上有没有挂同一份决策」逐条打印。
+- **选题决策由代码算，模型只负责写题**：`core/learner.js` 的 `decide()` 把完整轨迹压成结构化选题单，每条带命中的规则编号、参与计算的数值、原始事件 `seq`；`pipeline.runRound` 用它覆盖计划的层次与干扰项，同一份决策写进 `plan.decision` / `question.decision`。导出的 `decisions` + `events` 可逐条回查，`audit-digest.js` 第六段直接打印证据链。仍存的限制：考点对齐靠 `matchPriority` 三层文本匹配，模型把考点改得太远就挂不上；`buildBrief` 那条错题优先级仍只数错次数，两套路径并存。
+- **水平会随表现调档**：起始水平按 A/B/C 给上限（A=表达、B=用、C=辨），作答 ≥3 次且平均掌握概率 ≥0.65 升一档、≤0.35 降一档；连对的考点出 `R-SOLID-ADVANCE` 进阶题，不再跳回「认」层。注意 `ST_LEVELS` 的显示标签曾把 A 写成「基础」、C 写成「较好」，与算法语义相反，已修正。
+- **一组固定两轮，最多两组**：结果页给终态「本单元练习结束」，不再无限「再练一组」。跨轮/跨组去重靠 `questionHistory`：历史格子进 `used`、题干+选项+答案全同触发 `V_DUP` 退回重出。历史题只留最近 200 道，超出后仍可能与更早的题撞面。
 - **轨迹只在本机**：`state.events` 随存档进 `localStorage`，上限 4000 条，导出才带得出去。没有多学生账号、没有服务端，`studentId` 目前恒为 `S-001`；换机或清缓存会丢。
 
 ---

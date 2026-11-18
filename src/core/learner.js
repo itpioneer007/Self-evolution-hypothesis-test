@@ -110,6 +110,9 @@
       hintUsed: hintUsed,
       revealed: evs.some(function (e) { return e.type === 'reveal'; }),
       left: evs.some(function (e) { return e.type === 'leave'; }),
+      // 这一题由哪些事件构成。决策要把它带出去，验收时才能顺着 seq 回查原始轨迹，
+      // 而不是听一句「模型觉得他可能不会」。
+      eventSeqs: evs.map(function (e) { return num(e.seq, 0); }),
       eventCount: evs.length
     };
   }
@@ -197,7 +200,7 @@
         byKp[kp] = {
           kp: kp, attempts: 0, correct: 0, wrong: 0,
           fastWrong: 0, slowWrong: 0, guessRight: 0,
-          changes: 0, hintUsed: 0, totalMs: 0, qids: [], sequence: []
+          changes: 0, hintUsed: 0, totalMs: 0, qids: [], eventSeqs: [], sequence: []
         };
         order.push(kp);
       }
@@ -211,6 +214,7 @@
       if (e.hintUsed) b.hintUsed += 1;
       b.totalMs += e.durationMs;
       b.qids.push(e.qid);
+      b.eventSeqs = b.eventSeqs.concat(e.eventSeqs).slice(-60);
       b.sequence.push({ qid: e.qid, seq: e.seq, correct: e.correct, hint: e.hintUsed });
     });
 
@@ -267,6 +271,180 @@
     };
   }
 
+  /* ---------- 决策：从证据到选题单 ----------
+   *
+   * 这里回答的是「凭什么给他出这道题」。每条决策自带三样东西：
+   *   rule      命中的规则编号（不是模型写的一段理由）
+   *   evidence  参与这次计算的数值 + 原始事件 seq（能顺着回查轨迹）
+   *   reason    由上面这些数值拼出来的人话，含具体数字
+   * 决策本身是代码算的，模型只负责按这张选题单把题写出来。
+   */
+  const RULES = {
+    COLD_START: { id: 'R-COLD-START', text: '没有作答轨迹，按起始水平从「认」层铺开' },
+    UNKNOWN_DOWN: { id: 'R-UNKNOWN-DOWN', text: '反复错或久想仍错 → 降回「认」层重出' },
+    SLIP_RETRY: { id: 'R-SLIP-RETRY', text: '秒错且无改选 → 判为粗心，同考点换干扰项再验一次，不重复练' },
+    UNSTABLE_VERIFY: { id: 'R-UNSTABLE-VERIFY', text: '靠提示或改选才答对 → 掌握不稳，换角度再考一次' },
+    SOLID_ADVANCE: { id: 'R-SOLID-ADVANCE', text: '连续答对且掌握概率高 → 升到当前水平上限' },
+    EMERGING: { id: 'R-EMERGING', text: '有起色但证据不足 → 保持「辨」层再验一次' },
+    EXPLORE: { id: 'R-EXPLORE', text: '没有待补的弱点，这一轮换一个没测过的考点' }
+  };
+
+  const CAP_BY_LAYER = { A: '表达', B: '用', C: '辨' };
+  const LEVEL_BY_TENDENCY = {
+    unknown: '认', slip: '辨', unstable: '辨', solid: '用', emerging: '辨', unseen: '认'
+  };
+  const DISTRACTOR_BY_TENDENCY = {
+    unknown: '同类不同物', slip: '形近', unstable: '语义近',
+    solid: '音近', emerging: '语义近', unseen: '同类不同物'
+  };
+
+  function levels() { return (SHT.LEVELS || ['认', '辨', '用', '表达']).slice(); }
+
+  /**
+   * 水平上限不是画像页选完就锁死：作答足够多、整体掌握概率明显偏高/偏低时调一档。
+   * 至少 3 次作答才调，避免一两次碰巧全对就把学生顶到表达层。
+   */
+  function levelCapOf(model, startLayer) {
+    const L = levels();
+    const layer = startLayer || 'B';
+    const base = CAP_BY_LAYER[layer] || '用';
+    const byKp = (model && model.byKp) || {};
+    const ps = Object.keys(byKp).map(function (k) { return byKp[k].pKnown; });
+    const n = (model && model.answeredCount) || 0;
+    const avg = ps.length ? ps.reduce(function (a, b) { return a + b; }, 0) / ps.length : null;
+    let delta = 0;
+    if (n >= 3 && avg != null && avg >= 0.65) delta = 1;
+    else if (n >= 3 && avg != null && avg <= 0.35) delta = -1;
+    const idx = Math.max(0, Math.min(L.length - 1, L.indexOf(base) + delta));
+    return {
+      layer: layer, cap: L[idx], startCap: base, delta: delta,
+      avgPKnown: avg == null ? null : r4(avg), basedOn: n
+    };
+  }
+
+  function ruleOf(t) {
+    if (t === 'unknown') return RULES.UNKNOWN_DOWN;
+    if (t === 'slip') return RULES.SLIP_RETRY;
+    if (t === 'unstable') return RULES.UNSTABLE_VERIFY;
+    if (t === 'solid') return RULES.SOLID_ADVANCE;
+    if (t === 'emerging') return RULES.EMERGING;
+    return RULES.COLD_START;
+  }
+
+  function actionOf(t) {
+    if (t === 'solid') return 'advance';
+    if (t === 'unknown' || t === 'slip') return 'remediate';
+    if (t === 'unstable' || t === 'emerging') return 'verify';
+    return 'explore';
+  }
+
+  function levelFor(b, cap) {
+    const L = levels();
+    const capIdx = Math.max(0, L.indexOf(cap));
+    if (b.tendency === 'solid') return L[capIdx];  // 真会了就往上走，进阶看得见
+    const want = LEVEL_BY_TENDENCY[b.tendency] || '认';
+    return L[Math.max(0, Math.min(capIdx, L.indexOf(want)))];
+  }
+
+  function evidenceOfDecision(b) {
+    return {
+      eventSeqs: (b.eventSeqs || []).slice(-40),
+      qids: (b.qids || []).slice(-10),
+      pKnown: b.pKnown, attempts: b.attempts, correct: b.correct, wrong: b.wrong,
+      fastWrong: b.fastWrong, slowWrong: b.slowWrong, guessRight: b.guessRight,
+      changes: b.changes, hintUsed: b.hintUsed, avgMs: b.avgMs,
+      tendency: b.tendency, score: b.score, note: ''
+    };
+  }
+
+  function reasonFor(b, rule, level, distractor) {
+    const nums = '掌握概率 ' + Math.round(b.pKnown * 100) + '%｜作答 ' + b.attempts +
+      ' 次（对 ' + b.correct + ' / 错 ' + b.wrong + '）｜秒错 ' + b.fastWrong +
+      ' 次、久想仍错 ' + b.slowWrong + ' 次、改选 ' + b.changes + ' 次、提示 ' +
+      b.hintUsed + ' 次｜平均 ' + b.avgMs + 'ms';
+    const seqs = (b.eventSeqs || []).slice(-8).join(',');
+    return nums + ' → ' + rule.text + '；本条出「' + level + '」层 / 干扰项「' + distractor + '」' +
+      (seqs ? '；依据事件 seq ' + seqs : '');
+  }
+
+  /**
+   * 学习者状态 → 这一轮的选题单。纯函数、可复算。
+   * @param {object} model build() 的输出
+   * @param {object} opts { unit, layer, kps, count, retired }
+   */
+  function decide(model, opts) {
+    const o = opts || {};
+    const L = levels();
+    const count = Math.max(1, Math.floor(num(o.count, 5)));
+    const capInfo = levelCapOf(model, o.layer);
+    const kps = o.kps || [];
+    const retired = o.retired || [];
+    const items = [];
+    const usedKp = Object.create(null);
+
+    // 已测考点：按弱点分数排。真会的也要出一道进阶题（层次升到当前上限），
+    // 不能整条跳过 —— 否则学生越会、题目反而越回到「认」层，进阶就看不见了。
+    ((model && model.queue) || []).forEach(function (q) {
+      if (items.length >= count) return;
+      if (retired.indexOf(q.kp) >= 0 || usedKp[q.kp]) return;
+      const b = model.byKp[q.kp];
+      if (!b) return;
+      const rule = ruleOf(b.tendency);
+      const level = levelFor(b, capInfo.cap);
+      const distractor = DISTRACTOR_BY_TENDENCY[b.tendency] || '同类不同物';
+      const fromKps = kps.filter(function (k) { return k.label === q.kp; })[0];
+      usedKp[q.kp] = true;
+      items.push({
+        kp: q.kp,
+        kpId: (fromKps && fromKps.id) || '',
+        ability: (fromKps && fromKps.ability) || 'vocab',
+        action: actionOf(b.tendency),
+        level: level,
+        distractor: distractor,
+        rule: rule.id,
+        ruleText: rule.text,
+        evidence: evidenceOfDecision(b),
+        reason: reasonFor(b, rule, level, distractor)
+      });
+    });
+
+    // 名额没满 → 换没测过的考点，不靠模型随便编一个字符串
+    const known = Object.keys((model && model.byKp) || {});
+    kps.forEach(function (k) {
+      if (items.length >= count) return;
+      const label = k.label || '';
+      if (!label || usedKp[label] || known.indexOf(label) >= 0 || retired.indexOf(label) >= 0) return;
+      usedKp[label] = true;
+      const cold = items.length === 0 && known.length === 0;
+      const rule = cold ? RULES.COLD_START : RULES.EXPLORE;
+      items.push({
+        kp: label, kpId: k.id || '', ability: k.ability || 'vocab',
+        action: 'explore', level: L[0], distractor: '同类不同物',
+        rule: rule.id, ruleText: rule.text,
+        evidence: {
+          eventSeqs: [], qids: [], pKnown: null, attempts: 0, correct: 0, wrong: 0,
+          fastWrong: 0, slowWrong: 0, guessRight: 0, changes: 0, hintUsed: 0,
+          avgMs: 0, tendency: 'unseen', score: 0,
+          note: '这个考点在 ' + ((model && model.eventCount) || 0) + ' 条轨迹事件里一次都没出现过'
+        },
+        reason: '这个考点从未测过（轨迹 ' + ((model && model.eventCount) || 0) +
+          ' 条事件里无记录）→ ' + rule.text + '；出「' + L[0] + '」层'
+      });
+    });
+
+    const capText = capInfo.delta > 0 ? '按表现升 1 档' :
+      (capInfo.delta < 0 ? '按表现降 1 档' : '按表现持平');
+    return {
+      items: items,
+      levelCap: capInfo,
+      reason: '本轮 ' + items.length + ' 条选题，依据 ' + ((model && model.eventCount) || 0) +
+        ' 条轨迹事件；水平上限「' + capInfo.cap + '」（起始 ' + capInfo.startCap + '，' + capText +
+        '，基于 ' + capInfo.basedOn + ' 次作答' +
+        (capInfo.avgPKnown == null ? '' : '、平均掌握概率 ' + Math.round(capInfo.avgPKnown * 100) + '%') + '）' +
+        (items.length ? '；首条依据：' + items[0].reason : '')
+    };
+  }
+
   /** 导出用：只带能被人核对的摘要，不把整串事件塞进摘要里。 */
   function digest(model, n) {
     const m = model || {};
@@ -281,5 +459,8 @@
     };
   }
 
-  SHT.learner = { TYPES: TYPES, CAP_EVENTS: CAP_EVENTS, build: build, digest: digest };
+  SHT.learner = {
+    TYPES: TYPES, CAP_EVENTS: CAP_EVENTS, RULES: RULES,
+    build: build, decide: decide, levelCapOf: levelCapOf, digest: digest
+  };
 })(window);

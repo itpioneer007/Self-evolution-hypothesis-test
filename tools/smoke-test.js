@@ -1058,8 +1058,13 @@ async function runCase(name, script, expect) {
     ] } };
     const bad = () => ({ ok: true, json: qJson({ options: ['shirt', 'shirt', 'coat'] }), tokens: 10, ms: 1 });
     const ok = () => ({ ok: true, json: qJson(), tokens: 10, ms: 1 });
+    // 第二格必须换题面：同轮两道题内容一模一样会被 V_DUP 拦下，这是有意的
+    const ok2 = () => ({ ok: true, json: qJson({
+      prompt: '选出「裙子」的英文。', answer: 'skirt',
+      options: ['skirt', 'shirt', 'coat'], keyword: 'skirt'
+    }), tokens: 10, ms: 1 });
     const pass = () => ({ ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 });
-    const script = [() => four, bad, bad, bad, ok, pass, ok, pass];
+    const script = [() => four, bad, bad, bad, ok, pass, ok2, pass];
     SHT.llm.call = async function () { const f = script[Math.min(n, script.length - 1)]; n += 1; return f(); };
     return SHT.pipeline.runRound({
       unit: SHT.curriculum, count: 2, brief: {}, existing: [],
@@ -1787,6 +1792,7 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   // 出题：模型桩按 计划 → 题 → 验证 的顺序应答；选项取本单元真实词，否则代码闸会判假干扰项
   let stCalls = 0;
   let stWord = '';
+  let stPhase = 1;
   SHT.llm.call = async function (opts) {
     stCalls += 1;
     const ws = (SHT.curriculum.words || []);
@@ -1799,6 +1805,17 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
       ] } };
     }
     if (opts.role === 'generate') {
+      // 第二轮必须换题面：跨轮内容指纹闸会把「上一轮原题照抄」退回。
+      // 计划里的考点仍用 w0，这样 parentQid 还能挂回第一轮那道错题。
+      if (stPhase === 2) {
+        const w1 = ws[1] || { en: 'skirt', zh: '裙子' };
+        const zh1 = w1.zh || '第二个词';
+        return { ok: true, tokens: 10, ms: 1, json: {
+          prompt: '看图选词：这张图里的「' + zh1 + '」是哪个？', audioText: '',
+          options: [w1.en, w0.en, o3], answer: w1.en,
+          analysis: '「' + zh1 + '」就是 ' + w1.en + '。', keyword: w1.en
+        } };
+      }
       stWord = w0.en;
       // 题干只能写中文义：写英文原词会被 V4「题干泄答案」直接退回
       return { ok: true, tokens: 10, ms: 1, json: {
@@ -1850,6 +1867,7 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
 
   // 下一轮：错题要进 brief，probe 要指回第一轮那道题
   const beforeNext = stCalls;
+  stPhase = 2;
   fire('studentRoot', 'click', {
     closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'next-round' } } : null),
     matches() { return false; }
@@ -1858,6 +1876,25 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     await Promise.resolve();
   }
   const st1 = SHT.devAudit.state();
+  // C 接线：选题决策不是一句「模型觉得他可能不会」，要能顺着 seq 回查轨迹
+  assert('C 第二轮选题决策落库，证据 seq 能在原始轨迹里逐条查到',
+    st1.decisions.length > 0 && !!st1.levelCap &&
+    st1.decisions[0].evidence && Array.isArray(st1.decisions[0].evidence.eventSeqs) &&
+    st1.decisions[0].evidence.eventSeqs.every(function (s) {
+      return (st1.events || []).some(function (e) { return e.seq === s; });
+    }),
+    JSON.stringify(st1.decisions[0] || {}).slice(0, 140));
+  assert('C 计划与题目都带着同一份决策凭据（规则 + 数值 + 事件 seq）',
+    !!(st1.rounds[2].questions[0] && st1.rounds[2].questions[0].decision) &&
+    !!st1.rounds[2].questions[0].decision.rule &&
+    !!st1.rounds[2].questions[0].decision.evidence &&
+    !!(st1.rounds[2].plans[0] && st1.rounds[2].plans[0].decision),
+    JSON.stringify((st1.rounds[2].questions[0] || {}).decision || {}).slice(0, 140));
+  const stExport = SHT.devAudit.exportPayload();
+  assert('C 导出带 decisions / levelCap / events，证据链能带出文件',
+    stExport.decisions.length > 0 && !!stExport.levelCap &&
+    Array.isArray(stExport.events) && stExport.events.length > 0,
+    JSON.stringify(Object.keys(stExport)));
   assert('点「出下一轮」会重新调模型出题，不是复用上一轮的题',
     stCalls > beforeNext && nodes.studentRoot.innerHTML.indexOf('第 1 / 1 题') >= 0,
     '新增调用 ' + (stCalls - beforeNext) + ' 次');
@@ -2065,6 +2102,137 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   assert('B 导出摘要只带可核对的字段，不塞整串事件',
     dg.queue.length <= 2 && typeof dg.reason === 'string' && dg.answeredCount === 1 &&
     !dg.events, JSON.stringify(dg).slice(0, 120));
+
+  /* ================= C：决策有凭据、两个学生拿到不同题 ================= */
+  console.log('--- C 选题决策的证据链 ---');
+  const kps = [
+    { id: 'kp-shirt', label: KP, ability: 'vocab' },
+    { id: 'kp-coat', label: 'vocab · coat · 形近', ability: 'vocab' },
+    { id: 'kp-hat', label: 'vocab · hat · 形近', ability: 'vocab' }
+  ];
+  const opt = { layer: 'B', kps: kps, count: 3 };
+  const dFast = SHT.learner.decide(mFast, opt);
+  const cSlow = SHT.learner.decide(mSlow, opt);
+  const dGuess = SHT.learner.decide(SHT.learner.build(guess), opt);
+  const dCold = SHT.learner.decide(SHT.learner.build([]), opt);
+
+  assert('C 秒错与久想仍错，命中不同规则 / 层次 / 干扰项（不是同一套题换个说法）',
+    dFast.items[0].rule === 'R-SLIP-RETRY' && cSlow.items[0].rule === 'R-UNKNOWN-DOWN' &&
+    dFast.items[0].level !== cSlow.items[0].level &&
+    dFast.items[0].distractor !== cSlow.items[0].distractor,
+    dFast.items[0].rule + '/' + dFast.items[0].level + ' vs ' + cSlow.items[0].rule + '/' + cSlow.items[0].level);
+  assert('C 靠提示改选才答对判「不稳定」，不冒充掌握',
+    dGuess.items[0].rule === 'R-UNSTABLE-VERIFY', dGuess.items[0].rule);
+  assert('C 没有轨迹时按未测考点冷启动，且不编造证据',
+    dCold.items.length === 3 && dCold.items[0].evidence.eventSeqs.length === 0 &&
+    dCold.items.every(function (i) { return i.rule === 'R-EXPLORE' || i.rule === 'R-COLD-START'; }),
+    JSON.stringify(dCold.items.map(function (i) { return i.rule; })));
+  assert('C 每条决策都带数值理由与可回查的原始事件 seq',
+    /掌握概率 \d+%/.test(dFast.items[0].reason) &&
+    /事件 seq [\d,]+/.test(dFast.items[0].reason) &&
+    dFast.items[0].evidence.eventSeqs.length > 0 &&
+    dFast.items[0].evidence.eventSeqs.every(function (s) {
+      return fast.some(function (e) { return e.seq === s; });
+    }), dFast.items[0].reason.slice(0, 160));
+  assert('C 决策可复算：同一状态重放逐字段相等',
+    JSON.stringify(SHT.learner.decide(mFast, opt)) === JSON.stringify(dFast));
+
+  const good3 = series('g3', [{ ms: 6000, correct: true }, { ms: 6100, correct: true }, { ms: 6200, correct: true }]);
+  const bad3 = series('b3', [{ ms: 20000, correct: false }, { ms: 21000, correct: false }, { ms: 22000, correct: false }]);
+  const mGood = SHT.learner.build(good3);
+  const mBad = SHT.learner.build(bad3);
+  assert('C 水平上限随表现调档：连对三次升一档、久想连错三次降一档、作答不足三次不动',
+    SHT.learner.levelCapOf(mGood, 'B').delta === 1 &&
+    SHT.learner.levelCapOf(mBad, 'B').delta === -1 &&
+    SHT.learner.levelCapOf(mFast, 'B').delta === 0,
+    [SHT.learner.levelCapOf(mGood, 'B').delta, SHT.learner.levelCapOf(mBad, 'B').delta,
+      SHT.learner.levelCapOf(mFast, 'B').delta].join('/'));
+  const dGood = SHT.learner.decide(mGood, opt);
+  assert('C 真会的考点出进阶题，不跳回「认」层',
+    dGood.items[0].rule === 'R-SOLID-ADVANCE' &&
+    dGood.items[0].level === dGood.levelCap.cap,
+    dGood.items[0].rule + ' / ' + dGood.items[0].level + ' / cap ' + dGood.levelCap.cap);
+
+  /* ================= 跨轮重复题：硬闸，不靠模型自觉 ================= */
+  console.log('--- 跨轮去重 ---');
+  await (async function () {
+    // 桩题必须用当前册的真实词：写死 shirt/skirt/coat 换一本教材就会被 V1 超纲拦下，
+    // 那样测到的不是去重闸，是词表。
+    const ws = (SHT.curriculum.words || []).map(function (w) { return w.en; });
+    const a = ws[0] || 'shirt';
+    const b = ws[1] || 'skirt';
+    const c = ws[2] || 'coat';
+    const dupQ = qJson({
+      prompt: '选出正确的一项。', options: [a, b, c], answer: a,
+      analysis: '这是本单元学过的词。', keyword: a
+    });
+    const hist = [{
+      qid: 'h1', prompt: dupQ.prompt, audioText: '', options: dupQ.options.slice(),
+      answer: dupQ.answer,
+      cell: { type: '中英匹配', scene: '学校', level: '认', distractor: '形近' }
+    }];
+    SHT.llm.call = async function (o) {
+      if (o.role === 'plan') return PLAN_OK;
+      if (o.role === 'generate') return { ok: true, json: dupQ, tokens: 10, ms: 1 };
+      return { ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 };
+    };
+    const out = await SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 1, brief: {}, existing: [], history: hist
+    });
+    assert('跨轮把原题照抄会被代码闸退回，并留下人话原因',
+      out.questions.length === 0 && out.failures.some(function (f) { return f.codes.indexOf('V_DUP') >= 0; }) &&
+      SHT.codeLabel('V_DUP').indexOf('重复') >= 0,
+      JSON.stringify(out.failures.map(function (f) { return f.codes.join(','); })));
+
+    SHT.llm.call = async function (o) {
+      if (o.role === 'plan') return PLAN_OK;
+      if (o.role === 'generate') return { ok: true, tokens: 10, ms: 1, json: Object.assign({}, dupQ, {
+        prompt: '换一个问法：下面哪个是对的？', answer: b,
+        options: [b, a, c], keyword: b
+      }) };
+      return { ok: true, json: { verdict: 'pass' }, tokens: 10, ms: 1 };
+    };
+    const out2 = await SHT.pipeline.runRound({
+      unit: SHT.curriculum, count: 1, brief: {}, existing: [], history: hist
+    });
+    assert('换了题面就能过，且不再落在历史用过的格子上',
+      out2.questions.length === 1 &&
+      SHT.cellKey(out2.questions[0].cell) !== SHT.cellKey(hist[0].cell),
+      JSON.stringify((out2.questions[0] || {}).cell || {}) + ' | ' +
+      JSON.stringify(out2.failures.map(function (f) {
+        return f.stage + ':' + f.codes.join(',') + ':' + String(f.reason || '').slice(0, 100);
+      })));
+    SHT.llm.call = REAL_CALL;
+  })();
+
+  /* ================= 轮次上限与水平标签 ================= */
+  console.log('--- 轮次上限 ---');
+  stA.round = 2;
+  stA.stGroup = 2;
+  stA.rounds[2].questions = [qA];
+  stA.rounds[2].practice.cursor = 1;
+  stClick('level', { id: 'B' });
+  const sumHtml = nodes.studentRoot.innerHTML;
+  assert('两组两轮跑完给终态，不再有「再练一组」的无限循环',
+    sumHtml.indexOf('本单元练习结束') >= 0 &&
+    sumHtml.indexOf('data-st-action="restart"') >= 0 &&
+    sumHtml.indexOf('data-st-action="regroup"') < 0 &&
+    sumHtml.indexOf('第 2 / 2 组') >= 0,
+    sumHtml.slice(0, 160));
+  stClick('regroup');
+  assert('到上限后再点「再练一组」被挡住，轮次不再重置',
+    stA.stGroup === 2 && stA.round === 2, stA.stGroup + ' / ' + stA.round);
+  const eventsBeforeRestart = stA.events.length;
+  stClick('restart');
+  const profHtml = nodes.studentRoot.innerHTML;
+  assert('重新开始回到画像页，但轨迹/错题/历史题跟着学生保留',
+    stA.stGroup === 1 && stA.stStarted === false &&
+    stA.events.length === eventsBeforeRestart &&
+    profHtml.indexOf('今天练哪个单元') >= 0,
+    '组 ' + stA.stGroup + ' / 事件 ' + stA.events.length + ' / ' + profHtml.slice(0, 60));
+  assert('水平标签与算法 A/B/C 语义对齐：基础=C、较好=A（以前写反了）',
+    /data-id="C"[^>]*>基础/.test(profHtml) && /data-id="A"[^>]*>较好/.test(profHtml),
+    (profHtml.match(/data-id="[ABC]"[^>]*>[^<]+/g) || []).join(' | '));
 
   console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
   process.exit(failed === 0 ? 0 : 1);
