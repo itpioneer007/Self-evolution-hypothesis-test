@@ -147,6 +147,21 @@ assert('连对把难度上限顶到更高一层', W.difficultyOf(high).cap === '
 assert('连错把难度上限压到更低一层', W.difficultyOf(low).cap === '辨', W.difficultyOf(low).cap);
 assert('难度给的是依据，不是一句结论',
   typeof W.difficultyOf(high).reason === 'string' && W.difficultyOf(high).answered === 8);
+
+/*
+ * 错题表的权重项：同等错误次数下，答错时权重越低说明越没底，越该先练。
+ * 这条把「权重」从难度回路接到了弱点排序上，两条链共用同一个数。
+ */
+const projFixture = function (weightAt) {
+  return [{
+    knowledgePoint: 'kp-w', ability: 'vocab', category: '未掌握', masteryState: 'wrong',
+    variantAttempts: [], firstAttemptEvidence: { hintCount: 0 }, remediationLoopCount: 0, weightAt: weightAt
+  }];
+};
+const projLowW = SHT.projectWeaknesses(projFixture(0.2), '学校');
+const projHighW = SHT.projectWeaknesses(projFixture(0.9), '学校');
+assert('答错时权重越低，弱点排序分越高', projLowW.items[0].priorityScore > projHighW.items[0].priorityScore,
+  projLowW.items[0].priorityScore + ' vs ' + projHighW.items[0].priorityScore);
 /*
  * 这里只测纯函数。权重写进 state、导出带 weightsDigest 这两处接线在浏览器里验：
  * 本文件不加载 app.js（远端基线就是纯函数测试），拿不到 devAudit。
@@ -230,8 +245,43 @@ console.log('--- 权重接线（加载 app.js） ---');
     w && w.kp['vocab · classroom · 教室物品'] && w.kp['vocab · classroom · 教室物品'].w > 0.5 &&
     w.ability.vocab && w.ability.vocab.w > 0.5,
     w && JSON.stringify(w.kp['vocab · classroom · 教室物品']));
+
+  // 第二题故意答错：权重该降，错题表该带走当时的权重快照。
+  // 直接挪游标，不走练习页的「下一题」按钮——那段交互在 e2e 里验，这里只验接线。
+  st.rounds[1].questions.push({
+    qid: 'wire-2', no: 2, knowledgePoint: 'vocab · library · 教室场所', ability: 'vocab',
+    cell: { type: '中英匹配', scene: '学校', level: '认', distractor: '同类不同物' },
+    prompt: '选出「图书馆」的英文。', options: ['library', 'classroom', 'playground'], answer: 'library'
+  });
+  const pr = st.rounds[1].practice;
+  pr.cursor = 1;
+  pr.revealed = null;
+  pr.picked = null;
+  pr.draft = '';
+  pr.grading = false;
+  pr.hintUsed = false;
+  pr.gradeError = '';
+  pr.retryFirst = null;
+  pr.retry = null;
+  click('pick', { index: '1' });
+  click('submit');
+  /*
+   * 远端流程：首答错不直接定案，先给提示让人重选；第二次提交才是 final。
+   * 权重只认 final（避免一题记两次账），所以这里要答两枪。
+   */
+  click('pick', { index: '1' });
+  click('submit');
+  // 错题是在离开本题时落账的（practiceNext），不是提交那一刻
+  click('next');
+  const after2 = SHT2.devAudit.state();
+  assert('答错一题后权重下降', after2.weights.answered === 2 && after2.weights.kp['vocab · library · 教室场所'].w < 0.5,
+    JSON.stringify(after2.weights.kp['vocab · library · 教室场所']));
+  assert('错题记录带走答错当时的权重快照',
+    after2.wrongCases.length === 1 && typeof after2.wrongCases[0].weightAt === 'number',
+    JSON.stringify(after2.wrongCases[0] || {}).slice(0, 120));
+
   const saved = JSON.parse(disk['sht-minimal-test-v2'] || '{}');
-  assert('权重随存档落盘（刷新不丢）', saved.weights && saved.weights.answered === 1,
+  assert('权重随存档落盘（刷新不丢）', saved.weights && saved.weights.answered === 2,
     JSON.stringify(saved.weights || {}).slice(0, 80));
 })();
 

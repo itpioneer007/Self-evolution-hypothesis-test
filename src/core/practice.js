@@ -564,6 +564,8 @@
       merged.intentCause = draft.intentCause || merged.intentCause || '';
       merged.studentAnswer = draft.studentAnswer || merged.studentAnswer;
       merged.correctAnswer = draft.correctAnswer || merged.correctAnswer;
+      // 又错一次就刷新权重快照：排序要看「最近一次有多没底」，不是第一次的
+      if (typeof draft.weightAt === 'number') merged.weightAt = draft.weightAt;
       list[at] = merged;
       return { list: list, index: at, created: false };
     }
@@ -599,6 +601,11 @@
       variantAttempts: [],
       masteryState: 'wrong',
       remediationLoopCount: 0,
+      /*
+       * 答错当时的权重快照（0~1）。同样错一次，权重 0.2 和 0.8 不是一回事：
+       * 前者是「根本没底」，后者更可能是手滑。弱点排序与后续调参都要读它。
+       */
+      weightAt: typeof draft.weightAt === 'number' ? draft.weightAt : null,
       certificationScore: null,
       createdAt: draft.at || new Date().toISOString()
     };

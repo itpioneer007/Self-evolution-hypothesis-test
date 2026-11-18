@@ -1773,6 +1773,14 @@
       correctAnswer: ev.expected,
       hintCount: ev.hintCount,
       durationMs: ev.durationMs || 0,
+      /*
+       * 答错当时的权重快照。错题表原来只记「错了几次」，记不下
+       * 「当时预计他有多会」——同样错一次，权重 0.8 和 0.2 是两回事。
+       * 这一格是以后算损失、排优先级、看进步幅度的输入。
+       */
+      weightAt: Math.round(
+        SHT.weights.predict(state.weights || SHT.weights.blank(), q.knowledgePoint, q.ability || '') * 1000
+      ) / 1000,
       at: ev.at
     });
     state.wrongCases = res.list;

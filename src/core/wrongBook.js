@@ -100,6 +100,14 @@
       if (status === 'teacher-help') score = 100;
       if (status === 'mastered') score = -1;
       score += g.supportCount * 3;
+      /*
+       * 权重项：同样错一次，答错时权重 0.2 和 0.8 不是一回事。
+       * 取组内最低权重（最没底的那一次），最多加 20 分；老记录没有 weightAt 就不调。
+       */
+      const weightFloor = g.cases.reduce(function (m, c) {
+        return typeof c.weightAt === 'number' ? Math.min(m, c.weightAt) : m;
+      }, 1);
+      if (weightFloor < 1) score += Math.round((1 - weightFloor) * 20);
 
       const causes = {};
       g.cases.forEach(function (c) { causes[c.category] = (causes[c.category] || 0) + 1; });
