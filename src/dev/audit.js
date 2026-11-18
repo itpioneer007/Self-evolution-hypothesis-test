@@ -511,7 +511,14 @@
       decisions: state.decisions || [],
       levelCap: state.levelCap || null,
       decisionReason: state.decisionReason || '',
-      questionHistory: state.questionHistory || []
+      questionHistory: state.questionHistory || [],
+      /*
+       * 会话与画像变更：界面上不展示，但分析需要。
+       * sessions 能算「练了几次、每次多久、成绩怎么走、难度档有没有动」；
+       * profileLog 能看「开了几次才定下来」，是画像可用性最直接的证据。
+       */
+      sessions: state.sessions || [],
+      profileLog: state.profileLog || []
     };
   }
 

@@ -153,8 +153,37 @@ if (!decisions.length) {
 }
 line('');
 
-/* ---------- 7 结论 ---------- */
-hr('七 可以说出口的结论');
+/* ---------- 7 练习会话 ---------- */
+hr('七 练习会话（界面上不展示，供复盘与改进）');
+const sess = Array.isArray(j.sessions) ? j.sessions : [];
+if (!sess.length) {
+  line('这份导出没有 sessions（老版本文件）。练习时长、成绩走势、难度档变化都看不到，请重新导出。');
+} else {
+  sess.slice(-3).forEach(function (s) {
+    const time = function (t) { return String(t || '').slice(11, 19); };
+    line((s.id || '') + '　' + (s.bookId || '') + ' ' + (s.unitId || '') + '　' +
+      time(s.startedAt) + (s.endedAt ? ' → ' + time(s.endedAt) + '（' + (s.endReason || '') + '）' : ' → 进行中'));
+    line('    水平：起始 ' + (s.startLevel || '?') + ' 档 / 上限 ' + (s.startCap || '未定') +
+      '　→　结束 ' + (s.endLevel || '?') + ' 档 / 上限 ' + (s.endCap || '未定'));
+    line('    画像改动 ' + (s.profileChanges || 0) + ' 次；轨迹事件 seq ' +
+      (s.eventFrom || 0) + '–' + (s.eventTo || 0));
+    (s.rounds || []).forEach(function (r) {
+      line('    第 ' + (r.group || 1) + ' 组 · 第 ' + (r.no || 1) + ' 轮：' + (r.count || 0) + ' 题' +
+        '，对 ' + (r.right || 0) + ' / 错 ' + (r.wrong || 0) +
+        (r.probes ? '，复用错题 ' + r.probes + ' 道' : '') +
+        (r.rules && r.rules.length ? '，规则 ' + r.rules.join(' / ') : ''));
+    });
+  });
+  const pl = Array.isArray(j.profileLog) ? j.profileLog : [];
+  if (pl.length) {
+    line('画像变更记录（最近 ' + Math.min(pl.length, 6) + ' 条）：' +
+      pl.slice(-6).map(function (x) { return x.kind + ' ' + x.from + '→' + x.to; }).join('；'));
+  }
+}
+line('');
+
+/* ---------- 8 结论 ---------- */
+hr('八 可以说出口的结论');
 const canProve = !!(prev && Array.isArray(wc));
 line('本轮 ' + qs.length + ' 道题里，' + hit + ' 道挂接到历史错题（parentQid 非空）。');
 if (hit > 0 && canProve) {
