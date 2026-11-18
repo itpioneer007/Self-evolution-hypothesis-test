@@ -1780,7 +1780,7 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   const st0 = SHT.devAudit.state();
   assert('默认进学生端，不是开发视图', st0.view === 'student', String(st0.view));
   assert('学生端首屏是选画像（教材/单元/水平 + 开始按钮）',
-    nodes.studentRoot.innerHTML.indexOf('今天练哪个单元') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('今天练什么') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf('data-st-action="book"') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf('data-st-action="unit"') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf('data-st-action="level"') >= 0 &&
@@ -1853,7 +1853,7 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   }
   assert('答错后给判定、正确答案与去向说明',
     nodes.studentRoot.innerHTML.indexOf('答错了') >= 0 &&
-    nodes.studentRoot.innerHTML.indexOf('已记进错题本') >= 0,
+    nodes.studentRoot.innerHTML.indexOf('记下了') >= 0,
     nodes.studentRoot.innerHTML.slice(0, 120));
 
   fire('studentRoot', 'click', {
@@ -2214,10 +2214,10 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   stClick('level', { id: 'B' });
   const sumHtml = nodes.studentRoot.innerHTML;
   assert('两组两轮跑完给终态，不再有「再练一组」的无限循环',
-    sumHtml.indexOf('本单元练习结束') >= 0 &&
+    sumHtml.indexOf('全部完成') >= 0 &&
     sumHtml.indexOf('data-st-action="restart"') >= 0 &&
     sumHtml.indexOf('data-st-action="regroup"') < 0 &&
-    sumHtml.indexOf('第 2 / 2 组') >= 0,
+    sumHtml.indexOf('第 2 轮结束') >= 0,
     sumHtml.slice(0, 160));
   stClick('regroup');
   assert('到上限后再点「再练一组」被挡住，轮次不再重置',
@@ -2228,7 +2228,7 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   assert('重新开始回到画像页，但轨迹/错题/历史题跟着学生保留',
     stA.stGroup === 1 && stA.stStarted === false &&
     stA.events.length === eventsBeforeRestart &&
-    profHtml.indexOf('今天练哪个单元') >= 0,
+    profHtml.indexOf('今天练什么') >= 0,
     '组 ' + stA.stGroup + ' / 事件 ' + stA.events.length + ' / ' + profHtml.slice(0, 60));
   assert('水平标签与算法 A/B/C 语义对齐：基础=C、较好=A（以前写反了）',
     /data-id="C"[^>]*>基础/.test(profHtml) && /data-id="A"[^>]*>较好/.test(profHtml),

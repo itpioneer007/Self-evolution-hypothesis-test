@@ -1352,14 +1352,15 @@ body.is-student .controls > #bookSelect,
 body.is-student .controls > #unitSelect,
 body.is-student .controls > #roundSwitch,
 body.is-student .controls > #exportBtn,
-body.is-student .controls > #resetBtn { display: none; }
+body.is-student .controls > #resetBtn,
+body.is-student .controls > #viewToggle { display: none; }
 
-.st-page { max-width: 720px; margin: 0 auto; padding: 40px 22px 64px; }
+.st-page { max-width: 720px; margin: 0 auto; padding: 32px 22px 56px; }
 .st-card {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 30px 32px;
+  padding: 26px 30px;
   box-shadow: var(--shadow);
 }
 .st-card.is-center { text-align: center; padding: 56px 32px; }
@@ -1368,7 +1369,7 @@ body.is-student .controls > #resetBtn { display: none; }
 .st-title { font-size: 23px; font-weight: 680; letter-spacing: .01em; margin: 0 0 8px; }
 .st-sub { font-size: 13.5px; color: var(--ink-soft); line-height: 1.7; margin: 0 0 22px; }
 
-.st-field { margin-bottom: 20px; }
+.st-field { margin-bottom: 16px; }
 .st-label { font-size: 12.5px; font-weight: 650; color: var(--ink-soft); margin-bottom: 9px; }
 .st-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .st-chips.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
@@ -1495,4 +1496,7 @@ body.is-student .controls > #resetBtn { display: none; }
 /* 学生视图下底部那行是给开发者看的统计，收起来 */
 body.is-student .footbar { display: none; }
 body.is-student .st-sum-num small { margin-left: 4px; }
+/* 学生视图顶栏只有产品名，副标题空着时不要留一条空白 */
+body.is-student .brand-sub:empty { display: none; }
 .st-foot.is-warn { color: var(--red); margin-top: 6px; }
+.st-tip.is-muted { color: var(--ink-hint); margin-top: 8px; }
