@@ -2369,7 +2369,6 @@
      */
     const unitChips = book.units.map(function (u, i) {
       const title = u.title ? ' · ' + u.title : '';
-      const title = u.title ? ' · ' + u.title : '';
       return '<button type="button" class="st-chip' + (u.id === state.unitId ? ' is-on' : '') +
         '" data-st-action="unit" data-id="' + u.id + '">Unit ' + (u.no || i + 1) +
         esc(title) + '</button>';
