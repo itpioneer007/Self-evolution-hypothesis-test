@@ -499,7 +499,13 @@
       questions: round.questions || [],
       failures: state.failures || [],
       attempts: (round.practice || {}).attempts || [],
-      traces: state.traces || []
+      traces: state.traces || [],
+      // 原始答题轨迹 + 由它算出的学习者模型摘要。两者都放：原始事件供复算，
+      // 摘要给验收时直接看「算法从蛛丝马迹里算出了什么」。
+      events: state.events || [],
+      learner: (SHT.learner && SHT.learner.build)
+        ? SHT.learner.digest(SHT.learner.build(state.events || []), 5)
+        : null
     };
   }
 

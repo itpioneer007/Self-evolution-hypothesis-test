@@ -109,8 +109,49 @@
       // 这一题是什么时候出现在屏幕上的。作答耗时要靠它算——耗时是诊断的一条证据：
       // 3 秒内选错和想了 20 秒选错，不是同一回事。
       shownAt: 0,
+      // 这一题的「曝光」事件记过了没有。渲染会被反复触发，曝光只该记一次。
+      shownEventFor: '',
       attempts: []
     };
+  }
+
+  /*
+   * 答题轨迹采集。只记事件，不在这里算任何结论 —— 计算全在 core/learner.js，
+   * 这样「采集」和「分析」能各自被测试，也不会出现渲染函数里夹带算法的情况。
+   *
+   * ts 强制严格递增：同一毫秒里连点两次，时间戳会撞，光靠 ts 排不出先后；
+   * seq 才是排序主键。ts 只用来算耗时。
+   */
+  function emitEvent(type, q, payload) {
+    if (!Array.isArray(state.events)) state.events = [];
+    const last = state.events[state.events.length - 1];
+    const cap = (SHT.learner && SHT.learner.CAP_EVENTS) || 4000;
+    state.eventSeq = (Number(state.eventSeq) || 0) + 1;
+    state.events.push({
+      seq: state.eventSeq,
+      studentId: SHT.sampleStudent.id,
+      qid: q ? String(q.qid || q.id || ('r' + state.round + 'n' + state.activeNo)) : '',
+      kp: q ? String(q.knowledgePoint || '') : '',
+      round: state.round,
+      ts: Math.max(Date.now(), (last && Number(last.ts) || 0) + 1),
+      type: type,
+      payload: payload || {}
+    });
+    if (state.events.length > cap) state.events.splice(0, state.events.length - cap);
+  }
+
+  function ensureShownEvent(q, p) {
+    if (!q || p.revealed) return;
+    // 学生端还没点「开始」时，02 页那批样题虽然也在渲染，但学生根本没看见。
+    // 这时候记曝光等于替学生编一段学习轨迹 —— 和「没答错却有错题」是同一类问题。
+    if (state.view === 'student' && !state.stStarted) return;
+    const qid = String(q.qid || q.id || ('r' + state.round + 'n' + state.activeNo));
+    if (p.shownEventFor === qid) return;
+    p.shownEventFor = qid;
+    emitEvent('shown', q, { cursor: p.cursor, optionCount: (q.options || []).length });
+    // 曝光是在渲染路径里发的，其它动作点都自带 save()，这里没有。
+    // 不补这一下，刷新页面就丢掉「这题什么时候出现过」，耗时证据对不上。
+    save();
   }
 
   function blankRound() {
@@ -132,6 +173,13 @@
       version: 3,
       bookId: SHT.BOOKS.current().meta.id,
       unitId: SHT.curriculum.id,
+      /*
+       * 答题轨迹：一串带序号的过程事件（曝光/选/改选/提示/输入/提交/反馈/离开）。
+       * 它跟错题本一样跟着学生走，切单元、切视图都不清空 —— 学习者模型只从这串事件算，
+       * 不读某一轮的 practice，否则「上一轮犹豫了很久」这类证据一换轮就丢。
+       */
+      events: [],
+      eventSeq: 0,
       tab: 'agents',
       agent: 'course',
       /*
@@ -240,6 +288,13 @@
     if (parsed.view !== 'dev' && parsed.view !== 'student') parsed.view = 'student';
     if (typeof parsed.stStarted !== 'boolean') parsed.stStarted = false;
     if (typeof parsed.stFail !== 'string') parsed.stFail = '';
+    // v3 之前没有轨迹：补空表，不要拿旧 attempts 反推事件（反推出来的不是证据，是猜测）
+    if (!Array.isArray(parsed.events)) parsed.events = [];
+    if (!Number.isFinite(parsed.eventSeq)) {
+      parsed.eventSeq = parsed.events.reduce(function (n, e) {
+        return Math.max(n, Number(e && e.seq) || 0);
+      }, 0);
+    }
     return parsed;
   }
 
@@ -1236,6 +1291,7 @@
     const r = p.revealed;
     // 计时起点：一题刚出现、还没作答时打点。只存在内存里，提交时随作答一起落盘。
     if (!r && !p.shownAt) p.shownAt = Date.now();
+    ensureShownEvent(q, p);
     const st = pointStateOf(list[p.cursor] || q);
 
     $('practiceCard').innerHTML = '' +
@@ -1321,7 +1377,12 @@
   function pickOption(index) {
     const p = practiceOf();
     if (p.revealed) return;
+    const q = activePracticeQuestion();
+    const prev = p.picked;
     p.picked = p.picked === index ? null : index;
+    // 第一次选记 pick，之后再动就是 change。改选次数是「犹豫」最直接的证据，
+    // 覆盖式地只留最终选项的话，这条信息永久丢失。
+    if (q) emitEvent(prev == null ? 'pick' : 'change', q, { index: p.picked, prevIndex: prev });
     save(); renderPractice();
   }
 
@@ -1338,6 +1399,7 @@
     if (gone < 0) { toast('这道题没有可划掉的错项'); return; }
     p.hintGone = gone;
     p.hintUsed = true;
+    emitEvent('hint', q, { removedIndex: gone });
     save(); renderPractice();
     toast('划掉一个错的。用了提示，这题答对也不算独立答对');
   }
@@ -1426,6 +1488,15 @@
       at: new Date().toISOString()
     });
     const attempt = p.attempts[p.attempts.length - 1];
+    // 提交成功才记事件：判分模型挂掉、或者没选就点提交，都不算一次作答。
+    // 前者在下面 return 之前不会走到这里，后者更早就被挡住了。
+    emitEvent('submit', q, {
+      picked: attempt.picked, expected: attempt.expected,
+      correct: attempt.correct, via: attempt.via,
+      durationMs: attempt.durationMs, hintUsed: !!attempt.hintCount,
+      stage: attempt.stage, kp: attempt.kpLabel, gradeKey: attempt.gradeKey
+    });
+    emitEvent('reveal', q, { correct: attempt.correct });
 
     /*
      * 诊断：答完立刻算一次，落库冻结。键与判分台账同一个（题目 + 归一化答案），
@@ -1632,6 +1703,7 @@
     } else {
       writeWrongFromPractice(q, r);
     }
+    emitEvent('leave', q, { nextCursor: p.cursor + 1, correct: !!r.correct });
     p.cursor += 1;
     p.revealed = null;
     p.picked = null;
@@ -1642,6 +1714,7 @@
     p.hintGone = -1;
     // 下一题的计时从它出现的这一刻开始
     p.shownAt = 0;
+    p.shownEventFor = '';
     save(); renderAll();
   }
 
@@ -2277,6 +2350,8 @@
 
   // 换教材/单元：只重建题目与计划，错题记录跟着学生走，不清
   function applyProfile(bookId, unitId) {
+    const leaving = activePracticeQuestion();
+    if (leaving) emitEvent('leave', leaving, { reason: 'unit-change' });
     const b = SHT.BOOKS.get(bookId) || SHT.BOOKS.current();
     const unit = b.getUnit(unitId) || b.units[0];
     SHT.setBook(b.meta.id, unit.id);
@@ -2646,6 +2721,8 @@
   /* ---------- 教材版本 / 单元切换 ---------- */
   function resetFor(bookId, unitId, msg) {
     if (!window.confirm(msg)) { renderAll(); return; }
+    const leaving = activePracticeQuestion();
+    if (leaving) emitEvent('leave', leaving, { reason: 'unit-change' });
     SHT.setBook(bookId, unitId);
     state.bookId = bookId;
     state.unitId = SHT.curriculum.id;
@@ -2974,6 +3051,10 @@
       const el = e.target.closest('[data-st-draft]');
       if (!el) return;
       practiceOf().draft = el.value;
+      // 开放题的打字过程也是轨迹，但只记长度、不记原文：输入内容属于学生隐私，
+      // 和 traces 不落提示词原文是同一条约定。
+      const dq = activePracticeQuestion();
+      if (dq) emitEvent('draft', dq, { len: String(el.value).length });
     });
     const modal = $('modelModal');
     if (modal) {

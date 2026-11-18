@@ -67,6 +67,7 @@ require('../src/core/agents.js');
 require('../src/core/validate.js');
 require('../src/core/quota.js');
 require('../src/core/bkt.js');
+require('../src/core/learner.js');
 require('../src/core/progress.js');
 require('../src/core/agentMemory.js');
 require('../src/core/pipeline.js');
@@ -1887,6 +1888,183 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
 
   // 收尾：模型桩换回真的，别影响后面的断言
   SHT.llm.call = REAL_CALL;
+
+  /* ================= A：答题轨迹采集 ================= */
+  console.log('--- A 答题轨迹采集 ---');
+  store = {};
+  delete require.cache[require.resolve('../src/app.js')];
+  require('../src/app.js');
+  await Promise.resolve();
+  const stA = SHT.devAudit.state();
+  // 学生还没点「开始」，02 页的样题也在渲染，但学生没看见 —— 不能凭空记一段学习轨迹
+  assert('A 学生还没开始答题时不产生假曝光轨迹（和错题本同理）',
+    stA.events.length === 0, JSON.stringify(stA.events.map(e => e.type)));
+  const qA = {
+    qid: 'q-trajectory-1', no: 1, knowledgePoint: 'vocab · shirt · 音义联结',
+    ability: 'vocab', cell: { type: '中英匹配', level: '认', distractor: '形近' },
+    prompt: '选出「衬衫」的英文。', options: ['shirt', 'skirt', 'coat'], answer: 'shirt'
+  };
+  stA.rounds[1].questions = [qA];
+  stA.stStarted = true;
+
+  const stClick = function (action, extra) {
+    fire('studentRoot', 'click', {
+      closest: (sel) => (sel === '[data-st-action]'
+        ? { dataset: Object.assign({ stAction: action }, extra || {}) } : null),
+      matches() { return false; }
+    });
+  };
+  const evOf = function (t) { return stA.events.filter(function (e) { return e.type === t; }); };
+  const inc = function (arr, field) {
+    return arr.every(function (e, i) { return i === 0 || e[field] > arr[i - 1][field]; });
+  };
+
+  // 用「选水平」触发一次渲染（值不变，无业务副作用），让曝光事件打点
+  stClick('level', { id: 'B' });
+  assert('A 题一出现就记曝光，且带学生 / 题 / 轮次 / 知识点',
+    evOf('shown').length === 1 && evOf('shown')[0].qid === qA.qid &&
+    evOf('shown')[0].studentId === SHT.sampleStudent.id &&
+    evOf('shown')[0].kp === qA.knowledgePoint && evOf('shown')[0].round === 1,
+    JSON.stringify(evOf('shown')));
+  stClick('level', { id: 'B' });
+  assert('A 重复渲染不重复记曝光', evOf('shown').length === 1, String(evOf('shown').length));
+
+  stClick('submit');
+  await Promise.resolve();
+  assert('A 只提交不选不记 submit（空作答不是证据）',
+    evOf('submit').length === 0, String(evOf('submit').length));
+
+  stClick('pick', { index: '0' });
+  stClick('pick', { index: '1' });
+  // 第三次必须换个值：点同一个是「取消选择」，那样提交时又变成没选
+  stClick('pick', { index: '2' });
+  assert('A 改选记成独立事件，不覆盖首次选择',
+    evOf('pick').length === 1 && evOf('change').length === 2 &&
+    evOf('change')[0].payload.prevIndex === 0,
+    stA.events.map(e => e.type).join(','));
+
+  stClick('submit');
+  for (let i = 0; i < 200 && evOf('reveal').length === 0; i += 1) await Promise.resolve();
+  assert('A 提交与反馈各一条，带上判定依据与耗时',
+    evOf('submit').length === 1 && evOf('reveal').length === 1 &&
+    evOf('submit')[0].payload.correct === false &&
+    evOf('submit')[0].payload.picked === 'coat' &&
+    evOf('submit')[0].payload.via === 'exact' &&
+    evOf('submit')[0].payload.hintUsed === false &&
+    typeof evOf('submit')[0].payload.durationMs === 'number',
+    JSON.stringify((evOf('submit')[0] || {}).payload || {}));
+
+  stClick('submit');
+  await Promise.resolve();
+  assert('A 重复提交不重复记（revealed 后直接挡下）',
+    evOf('submit').length === 1, String(evOf('submit').length));
+
+  stClick('next');
+  assert('A 答完离开本题记 leave', evOf('leave').length >= 1,
+    'leave ' + evOf('leave').length);
+  const beforeUnit = stA.events.length;
+  stClick('book', { id: 'HEB-G4A' });
+  assert('A 切教材不清空轨迹（轨迹跟着学生走，和错题一致）',
+    stA.events.length >= beforeUnit &&
+    stA.events.slice(0, beforeUnit).every(e => e && e.qid && e.type),
+    beforeUnit + ' → ' + stA.events.length);
+  assert('A seq 与 ts 都严格递增，每条带完整身份信息',
+    inc(stA.events, 'seq') && inc(stA.events, 'ts') &&
+    stA.events.every(e => e.studentId && e.qid && e.kp && e.round >= 1 &&
+      SHT.learner.TYPES.indexOf(e.type) >= 0),
+    '共 ' + stA.events.length + ' 条 / ' + stA.events.map(e => e.type).join(','));
+  assert('A 覆盖曝光→选择→改选→提交→反馈→离开六类事件',
+    ['shown', 'pick', 'change', 'submit', 'reveal', 'leave'].every(t => evOf(t).length > 0),
+    stA.events.map(e => e.type).join(','));
+
+  /* ================= B：可复算的学习者模型 ================= */
+  console.log('--- B 学习者模型可复算 ---');
+  const KP = 'vocab · shirt · 形近';
+  const mkEv = function (seq, qid, type, payload, sid) {
+    return {
+      seq: seq, studentId: sid || 'S-TEST', qid: qid, kp: KP, round: 1,
+      ts: 1000 + seq, type: type, payload: payload || {}
+    };
+  };
+  // 一串轨迹：每题 shown → pick → (change / hint) → submit → reveal → leave
+  const series = function (prefix, spec) {
+    const out = [];
+    let seq = 0;
+    spec.forEach(function (s, i) {
+      const qid = prefix + '-' + (i + 1);
+      out.push(mkEv(++seq, qid, 'shown', {}));
+      out.push(mkEv(++seq, qid, 'pick', { index: 0 }));
+      for (let c = 0; c < (s.changes || 0); c += 1) {
+        out.push(mkEv(++seq, qid, 'change', { index: 1, prevIndex: 0 }));
+      }
+      if (s.hint) out.push(mkEv(++seq, qid, 'hint', { removedIndex: 1 }));
+      out.push(mkEv(++seq, qid, 'submit', {
+        picked: s.correct ? 'shirt' : 'skirt', expected: 'shirt',
+        correct: s.correct, via: 'exact', durationMs: s.ms, hintUsed: !!s.hint
+      }));
+      out.push(mkEv(++seq, qid, 'reveal', { correct: s.correct }));
+      out.push(mkEv(++seq, qid, 'leave', {}));
+    });
+    return out;
+  };
+  const fast = series('fast', [{ ms: 2500, correct: false }, { ms: 2800, correct: false }]);
+  const slow = series('slow', [{ ms: 20000, correct: false }, { ms: 22000, correct: false }]);
+  const guess = series('guess', [{ ms: 9000, correct: true, changes: 2, hint: true }]);
+  const clean = series('clean', [{ ms: 6000, correct: true }, { ms: 6200, correct: true }]);
+
+  const emptyModel = SHT.learner.build([]);
+  assert('B 没有轨迹时模型是空的，理由说人话',
+    emptyModel.queue.length === 0 && emptyModel.answeredCount === 0 &&
+    emptyModel.reason.indexOf('还没有作答轨迹') >= 0, emptyModel.reason);
+
+  const mFast = SHT.learner.build(fast);
+  const mSlow = SHT.learner.build(slow);
+  assert('B 同样错两次：掌握概率相同（BKT 只看对错序列）',
+    mFast.byKp[KP].pKnown === mSlow.byKp[KP].pKnown,
+    mFast.byKp[KP].pKnown + ' / ' + mSlow.byKp[KP].pKnown);
+  assert('B 但秒错判成粗心、久想仍错判成未掌握，排序权重也不同',
+    mFast.byKp[KP].tendency === 'slip' && mSlow.byKp[KP].tendency === 'unknown' &&
+    mSlow.queue[0].score > mFast.queue[0].score,
+    mFast.byKp[KP].tendency + ' ' + mFast.queue[0].score + ' / ' +
+    mSlow.byKp[KP].tendency + ' ' + mSlow.queue[0].score);
+  assert('B 靠提示加改选才答对，判成不稳定且掌握概率压低',
+    SHT.learner.build(guess).byKp[KP].tendency === 'unstable' &&
+    SHT.learner.build(guess).byKp[KP].pKnown < SHT.learner.build(clean).byKp[KP].pKnown,
+    String(SHT.learner.build(guess).byKp[KP].pKnown) + ' / ' +
+    String(SHT.learner.build(clean).byKp[KP].pKnown));
+
+  const before = JSON.stringify(fast);
+  const r1 = JSON.stringify(SHT.learner.build(fast));
+  const r2 = JSON.stringify(SHT.learner.build(fast));
+  const rShuffled = JSON.stringify(SHT.learner.build(fast.slice().reverse()));
+  assert('B 同一串事件重放结果逐字段相等', r1 === r2, '两次输出不一致');
+  assert('B 输入数组被打乱，只要 seq 不变结果就一样', r1 === rShuffled,
+    '乱序后结果变了：说明还在依赖数组顺序');
+  assert('B build 不修改入参', JSON.stringify(fast) === before);
+
+  const mixed = fast.concat(slow.map(function (e) {
+    return Object.assign({}, e, {
+      studentId: 'S-OTHER', seq: e.seq + 1000, qid: e.qid + '-b'
+    });
+  }));
+  const mA = SHT.learner.build(mixed, { studentId: 'S-TEST' });
+  const mB = SHT.learner.build(mixed, { studentId: 'S-OTHER' });
+  assert('B 混合轨迹按学生分开算，两个学生的模型互不污染',
+    mA.byKp[KP].tendency === 'slip' && mB.byKp[KP].tendency === 'unknown' &&
+    mA.studentId === 'S-TEST' && mB.studentId === 'S-OTHER',
+    mA.byKp[KP].tendency + ' / ' + mB.byKp[KP].tendency);
+
+  // 桥接：真实采集的事件必须能被模型直接读，防止采集格式和模型契约各写一套
+  const mReal = SHT.learner.build(stA.events);
+  assert('B 真实采集的事件能直接喂给模型（采集格式与算法契约一致）',
+    mReal.answeredCount === 1 && !!mReal.byKp[qA.knowledgePoint] &&
+    mReal.byKp[qA.knowledgePoint].changes === 2 &&
+    mReal.queue[0].reason.indexOf('掌握概率') >= 0,
+    JSON.stringify(mReal.queue[0] || {}));
+  const dg = SHT.learner.digest(mReal, 2);
+  assert('B 导出摘要只带可核对的字段，不塞整串事件',
+    dg.queue.length <= 2 && typeof dg.reason === 'string' && dg.answeredCount === 1 &&
+    !dg.events, JSON.stringify(dg).slice(0, 120));
 
   console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
   process.exit(failed === 0 ? 0 : 1);
