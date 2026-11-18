@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>出题工作台 · Self-Evolution Hypothesis Test</title>
+<title>英语自适应练习</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
 
   <header class="topbar">
     <div class="brand">
-      <div class="brand-title">出题工作台</div>
-      <div class="brand-sub" id="brandSub">S-001 · U1 My classroom · 第 1 轮</div>
+      <div class="brand-title">英语练习</div>
+      <div class="brand-sub" id="brandSub">选好单元就能开始</div>
     </div>
     <div class="controls">
       <select id="bookSelect" class="unit-select" title="教材版本"></select>
@@ -24,6 +24,7 @@
       <button type="button" id="modelBtn" class="btn btn-ghost">模型</button>
       <button type="button" id="exportBtn" class="btn btn-ghost">导出</button>
       <button type="button" id="resetBtn" class="btn btn-ghost">重置</button>
+      <button type="button" id="viewToggle" class="btn btn-ghost">开发视图</button>
     </div>
   </header>
 
@@ -37,7 +38,16 @@
 
   <main class="stage">
 
-    <section class="stage-page is-active" id="page-agents">
+    <!--
+      学生端：默认进来的就是这一页。
+      只有四件事：选画像 → 系统出题 → 答题 → 下一轮。
+      出题的角色分工、配额、失败记录全部收进「开发视图」，学生看不到。
+    -->
+    <section class="stage-page is-active" id="page-student">
+      <div id="studentRoot"></div>
+    </section>
+
+    <section class="stage-page" id="page-agents">
       <aside class="agent-rail" id="agentRail"></aside>
       <div class="agent-work" id="agentPanel"></div>
     </section>

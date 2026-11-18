@@ -1759,6 +1759,118 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
   assert('判分失败带着人能读的原因', /没填 API Key|密钥|网络|超时/.test(String(askFail.error || '')),
     String(askFail.error || ''));
 
+  /*
+   * 学生端动线：选画像 → 出题 → 答题 → 下一轮。
+   * 这条线以前完全没测 —— 页面是给开发者看的，学生端是后加的入口，
+   * 一旦 start / next-round 的按钮接错，界面照样能渲染，只是点了没反应。
+   */
+  console.log('--- 学生端：选画像 → 出题 → 答题 → 下一轮 ---');
+  store = {};
+  delete require.cache[require.resolve('../src/app.js')];
+  // 要先「已配置模型」，否则 start 会先去开设置弹窗而不是出题
+  SHT.llm.save({ baseUrl: 'http://mock', model: 'mock-model', key: 'mock-key', temperature: 0.6, maxTokens: 800, timeoutMs: 1000 });
+  require('../src/app.js');
+  await Promise.resolve();
+  const st0 = SHT.devAudit.state();
+  assert('默认进学生端，不是开发视图', st0.view === 'student', String(st0.view));
+  assert('学生端首屏是选画像（教材/单元/水平 + 开始按钮）',
+    nodes.studentRoot.innerHTML.indexOf('今天练哪个单元') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('data-st-action="book"') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('data-st-action="unit"') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('data-st-action="level"') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('data-st-action="start"') >= 0,
+    nodes.studentRoot.innerHTML.slice(0, 60));
+  assert('学生端不出现开发话语（配额 / 角色分工）',
+    nodes.studentRoot.innerHTML.indexOf('配额') < 0 && nodes.studentRoot.innerHTML.indexOf('角色') < 0);
+
+  // 出题：模型桩按 计划 → 题 → 验证 的顺序应答；选项取本单元真实词，否则代码闸会判假干扰项
+  let stCalls = 0;
+  let stWord = '';
+  SHT.llm.call = async function (opts) {
+    stCalls += 1;
+    const ws = (SHT.curriculum.words || []);
+    const w0 = ws[0] || { en: 'shirt', zh: '衬衫' };
+    const o2 = (ws[1] || { en: 'skirt' }).en;
+    const o3 = (ws[2] || { en: 'coat' }).en;
+    if (opts.role === 'plan') {
+      return { ok: true, tokens: 10, ms: 1, json: { plans: [
+        { kp: 'vocab · ' + w0.en + ' · 音义联结', ability: 'vocab', cause: '形近', whyThisOne: '本单元核心词', nextIfWrong: '先配对', level: '认' }
+      ] } };
+    }
+    if (opts.role === 'generate') {
+      stWord = w0.en;
+      // 题干只能写中文义：写英文原词会被 V4「题干泄答案」直接退回
+      return { ok: true, tokens: 10, ms: 1, json: {
+        prompt: '选出「' + w0.zh + '」对应的英文。', audioText: '', options: [w0.en, o2, o3],
+        answer: w0.en, analysis: '「' + w0.zh + '」就是 ' + w0.en + '。', keyword: w0.en
+      } };
+    }
+    if (opts.role === 'verify') return { ok: true, tokens: 10, ms: 1, json: { verdict: 'pass' } };
+    return { ok: true, tokens: 10, ms: 1, json: {} };
+  };
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'start' } } : null),
+    matches() { return false; }
+  });
+  // 出题是异步的：喂完模型桩，把微任务推完，等界面自己切到第 1 题
+  for (let i = 0; i < 300 && nodes.studentRoot.innerHTML.indexOf('data-st-action="pick"') < 0; i += 1) {
+    await Promise.resolve();
+  }
+  assert('点开始后走完整条出题流水线，界面切到第 1 题',
+    stCalls >= 2 && nodes.studentRoot.innerHTML.indexOf('第 1 / 1 题') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf(stWord) >= 0,
+    '模型调用 ' + stCalls + ' 次 / ' + nodes.studentRoot.innerHTML.slice(0, 80));
+
+  // 答错：选第 2 项
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'pick', index: '1' } } : null),
+    matches() { return false; }
+  });
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'submit' } } : null),
+    matches() { return false; }
+  });
+  for (let i = 0; i < 300 && nodes.studentRoot.innerHTML.indexOf('答错了') < 0; i += 1) {
+    await Promise.resolve();
+  }
+  assert('答错后给判定、正确答案与去向说明',
+    nodes.studentRoot.innerHTML.indexOf('答错了') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('已记进错题本') >= 0,
+    nodes.studentRoot.innerHTML.slice(0, 120));
+
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'next' } } : null),
+    matches() { return false; }
+  });
+  assert('答完最后一道进本轮结果，给出「出下一轮题目」',
+    nodes.studentRoot.innerHTML.indexOf('轮结束') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf('data-st-action="next-round"') >= 0,
+    nodes.studentRoot.innerHTML.slice(0, 120));
+
+  // 下一轮：错题要进 brief，probe 要指回第一轮那道题
+  const beforeNext = stCalls;
+  fire('studentRoot', 'click', {
+    closest: (sel) => (sel === '[data-st-action]' ? { dataset: { stAction: 'next-round' } } : null),
+    matches() { return false; }
+  });
+  for (let i = 0; i < 300 && nodes.studentRoot.innerHTML.indexOf('第 1 / 1 题') < 0; i += 1) {
+    await Promise.resolve();
+  }
+  const st1 = SHT.devAudit.state();
+  assert('点「出下一轮」会重新调模型出题，不是复用上一轮的题',
+    stCalls > beforeNext && nodes.studentRoot.innerHTML.indexOf('第 1 / 1 题') >= 0,
+    '新增调用 ' + (stCalls - beforeNext) + ' 次');
+  assert('第二轮那道题挂回第一轮的错题（parentQid）',
+    !!(st1.rounds[2].questions[0] && st1.rounds[2].questions[0].parentQid),
+    JSON.stringify(st1.rounds[2].questions[0] && st1.rounds[2].questions[0].parentQid));
+  assert('学生端全程没把开发面板带出来（错题本/日志/审计台都不在页面里）',
+    nodes.studentRoot.innerHTML.indexOf('判分台账') < 0 &&
+    nodes.studentRoot.innerHTML.indexOf('出题日志') < 0 &&
+    nodes.studentRoot.innerHTML.indexOf('审计') < 0);
+
+  // 收尾：模型桩换回真的，别影响后面的断言
+  SHT.llm.call = REAL_CALL;
+
   console.log('\n' + (failed === 0 ? 'ALL PASS' : failed + ' FAILED'));
   process.exit(failed === 0 ? 0 : 1);
 })();

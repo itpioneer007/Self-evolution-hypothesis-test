@@ -1338,3 +1338,161 @@ select { cursor: pointer; }
   background: var(--amber-soft); border: 1px solid #f0dfbc;
   border-radius: 8px; font-size: 13px; color: var(--amber);
 }
+
+/* ============================================================
+   学生端（默认视图）
+   定位：只有「选画像 → 答题 → 下一轮」三件事。
+   开发/审计用的东西不在这页出现，靠顶栏「开发视图」切换。
+   ============================================================ */
+#page-student.is-active { display: block; overflow: auto; }
+
+/* 学生视图下收起所有开发控件，只留模型设置与视图切换 */
+body.is-student .tabbar { display: none; }
+body.is-student .controls > #bookSelect,
+body.is-student .controls > #unitSelect,
+body.is-student .controls > #roundSwitch,
+body.is-student .controls > #exportBtn,
+body.is-student .controls > #resetBtn { display: none; }
+
+.st-page { max-width: 720px; margin: 0 auto; padding: 40px 22px 64px; }
+.st-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 30px 32px;
+  box-shadow: var(--shadow);
+}
+.st-card.is-center { text-align: center; padding: 56px 32px; }
+
+.st-eyebrow { font-size: 12px; color: var(--ink-hint); letter-spacing: .06em; margin-bottom: 8px; }
+.st-title { font-size: 23px; font-weight: 680; letter-spacing: .01em; margin: 0 0 8px; }
+.st-sub { font-size: 13.5px; color: var(--ink-soft); line-height: 1.7; margin: 0 0 22px; }
+
+.st-field { margin-bottom: 20px; }
+.st-label { font-size: 12.5px; font-weight: 650; color: var(--ink-soft); margin-bottom: 9px; }
+.st-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.st-chips.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
+
+.st-chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .12s, background .12s;
+}
+.st-chip:hover { border-color: var(--blue-line); background: #f7fbff; }
+.st-chip.is-on {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue-deep);
+  font-weight: 650;
+}
+.st-chip small { display: block; font-size: 11.5px; color: var(--ink-hint); font-weight: 400; margin-top: 2px; }
+.st-chip.is-on small { color: var(--blue); }
+
+.st-primary {
+  width: 100%;
+  margin-top: 6px;
+  border: 0;
+  background: var(--blue);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 650;
+  font-family: inherit;
+  padding: 13px 18px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.st-primary:hover { background: var(--blue-deep); }
+.st-primary:disabled { background: #b9cede; cursor: default; }
+.st-foot { margin-top: 12px; font-size: 12px; color: var(--ink-hint); text-align: center; }
+
+/* 出题中 */
+.st-step { margin-top: 6px; font-size: 13px; color: var(--blue); min-height: 20px; }
+.st-bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; margin-top: 18px; }
+.st-bar span { display: block; height: 100%; background: var(--blue); border-radius: 3px; transition: width .3s; }
+
+/* 答题 */
+.st-qhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.st-qno { font-size: 12.5px; color: var(--ink-hint); font-weight: 600; letter-spacing: .04em; }
+.st-qscore { font-size: 12.5px; color: var(--ink-hint); }
+.st-qscore b { color: var(--blue-deep); }
+.st-prompt { font-size: 19px; line-height: 1.6; font-weight: 600; margin: 6px 0 20px; }
+.st-opts { display: grid; gap: 9px; }
+.st-opt {
+  display: flex; align-items: center; gap: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 9px;
+  padding: 13px 15px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.st-opt:hover:not(:disabled) { border-color: var(--blue-line); background: #f7fbff; }
+.st-opt:disabled { cursor: default; }
+.st-opt .k {
+  width: 24px; height: 24px; flex: 0 0 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; background: var(--line-soft);
+  font-size: 12px; font-weight: 700; color: var(--ink-hint);
+}
+.st-opt.is-picked { border-color: var(--blue); background: var(--blue-soft); }
+.st-opt.is-picked .k { background: var(--blue); color: #fff; }
+.st-opt.is-right { border-color: #9fc7a8; background: #eef8f0; }
+.st-opt.is-right .k { background: #4c8b60; color: #fff; }
+.st-opt.is-wrong { border-color: #e2b6b6; background: var(--red-soft); }
+.st-opt.is-wrong .k { background: var(--red); color: #fff; }
+
+.st-open { width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px;
+  font-size: 15px; font-family: inherit; color: var(--ink); resize: vertical; }
+.st-open:focus { outline: none; border-color: var(--blue-line); }
+
+.st-actions { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
+.st-actions .st-primary { width: auto; min-width: 150px; margin: 0; padding: 11px 22px; font-size: 14px; }
+.st-note { font-size: 12.5px; color: var(--ink-hint); }
+
+/* 判定反馈 */
+.st-verdict { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+.st-verdict-top { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.st-badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 6px; }
+.st-verdict.is-good .st-badge { background: #e6f4ea; color: #2f6b41; }
+.st-verdict.is-bad .st-badge { background: var(--red-soft); color: var(--red); }
+.st-verdict-ans { color: var(--ink-soft); }
+.st-verdict-ans b { color: var(--ink); }
+.st-verdict-ans b.ok { color: #2f6b41; }
+.st-why { margin-top: 12px; display: grid; gap: 7px; }
+.st-why-row { display: flex; gap: 9px; font-size: 13px; color: var(--ink-soft); align-items: baseline; }
+.st-why-row .tag { flex: 0 0 auto; font-size: 11.5px; font-weight: 650; color: var(--ink-hint); }
+.st-why-row.is-right .tag { color: #2f6b41; }
+.st-why-row.is-wrong .tag { color: var(--red); }
+.st-tip { margin-top: 12px; font-size: 12.5px; color: var(--ink-hint); line-height: 1.65; }
+
+/* 本轮结果 */
+.st-sum { text-align: center; }
+.st-sum-num { font-size: 46px; font-weight: 700; color: var(--blue-deep); line-height: 1.1; }
+.st-sum-num small { font-size: 16px; font-weight: 600; color: var(--ink-hint); }
+.st-sum-label { font-size: 13px; color: var(--ink-hint); margin-top: 4px; }
+.st-sum-list { text-align: left; margin: 24px 0 6px; display: grid; gap: 8px; }
+.st-sum-item {
+  display: flex; gap: 10px; align-items: baseline;
+  background: var(--red-soft); border: 1px solid #f0d8d8; border-radius: 8px;
+  padding: 9px 12px; font-size: 13px; color: var(--ink-soft);
+}
+.st-sum-item .dot { color: var(--red); font-weight: 700; }
+.st-sum-empty {
+  margin: 24px 0 6px; padding: 12px; border-radius: 8px;
+  background: #eef8f0; border: 1px solid #cfe6d6; color: #2f6b41; font-size: 13px;
+}
+
+/* 学生视图下底部那行是给开发者看的统计，收起来 */
+body.is-student .footbar { display: none; }
+body.is-student .st-sum-num small { margin-left: 4px; }
+.st-foot.is-warn { color: var(--red); margin-top: 6px; }

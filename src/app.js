@@ -134,6 +134,13 @@
       unitId: SHT.curriculum.id,
       tab: 'agents',
       agent: 'course',
+      /*
+       * 前端默认进「学生端」。tab 那套五个页签是开发/审计视图，不是给学生看的：
+       * 出题的角色分工、配额、失败记录都收在 state.view === 'dev' 里。
+       */
+      view: 'student',
+      // 学生端是否已经开始过一次（决定停在「选画像」还是直接续答）
+      stStarted: false,
       checkLayer: 0,
       round: 1,
       activeNo: 1,
@@ -227,6 +234,9 @@
     if (!parsed.learningLayer) parsed.learningLayer = SHT.sampleLearningLayer || 'B';
     if (!parsed.tab) parsed.tab = 'agents';
     if (!parsed.agent) parsed.agent = 'course';
+    // 老存档没有视图字段：一律先给到学生端（它才是主入口），要看内部再点「开发视图」
+    if (parsed.view !== 'dev' && parsed.view !== 'student') parsed.view = 'student';
+    if (typeof parsed.stStarted !== 'boolean') parsed.stStarted = false;
     return parsed;
   }
 
@@ -1298,6 +1308,10 @@
   function renderPractice() {
     renderPracticeCard();
     renderPracticeRail();
+    // 学生端和 02 页共用同一套作答状态（cursor / picked / revealed），
+    // 动作里只调 renderPractice 的地方（选选项、提交、判分中）也要把学生端一起刷出来，
+    // 否则点了选项学生端没反应。
+    renderStudent();
   }
 
   /* ---------- 02 答题：动作 ---------- */
@@ -2032,13 +2046,299 @@
     return n;
   }
 
+  /* ============================================================
+   * 学生端
+   *
+   * 定位：学生只做三件事——选画像、答题、点「下一轮」。
+   * 出题完全在后台（runModelRound），他看不到角色、配额、失败记录。
+   * 和 02 页共用同一份 state（rounds / practice / gradeLedger），
+   * 所以两边的作答、判分、错题落账完全一致，不存在两套数据。
+   * ============================================================ */
+
+  const ST_LEVELS = [
+    { id: 'A', label: '基础', note: '先跟着课本走' },
+    { id: 'B', label: '中等', note: '课内正常进度' },
+    { id: 'C', label: '较好', note: '想多练一点' }
+  ];
+
+  function stQuestions() { return practiceQuestions(); }
+
+  function stStats() {
+    const p = practiceOf();
+    const right = p.attempts.filter(function (a) { return a.correct; }).length;
+    return { total: stQuestions().length, done: p.attempts.length, right: right, wrong: p.attempts.length - right };
+  }
+
+  function stField(label, chips, cls) {
+    return '<div class="st-field"><div class="st-label">' + esc(label) + '</div>' +
+      '<div class="st-chips' + (cls || '') + '">' + chips + '</div></div>';
+  }
+
+  function stProfileHtml() {
+    const book = SHT.BOOKS.get(state.bookId) || SHT.BOOKS.current();
+    const bookChips = SHT.BOOKS.list().map(function (b) {
+      return '<button type="button" class="st-chip' + (b.id === book.meta.id ? ' is-on' : '') +
+        '" data-st-action="book" data-id="' + b.id + '">' + esc(b.shortName || b.name) +
+        '<small>' + b.unitCount + ' 个单元</small></button>';
+    }).join('');
+    const unitChips = book.units.map(function (u) {
+      return '<button type="button" class="st-chip' + (u.id === state.unitId ? ' is-on' : '') +
+        '" data-st-action="unit" data-id="' + u.id + '">' + esc(u.id + ' · ' + u.title) + '</button>';
+    }).join('');
+    const levelChips = ST_LEVELS.map(function (l) {
+      return '<button type="button" class="st-chip' + (state.learningLayer === l.id ? ' is-on' : '') +
+        '" data-st-action="level" data-id="' + l.id + '">' + esc(l.label) +
+        '<small>' + esc(l.note) + '</small></button>';
+    }).join('');
+    const noKey = !SHT.llm.isReady();
+    return '<div class="st-page"><div class="st-card">' +
+      '<div class="st-eyebrow">开始前先选一下</div>' +
+      '<h1 class="st-title">今天练哪个单元？</h1>' +
+      '<p class="st-sub">选好教材、单元和你的水平，系统会按这些出题；上一轮做错的考点会被优先再考一次。你只管答题。</p>' +
+      stField('教材', bookChips) +
+      stField('单元', unitChips, ' is-grid') +
+      stField('我的水平', levelChips) +
+      '<button type="button" class="st-primary" data-st-action="start">开始答题</button>' +
+      '<div class="st-foot">每轮 ' + countFor(1) + ' 道题 · 答完直接进下一轮</div>' +
+      (noKey ? '<div class="st-foot is-warn">还没配置模型：点右上角「模型」填 API Key 才能出题</div>' : '') +
+    '</div></div>';
+  }
+
+  /*
+   * 出题进度原来是给开发者看的（「课程角色在排考点」）。学生不需要知道内部有四个角色，
+   * 按阶段翻译成一句人话就够了。
+   */
+  function stStepText(step) {
+    const s = String(step || '');
+    if (/考点|计划/.test(s)) return '正在挑这一轮要考的考点';
+    if (/验证|质检|检查/.test(s)) return '正在检查题目有没有问题';
+    if (/写题|生成|第\s*\d+\s*题/.test(s)) return '正在写题';
+    if (/诊断/.test(s)) return '正在分析错因';
+    return '正在准备题目';
+  }
+
+  function stGeneratingHtml() {
+    return '<div class="st-page"><div class="st-card is-center">' +
+      '<div class="st-eyebrow">正在出题</div>' +
+      '<h2 class="st-title">按你的水平组一套题</h2>' +
+      '<p class="st-sub">' + (state.round > 1 ? '这一轮会先照顾上一轮做错的考点。' : '第一次练这个单元，先按单元重点铺开。') +
+        '一般十几秒。</p>' +
+      '<div class="st-bar"><span style="width:62%"></span></div>' +
+      '<div class="st-step">' + esc(stStepText(state.llmStep)) + '</div>' +
+    '</div></div>';
+  }
+
+  function stOptionBtns(q, p) {
+    const r = p.revealed;
+    return '<div class="st-opts">' + (q.options || []).map(function (o, i) {
+      if (!String(o || '').trim()) return '';
+      let cls = 'st-opt';
+      if (r) {
+        if (i === r.expectedIndex) cls += ' is-right';
+        else if (SHT.normAnswer(o) === SHT.normAnswer(r.picked)) cls += ' is-wrong';
+      } else if (p.picked === i) {
+        cls += ' is-picked';
+      }
+      return '<button type="button" class="' + cls + '" data-st-action="pick" data-index="' + i + '"' +
+        (r ? ' disabled' : '') + '><span class="k">' + String.fromCharCode(65 + i) + '</span>' +
+        '<span>' + esc(o) + '</span></button>';
+    }).join('') + '</div>';
+  }
+
+  function stOpenInput(q, p) {
+    const r = p.revealed;
+    if (r) {
+      return '<div class="st-tip">你的作答：<b>' + (String(r.picked || '').trim() ? esc(r.picked) : '（没写）') + '</b></div>';
+    }
+    return '<textarea class="st-open" rows="3" data-st-draft="1"' + (p.grading ? ' disabled' : '') +
+      ' placeholder="用英语写，写完点提交">' + esc(p.draft || '') + '</textarea>';
+  }
+
+  /*
+   * 判定反馈只留学生需要的话：对没对、正确答案、为什么。
+   * 「这条已冻结」「判错了改成对」是给审查员看的，学生端不出现。
+   */
+  function stVerdictHtml(q, p) {
+    const r = p.revealed;
+    const isOpen = SHT.grade.mode(q) === 'open';
+    const opts = (q.options || []).map(function (o) { return String(o == null ? '' : o).trim(); });
+    const notes = q.optionNotes || [];
+    const idxOf = function (t) {
+      const n = SHT.normAnswer(t);
+      for (let i = 0; i < opts.length; i += 1) { if (SHT.normAnswer(opts[i]) === n) return i; }
+      return -1;
+    };
+    const rows = [];
+    if (!r.correct) {
+      const picked = idxOf(r.picked);
+      const ans = idxOf(r.expected);
+      const row = function (tag, text, why, cls) {
+        return '<div class="st-why-row ' + cls + '"><span class="tag">' + esc(tag) + '</span>' +
+          '<span><b>' + esc(text) + '</b>' + (why ? '　' + esc(why) : '') + '</span></div>';
+      };
+      if (picked >= 0 && notes[picked]) rows.push(row('你选', opts[picked], notes[picked], 'is-wrong'));
+      if (ans >= 0 && notes[ans]) rows.push(row('正确', opts[ans], notes[ans], 'is-right'));
+      if (!rows.length && q.analysis) rows.push(row('说明', '', q.analysis, ''));
+    }
+    const tip = r.correct
+      ? (q.probe ? '这个考点上次错过，这次答对了。' : '')
+      : (q.probe ? '还是错，下一轮再练一次这个考点。'
+                 : '已记进错题本，下一轮会先出这个考点，换个问法。');
+    return '<div class="st-verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
+      '<div class="st-verdict-top">' +
+        '<span class="st-badge">' + (r.correct ? '答对了' : '答错了') + '</span>' +
+        '<span class="st-verdict-ans">你' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
+          (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>') + '</span>' +
+      '</div>' +
+      (rows.length ? '<div class="st-why">' + rows.join('') + '</div>' : '') +
+      (tip ? '<div class="st-tip">' + esc(tip) + '</div>' : '') +
+    '</div>';
+  }
+
+  function stQuizHtml() {
+    const list = stQuestions();
+    const p = practiceOf();
+    const q = list[p.cursor];
+    if (!q) return stProfileHtml();
+    const r = p.revealed;
+    const isOpen = SHT.grade.mode(q) === 'open';
+    const s = stStats();
+    const pct = Math.round((p.cursor / Math.max(1, list.length)) * 100);
+    const last = p.cursor === list.length - 1;
+    return '<div class="st-page"><div class="st-card">' +
+      '<div class="st-qhead">' +
+        '<span class="st-qno">第 ' + (p.cursor + 1) + ' / ' + list.length + ' 题</span>' +
+        '<span class="st-qscore">已答对 <b>' + s.right + '</b></span>' +
+      '</div>' +
+      '<div class="st-bar"><span style="width:' + pct + '%"></span></div>' +
+      '<div class="st-prompt">' + esc(q.prompt) + '</div>' +
+      (isOpen ? stOpenInput(q, p) : stOptionBtns(q, p)) +
+      (p.gradeError ? '<div class="st-tip" style="color:var(--red)">' + esc(p.gradeError) + '</div>' : '') +
+      (r ? stVerdictHtml(q, p) : '') +
+      '<div class="st-actions">' +
+        (r
+          ? '<button type="button" class="st-primary" data-st-action="next">' +
+              (last ? '看本轮结果' : '下一题') + '</button>'
+          : '<button type="button" class="st-primary" data-st-action="submit"' + (p.grading ? ' disabled' : '') + '>' +
+              (p.grading ? '判分中…' : '提交答案') + '</button>' +
+            '<span class="st-note">' + (isOpen ? '写完点提交' : '选一个再提交') + '</span>') +
+      '</div>' +
+    '</div></div>';
+  }
+
+  function stSummaryHtml() {
+    const s = stStats();
+    const p = practiceOf();
+    const wrongKps = [];
+    p.attempts.forEach(function (a) {
+      if (!a.correct && a.kpLabel && wrongKps.indexOf(a.kpLabel) < 0) wrongKps.push(a.kpLabel);
+    });
+    const items = wrongKps.slice(0, 5).map(function (k) {
+      return '<div class="st-sum-item"><span class="dot">·</span><span>' + esc(k) + '</span></div>';
+    }).join('');
+    const isLastRound = state.round >= 2;
+    return '<div class="st-page"><div class="st-card">' +
+      '<div class="st-sum">' +
+        '<div class="st-eyebrow">第 ' + state.round + ' 轮结束</div>' +
+        '<div class="st-sum-num">' + s.right + '<small> / ' + s.done + ' 答对</small></div>' +
+        '<div class="st-sum-label">' + (s.wrong ? '有 ' + s.wrong + ' 道需要再练' : '这一轮全对') + '</div>' +
+      '</div>' +
+      (wrongKps.length
+        ? '<div class="st-sum-list">' + items + '</div>' +
+          '<div class="st-tip">下一轮会先出这些考点，换个问法再考一次——同样对一次可能是记住了这道题，连着对才算真会。</div>'
+        : '<div class="st-sum-empty">这一轮没有错题。下一轮换新题再验一次，确认是真会而不是记住了这道题。</div>') +
+      '<div class="st-actions">' +
+        (isLastRound
+          ? '<button type="button" class="st-primary" data-st-action="regroup">再练一组</button>' +
+            '<span class="st-note">两轮跑完了，再练会保留错题</span>'
+          : '<button type="button" class="st-primary" data-st-action="next-round">出下一轮题目</button>' +
+            '<span class="st-note">' + (wrongKps.length ? '按上面的错题出' : '换新题再验一次') + '</span>') +
+      '</div>' +
+    '</div></div>';
+  }
+
+  function renderStudent() {
+    const root = $('studentRoot');
+    if (!root) return;
+    if (state.view !== 'student') { root.innerHTML = ''; return; }
+    if (state.llmBusy) { root.innerHTML = stGeneratingHtml(); return; }
+    const list = stQuestions();
+    const p = practiceOf();
+    if (!state.stStarted || !list.length) { root.innerHTML = stProfileHtml(); return; }
+    if (p.cursor >= list.length) { root.innerHTML = stSummaryHtml(); return; }
+    root.innerHTML = stQuizHtml();
+  }
+
+  /* ---------- 学生端：动作 ---------- */
+
+  // 换教材/单元：只重建题目与计划，错题记录跟着学生走，不清
+  function applyProfile(bookId, unitId) {
+    const b = SHT.BOOKS.get(bookId) || SHT.BOOKS.current();
+    const unit = b.getUnit(unitId) || b.units[0];
+    SHT.setBook(b.meta.id, unit.id);
+    state.bookId = b.meta.id;
+    state.unitId = unit.id;
+    state.round = 1;
+    state.activeNo = 1;
+    state.rounds = { 1: blankRound(), 2: blankRound() };
+    state.kpScope = [];
+    state.failures = [];
+    state.quota = SHT.quota.blank();
+    state.progress = SHT.progress.blank();
+    state.agentMemory = SHT.agentMemory.blank();
+    save(); renderAll();
+  }
+
+  // 开始一轮：清掉上一批题与作答，出题交给后台
+  function stStart() {
+    if (!SHT.llm.isReady()) { openModel(); toast('先填模型 API Key'); return; }
+    state.stStarted = true;
+    const r = currentRound();
+    r.questions = [];
+    r.practice = blankPractice();
+    // 学生端不让人调配额：交回给代码按水平与错题自动算
+    state.quota = SHT.quota.blank();
+    save();
+    runModelRound(false);
+  }
+
+  // 下一轮：把这一轮的结果交给 brief，换题面重出（错题会被优先排）
+  function stNextRound() {
+    if (!SHT.llm.isReady()) { openModel(); toast('先填模型 API Key'); return; }
+    if (state.round >= 2) return;
+    state.round = 2;
+    state.rounds[2] = blankRound();
+    state.activeNo = 1;
+    save();
+    runModelRound(false);
+  }
+
+  // 两轮跑完后再练一组：题目重来，错题与考点推进保留
+  function stRegroup() {
+    if (!SHT.llm.isReady()) { openModel(); toast('先填模型 API Key'); return; }
+    state.round = 1;
+    state.activeNo = 1;
+    state.rounds = { 1: blankRound(), 2: blankRound() };
+    state.failures = [];
+    state.quota = SHT.quota.blank();
+    save();
+    runModelRound(false);
+  }
+
   function renderAll() {
+    // 学生端没有页签：只要 view 是 student，就固定显示 page-student
+    const activePage = state.view === 'student' ? 'student' : state.tab;
     document.querySelectorAll('#tabbar .tab').forEach(function (b) {
       b.classList.toggle('is-active', b.dataset.tab === state.tab);
     });
     document.querySelectorAll('.stage-page').forEach(function (p) {
-      p.classList.toggle('is-active', p.id === 'page-' + state.tab);
+      p.classList.toggle('is-active', p.id === 'page-' + activePage);
     });
+    if (document.body && document.body.classList) {
+      document.body.classList.toggle('is-student', state.view === 'student');
+    }
+    const vt = $('viewToggle');
+    if (vt) vt.textContent = state.view === 'student' ? '开发视图' : '学生端';
     document.querySelectorAll('#roundSwitch button').forEach(function (b) {
       b.classList.toggle('is-active', Number(b.dataset.round) === state.round);
     });
@@ -2056,7 +2356,9 @@
     renderStop();
     // 审计台只在选中时才重绘：它要算台账复算与变体对照，代价比别的页签高
     if (state.tab === 'audit' && SHT.devAudit) SHT.devAudit.render();
-    $('brandSub').textContent = SHT.sampleStudent.id + ' · ' + SHT.curriculum.bookName + ' · ' +
+    // 学生端不显示学号这类内部标识，只留教材与进度
+    $('brandSub').textContent = (state.view === 'student' ? '' : SHT.sampleStudent.id + ' · ') +
+      SHT.curriculum.bookName + ' · ' +
       SHT.curriculum.id + ' ' + SHT.curriculum.title + ' · 第 ' + state.round + ' 轮';
     $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.curriculum.hostUnitId +
       ' · 词 ' + SHT.curriculum.words.length + ' / 句 ' + SHT.curriculum.sentencePatterns.length +
@@ -2630,6 +2932,41 @@
     }
     const modelBtn = $('modelBtn');
     if (modelBtn) modelBtn.addEventListener('click', openModel);
+
+    // 学生端 ↔ 开发视图。学生端是主入口，开发视图留给验收与排查。
+    const viewToggle = $('viewToggle');
+    if (viewToggle) {
+      viewToggle.addEventListener('click', function () {
+        state.view = state.view === 'student' ? 'dev' : 'student';
+        save(); renderAll();
+      });
+    }
+
+    $('studentRoot').addEventListener('click', function (e) {
+      const b = e.target.closest('[data-st-action]');
+      if (!b) return;
+      const a = b.dataset.stAction;
+      if (a === 'book') {
+        const bk = SHT.BOOKS.get(b.dataset.id);
+        if (bk) applyProfile(bk.meta.id, bk.units[0].id);
+        return;
+      }
+      if (a === 'unit') { applyProfile(state.bookId, b.dataset.id); return; }
+      if (a === 'level') { state.learningLayer = b.dataset.id; save(); renderAll(); return; }
+      if (a === 'start') { stStart(); return; }
+      if (a === 'pick') { pickOption(Number(b.dataset.index)); return; }
+      if (a === 'submit') { submitAnswer(); return; }
+      if (a === 'next') { practiceNext(); return; }
+      if (a === 'next-round') { stNextRound(); return; }
+      if (a === 'regroup') { stRegroup(); return; }
+    });
+
+    // 开放题的输入：和 02 页共用 p.draft，切换视图不会丢草稿
+    $('studentRoot').addEventListener('input', function (e) {
+      const el = e.target.closest('[data-st-draft]');
+      if (!el) return;
+      practiceOf().draft = el.value;
+    });
     const modal = $('modelModal');
     if (modal) {
       modal.addEventListener('click', function (e) {
