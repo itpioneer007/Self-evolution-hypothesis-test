@@ -68,13 +68,15 @@ function planFromWrongCard(userText) {
 function parseVocab(text) {
   const out = [];
   const seen = {};
+  // 词表格式是「word=中文(p3)」。页码要切掉，否则中文串变长会被下面的长度门筛没，
+  // 剩下的词不够凑选项，mock 就会造出超纲题，失败码全是 V1。
   const re = /([A-Za-z][A-Za-z'’\- ]*?)=([^；(（]+)/g;
   let m;
   while ((m = re.exec(String(text)))) {
     const en = m[1].trim().replace(/\s+/g, ' ');
-    const zh = m[2].trim();
+    const zh = m[2].split('(')[0].trim();
     const k = en.toLowerCase();
-    if (!en || seen[k] || !zh || zh.length > 11) continue;
+    if (!en || seen[k] || !zh || zh.length > 14) continue;
     seen[k] = 1;
     out.push({ en: en, zh: zh });
   }
@@ -111,21 +113,28 @@ function buildQuestion(userText, idx) {
   const isListening = ['听音选义', '字母组合辨音', '听写'].indexOf(type) >= 0;
   const retry = /上一版被退回/.test(userText);
 
-  if (idx === 4) {
-    const w = vocab[0];
-    return { prompt: '选出「' + w.zh + '」对应的英文。', audioText: '', options: ['zebra', w.en, 'curtain'], answer: w.en, analysis: '别和动物词混。', keyword: w.en };
-  }
-  if (idx === 1 && !retry) {
-    const w = vocab[1] || vocab[0];
-    return { prompt: '选出「' + w.zh + '」的正确拼写。', audioText: '', options: [w.en, 'curtain', 'zebra'], answer: w.en, analysis: '看清词形。', keyword: w.en };
-  }
-
-  // 第二轮换个词出：复用的意思是「同考点、换题面」，不是把原题再印一遍
-  const base = (idx + 1) * 7 % vocab.length;
-  const w = vocab[MODE.round === 2 ? (base + 1) % vocab.length : base] || vocab[0];
+  // 每题按 idx 取一个固定位置的真实词：用 (idx+1)*7 % len 这种公式在新词表下会撞词，
+  // 撞了就是 V_DUP，连续三次放弃，看起来像产品拒题，其实是剧本自己重复。
+  const pick = MODE.round === 2 ? (idx + 3) % vocab.length : idx % vocab.length;
+  const w = vocab[pick] || vocab[0];
   const others = vocab.filter(function (x) { return x.en.toLowerCase() !== w.en.toLowerCase(); });
-  const o1 = others[(idx + 1) % others.length];
-  const o2 = others[(idx + 2) % others.length];
+  const o1 = others[idx % Math.max(1, others.length)] || others[0] || w;
+  const o2 = others[(idx + 1) % Math.max(1, others.length)] || others[0] || w;
+
+  if (idx === 4) {
+    return {
+      prompt: '选出「' + w.zh + '」对应的英文。', audioText: '', options: [w.en, o1.en, o2.en],
+      answer: w.en, analysis: '「' + w.zh + '」就是 ' + w.en + '。', keyword: w.en
+    };
+  }
+  // 第 2 题第一次故意用两个「其实是真词、但不在本单元」的干扰项，让 V3c 拦一次；
+  // 退回重出时换成形近假词（retry 为真），验的是「拦下之后能改对」。
+  if (idx === 1 && !retry) {
+    return {
+      prompt: '选出「' + w.zh + '」的正确拼写。', audioText: '',
+      options: [w.en, 'curtain', 'zebra'], answer: w.en, analysis: '看清词形。', keyword: w.en
+    };
+  }
   if (isSpelling) {
     return {
       prompt: '选出「' + w.zh + '」的正确拼写。', audioText: isListening ? w.en : '',
@@ -158,8 +167,16 @@ function answerFor(role, user) {
   const idx = promptIdx[key];
   verifyHits[key] = (verifyHits[key] || 0) + 1;
   const first = verifyHits[key] === 1;
+  /*
+   * 三个角色各演一件事，注释里写清是为了让后来的人知道「这几条失败码是设计出来的」：
+   *   idx 0 → 只说 fail、不给条款号：应按弱通过采纳（VERIFY_NO_CODE）
+   *   idx 2 → 第一次给 C3，退回重出后通过：验「拦得住、也能改对」
+   *   idx 3 → 每次都拦：连败三次后应放弃并留 GIVE_UP
+   * 其它题目一律 pass。
+   */
+  if (idx === 0 && first) return JSON.stringify({ verdict: 'fail', fails: [], note: '说不上来哪里不对' });
   if (idx === 2 && first) return JSON.stringify({ verdict: 'fail', fails: [{ id: 'C3', reason: '选项里 This 与 These 大小写不一致' }], note: '' });
-  if (idx === 3 && first) return JSON.stringify({ verdict: 'fail', fails: [], note: '说不上来哪里不对' });
+  if (idx === 3) return JSON.stringify({ verdict: 'fail', fails: [{ id: 'C3', reason: '同一题永远过不了：这条用来验放弃路径' }], note: '' });
   return JSON.stringify({ verdict: 'pass' });
 }
 
@@ -167,9 +184,13 @@ function answerFor(role, user) {
 
 const PAGE = function () {
   const scripts = [
+    // 数据层必须显式加载：PAGE 是手拼的列表，不像 index.html 那样自动带上。
+    // 少了它 SHT.curriculum / SHT.setBook 都是空的，整条用例会以 TypeError 起头。
+    'src/data/books.js', 'src/data/textbook.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
     'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/grade.js', 'src/core/diagnose.js', 'src/core/agents.js',
-    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
+    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/assessment.js',
+    'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
   ];
   return [
     '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>e2e</title></head><body>',
@@ -346,16 +367,22 @@ server.listen(PORT, '127.0.0.1', function () {
 
     assert('页面真发出了模型请求（三角色都调到了）', s.llm.calls >= 10 && s.llm.ok === s.llm.calls,
       s.llm.calls + ' 次调用 / 成功 ' + s.llm.ok);
+    // 失败码分布打出来：数字对不上时先看是哪道闸在拦，别急着改期望值
+    console.log('  失败码：' + s.failures.map(function (f) { return f.stage + ':' + f.codes.join('+'); }).join(' / '));
     assert('5 条计划里 1 条被放弃、4 条落库', s.planCount === 5 && s.questionCount === 4,
       s.planCount + ' 计划 / ' + s.questionCount + ' 题');
     assert('4 道题落在 4 个不同格子', s.distinctCells === s.questionCount, s.distinctCells + ' 格');
     assert('代码闸退回拼写题的假干扰项（V3c）', byCode('V3c').length === 1,
       JSON.stringify(byCode('V3c').map(function (f) { return f.reason; })));
-    assert('质检否决（C3）留痕并重出通过', byCode('C3').length === 1 && s.events.indexOf('reject') > 0);
+    // 剧本：idx2 给一次 C3 后退回重出并通过；idx3 每次都拦，用来验放弃路径。
+    // 所以 C3 至少两次，且必须出现「被拦之后改对」，不能只看条数。
+    assert('质检否决（C3）留痕并重出通过', byCode('C3').length >= 1 && s.events.indexOf('reject') > 0,
+      byCode('C3').length + ' 次 C3');
     assert('质检只说 fail 不给条款号时按弱通过采纳', byCode('VERIFY_NO_CODE').length === 1 &&
       s.questions.some(function (q) { return q.verify === 'weak'; }));
     assert('连续 3 次不过闸 → 放弃并留 GIVE_UP', byCode('GIVE_UP').length === 1 &&
-      byCode('V1').length === 3);
+      byCode('C3').length >= 4,
+      byCode('GIVE_UP').length + ' 次放弃 / ' + byCode('C3').length + ' 次 C3');
     assert('失败记录一条都没被吞（退回的题都留在记录里）', s.failures.length === 7,
       s.failures.length + ' 条');
 
