@@ -799,6 +799,8 @@
           // 开放题：答案是一句话而不是三个选项之一。看图说词天然是这种。
           open: plan.cell.type === '看图说词' || raw.open === true,
           analysis: String(raw.analysis || '').trim(),
+          // 首答错误后给学生的针对性提示；为空时前端自动划掉一个错误选项。
+          hint: String(raw.hint || '').trim(),
           // 逐项说明：与 options 一一对应，答错时前端按「他选的 / 正确答案 / 另一项」展示。
           // 缺了不废题（老数据也没有），界面会退回一句解析。
           optionNotes: (Array.isArray(raw.optionNotes) ? raw.optionNotes : [])

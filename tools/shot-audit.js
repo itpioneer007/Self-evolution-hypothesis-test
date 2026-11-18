@@ -49,12 +49,8 @@ const PREVIEW = `<!DOCTYPE html>
 <div class="app"><main class="stage"><section class="stage-page is-active" id="page-audit" style="display:block;overflow:auto;padding:16px"><div class="audit-root" id="auditRoot"></div></section></main></div>
 <script src="/src/data/books.js"></script>
 <script src="/src/data/textbook.js"></script>
-<script src="/src/data/books/hebei-g4a.js"></script>
-<script src="/src/data/books/xiangshao-g4a.js"></script>
-<script src="/src/data/kps-hebei-g4a.js"></script>
-<script src="/src/data/kps-xiangshao-g4a.js"></script>
-<script src="/src/data/curriculum.js"></script>
 <script src="/src/data/knowledgePoints.js"></script>
+<script src="/src/data/curriculum.js"></script>
 <script src="/src/data/wrongCases.js"></script>
 <script src="/src/core/enums.js"></script>
 <script src="/src/core/fingerprint.js"></script>
@@ -74,7 +70,7 @@ const PREVIEW = `<!DOCTYPE html>
 <script src="/src/core/audit.js"></script>
 <script src="/src/dev/audit.js"></script>
 <script>
-SHT.setBook('PEP-G4A'); SHT.setUnit('U1');
+SHT.setBook('COURSE-G4A'); SHT.setUnit('U1');
 window.onerror = function (m, s, l) {
   document.body.innerHTML = '<pre style="color:#b00;background:#fff;padding:16px;font:13px monospace">ERROR: ' + m + ' @' + l + '</pre>';
 };

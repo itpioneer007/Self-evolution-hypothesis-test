@@ -478,6 +478,7 @@
   /* ---------- 这个考点到底会不会 ---------- */
   SHT.POINT_STATES = {
     unseen: { label: '未测', tone: '' },
+    retry: { label: '待重试', tone: 'is-warn' },
     mastered: { label: '真会', tone: 'is-good' },
     passed: { label: '会用', tone: 'is-good' },
     assisted: { label: '看提示才会', tone: 'is-warn' },
@@ -496,12 +497,25 @@
    */
   SHT.judgePoint = function (attempts) {
     const list = attempts || [];
-    const first = list.filter(function (a) { return a.stage === 'first'; })[0] || null;
-    const variant = list.filter(function (a) { return a.stage === 'variant'; })[0] || null;
+    const first = list.filter(function (a) {
+      return a.stage === 'first' && (a.attemptIndex == null || a.attemptIndex === 1);
+    })[0] || null;
+    const retry = list.filter(function (a) {
+      return a.stage === 'first' && a.attemptIndex === 2;
+    })[0] || null;
+    const variant = list.filter(function (a) {
+      return a.stage === 'variant' && (a.attemptIndex == null || a.attemptIndex === 1);
+    })[0] || null;
     if (!first) return { state: 'unseen', label: '未测', tone: '' };
+    if (first.final === false && !retry) {
+      return { state: 'retry', label: '待重试', tone: 'is-warn' };
+    }
     const hinted = function (a) { return a && (a.hintCount || 0) > 0; };
     let state;
-    if (!first.correct) {
+    if (retry) {
+      // 原地重选：首答已错，提示后改对只到“看提示才会”，不能算独立掌握。
+      state = retry.correct ? 'assisted' : 'wrong';
+    } else if (!first.correct) {
       state = variant && variant.correct ? 'passed' : 'wrong';
     } else if (!variant) {
       state = 'passed';

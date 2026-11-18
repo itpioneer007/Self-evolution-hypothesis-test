@@ -1,10 +1,9 @@
 /*
  * 当前单元切片：从教材注册表里「当前这本书」派生。
  *
- * 两级切换：setBook(id) 换书，setUnit(id) 换单元。换书时词表、句型表、语音点、
- * 情境域、功能词白名单五样一起换——只换词表会让超纲判定拿错边界。
- *
- * 本文件只做派生，不改教材数据；教材变更请改 src/data/books/ 下对应文件。
+ * 课程唯一来源是 src/data/textbook.js 的 10 个单元；
+ * 本文件只做派生，不改教材数据。换单元时词表、句型、课文、语音点、
+ * 情境域和功能词白名单一起切换。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
@@ -26,11 +25,9 @@
       bookId: b.meta.id,
       bookName: b.meta.shortName,
       bookUnitCount: b.units.length,
-      // 词表：>= 6 词才能凑够 3 个选项加干扰项
       words: unit.words.map(function (w) { return { en: w.en, zh: w.zh, p: w.p }; }),
-      // 句型表：出题时句型不得越出此表
       sentencePatterns: unit.sentencePatterns.slice(),
-      // 语音点：音近干扰项的真实素材
+      passage: unit.passage || '',
       phonics: unit.phonics,
       phonicsWords: [].concat(
         (unit.phonics.pairs || []).reduce(function (acc, pair) { return acc.concat(pair); }, []),
@@ -52,82 +49,78 @@
     return SHT.setUnit(unitId || b.units[0].id);
   };
 
-  // 启动即切到第一本书的第 1 单元；界面切书/切单元时再调 setBook / setUnit
+  // 启动即切到当前唯一课程的第 1 单元。
   SHT.setUnit(book().units[0].id);
 
-  /*
-   * 5 道示例题：U1 My classroom 的真实词句，刻意落在 5 个不同格子。
-   * 这是「模板」，不是成品答案；正式测试时可整组清空自己出题。
-   * 九个字段：position(no) / 知识点 / 题干 / 选项 / 听力文本 / 答案 / 一句解析 / 格子 / 闭环层 L4。
-   */
-  SHT.sampleQuestions = [
-    {
-      no: 1,
-      bookId: 'PEP-G4A', unitId: 'U1',
-      knowledgePoint: 'vocab · 教室物品名词 · 听音选义（音义联结）',
-      ability: 'listening / vocab',
-      cell: { type: '听音选义', scene: '学校', level: '认', distractor: '同类不同物' },
-      prompt: '听录音，选出你听到的单词的中文意思。',
-      audioText: 'classroom',
-      options: ['教室', '窗户', '黑板'],
-      answer: '教室',
-      analysis: 'classroom 是教室，window 是窗户。',
-      nextIfWrong: '降到词形辨认，做 classroom / class 的形近辨别'
-    },
-    {
-      no: 2,
-      knowledgePoint: 'spelling · blackboard · oa + ar 双字母组合',
-      ability: 'spelling',
-      cell: { type: '拼写补全', scene: '学校', level: '辨', distractor: '形近' },
-      prompt: '选出「黑板」的正确拼写。',
-      audioText: '',
-      options: ['blackboard', 'blackbord', 'blakboard'],
-      answer: 'blackboard',
-      analysis: 'black+board，oa 和 ar 都不能省。',
-      nextIfWrong: '先做中英匹配确认词义，再回拼写'
-    },
-    {
-      no: 3,
-      knowledgePoint: 'phonics · a / a-e · cake 与 cat 长短音',
-      ability: 'phonics',
-      cell: { type: '字母组合辨音', scene: '学校', level: '辨', distractor: '音近' },
-      prompt: '听录音，选出你听到的单词。',
-      audioText: 'cake',
-      options: ['cake', 'cat', 'hat'],
-      answer: 'cake',
-      analysis: 'a-e 读字母音 /eɪ/，cat 读短音 /æ/。',
-      nextIfWrong: '降到「认」层次，先看词形再听，别一上来就纯听辨'
-    },
-    {
-      no: 4,
-      knowledgePoint: 'sentence · Where is it? · on / in 介词',
-      ability: 'sentence',
-      cell: { type: '选词填空', scene: '学校', level: '用', distractor: '语义近' },
-      prompt: '— Where is the picture?\n— It\'s ___ the wall.',
-      audioText: '',
-      options: ['on', 'in', 'under'],
-      answer: 'on',
-      analysis: '挂在墙上用 on the wall。',
-      nextIfWrong: '换 near the window 再考一次，看是不是只会这一个搭配'
-    },
-    {
-      no: 5,
-      knowledgePoint: 'sentence · Let me help you. · 应答语',
-      ability: 'sentence',
-      cell: { type: '对话补全', scene: '学校', level: '用', distractor: '母语负迁移' },
-      prompt: '— Let me help you.\n— ___',
-      audioText: '',
-      options: ['Thank you.', "You're welcome.", 'Yes, I do.'],
-      answer: 'Thank you.',
-      analysis: '别人主动帮你，回答 Thank you.。',
-      nextIfWrong: '换成 Let\'s clean the classroom! 考 OK. 的应答'
-    }
-  ];
+  function kpFor(unitId, suffix) {
+    return (SHT.kpsOf(unitId) || []).filter(function (k) {
+      return k.id === 'course-' + unitId + '-' + suffix;
+    })[0] || {};
+  }
 
   /*
-   * 其他单元没有现成示例题：返回 5 道「只有计划、没有内容」的空题，
-   * 知识点与格子从该单元的候选清单里确定性带出，人再往里填题干选项。
+   * U1 的最小示例题只使用当前 U1 词表、句型和自然拼读。
+   * 这不是固定题库，只是没有模型时的可作答演示。
    */
+  function sampleU1() {
+    const list = SHT.kpsOf ? SHT.kpsOf('U1') : [];
+    const k1 = list.filter(function (k) { return k.targetType === 'word'; })[0] || {};
+    const k2 = list.filter(function (k) { return k.pathStage === 1 && k.targetType === 'sentence'; })[0] || {};
+    const k3 = list.filter(function (k) { return k.pathStage === 2 && k.targetType === 'word'; })[0] || {};
+    const k4 = list.filter(function (k) { return k.pathStage === 2 && k.targetType === 'sentence'; })[0] || {};
+    const k5 = list.filter(function (k) { return k.targetType === 'phonics'; })[0] || {};
+    const cell = function (kp, fallback) { return kp.cell || fallback; };
+    return [
+      {
+        no: 1, bookId: 'COURSE-G4A', unitId: 'U1',
+        knowledgePoint: k1.label || 'vocab · classroom / playground / library · 词义识别',
+        ability: 'vocab', cell: cell(k1, { type: '中英匹配', scene: '学校', level: '认', distractor: '同类不同物' }),
+        prompt: '选出「教室」的英文。', audioText: '',
+        options: ['classroom', 'playground', 'library'], answer: 'classroom',
+        analysis: 'classroom 是教室。',
+        nextIfWrong: k1.nextIfWrong || '先做词义匹配'
+      },
+      {
+        no: 2, bookId: 'COURSE-G4A', unitId: 'U1',
+        knowledgePoint: k2.label || 'sentence · This is our … · 核心句型理解',
+        ability: 'sentence', cell: cell(k2, { type: '选词填空', scene: '学校', level: '用', distractor: '母语负迁移' }),
+        prompt: 'This is our ___.', audioText: '',
+        options: ['classroom', 'library', 'playground'], answer: 'classroom',
+        analysis: 'This is our classroom. 介绍教室。',
+        nextIfWrong: k2.nextIfWrong || '先确认词义，再拆开拼写'
+      },
+      {
+        no: 3, bookId: 'COURSE-G4A', unitId: 'U1',
+        knowledgePoint: k3.label || 'vocab · office / story / a lot of · 第二组词义识别',
+        ability: 'vocab', cell: cell(k3, { type: '中英匹配', scene: '学校', level: '辨', distractor: '同类不同物' }),
+        prompt: '选出「办公室」的英文。', audioText: '',
+        options: ['office', 'story', 'canteen'], answer: 'office',
+        analysis: 'office 是办公室。',
+        nextIfWrong: k3.nextIfWrong || '替换一个校园场所词再读一遍'
+      },
+      {
+        no: 4, bookId: 'COURSE-G4A', unitId: 'U1',
+        knowledgePoint: k4.label || 'sentence · This is / That is · 第二句型运用',
+        ability: 'sentence', cell: cell(k4, { type: '对话补全', scene: '学校', level: '用', distractor: '语法错形' }),
+        prompt: 'This is the ___.', audioText: '',
+        options: ['playground', 'classroom', 'library'], answer: 'playground',
+        analysis: 'This is the playground. 介绍操场。',
+        nextIfWrong: k4.nextIfWrong || '用 There is / There are 各说一句'
+      },
+      {
+        no: 5, bookId: 'COURSE-G4A', unitId: 'U1',
+        knowledgePoint: k5.label || 'phonics · lion / letter / line / light · 发音辨识',
+        ability: 'phonics', cell: cell(k5, { type: '字母组合辨音', scene: '学校', level: '辨', distractor: '音近' }),
+        prompt: '听录音，选出你听到的单词。', audioText: 'lion',
+        options: ['lion', 'letter', 'light'], answer: 'lion',
+        analysis: '这一组词都含有字母 l 的发音，注意听开头音。',
+        nextIfWrong: k5.nextIfWrong || '先看词形找共同字母，再听音辨词'
+      }
+    ];
+  }
+
+  SHT.sampleQuestions = sampleU1();
+
   SHT.blankQuestionsFor = function (unitId) {
     const kps = SHT.kpsOf ? SHT.kpsOf(unitId) : [];
     const out = [];
@@ -147,23 +140,17 @@
     return out;
   };
 
-  // 示例题只有 PEP 四上 U1 这一组（真实词句、5 个不同格子）。换书或换单元后
-  // 一律返回空白题：题目内容由模型或人填，不拿别的单元的词硬凑。
+  // U1 有真实示例；其余单元返回空白题，题目内容由模型或人按本单元内容填写。
   SHT.sampleQuestionsFor = function (unitId) {
-    const isPep = SHT.BOOKS.current().meta.id === 'PEP-G4A';
-    return isPep && unitId === 'U1' ? SHT.sampleQuestions : SHT.blankQuestionsFor(unitId);
+    if (unitId === 'U1') return SHT.sampleQuestions.slice();
+    return SHT.blankQuestionsFor(unitId);
   };
 
-  // 最小测试用的学生画像（mock，来自「最小测试记录表」第 0 节字段）
   SHT.sampleStudent = {
     id: 'S-001',
     label: '示例学生（可改）',
     stage: '正在操练',
-    recentErrors: [
-      'blackboard 双字母组合漏写（2 次）',
-      'a / a-e 长短音不分（2 次）',
-      'on / in 介词混用（3 次）'
-    ],
-    interestCarriers: ['classroom', 'computer', 'picture', 'fan']
+    recentErrors: [],
+    interestCarriers: ['classroom', 'library', 'playground']
   };
 })(window);
