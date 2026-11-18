@@ -1880,6 +1880,12 @@ assert('规划提示词里带着能力配额', SHT.ROLES.plan.user({
     nodes.studentRoot.innerHTML.indexOf('轮结束') >= 0 &&
     nodes.studentRoot.innerHTML.indexOf('data-st-action="next-round"') >= 0,
     nodes.studentRoot.innerHTML.slice(0, 120));
+  // 错题条目 = 题号 + 正确答案。内部知识点标签（英文 + 斜杠 + 中文描述）不该露出来
+  assert('结果页错题列表写「第 N 题 + 正确答案」，不写内部知识点标签',
+    nodes.studentRoot.innerHTML.indexOf('第 1 题') >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf(stWord) >= 0 &&
+    nodes.studentRoot.innerHTML.indexOf(' · ') < 0,
+    nodes.studentRoot.innerHTML.slice(0, 240));
 
   /*
    * 会话记录：界面不展示，但「这次练习多久、成绩怎么走、难度有没有动」

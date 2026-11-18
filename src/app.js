@@ -2351,15 +2351,24 @@
   function stSummaryHtml() {
     const s = stStats();
     const p = practiceOf();
-    // 错题列表只写中文短语：「vocab · baby brother / puppy · 幼小成员」→「幼小成员」
-    const wrongKps = [];
+    /*
+     * 错题列表：题号 + 这道题的正确答案。
+     * 以前显示的是知识点的中文描述段（取自内部 label），那一段本来就是知识说明
+     * （「oa + ar 双字母组合」），既不像题目也帮不上定位。学生要的是
+     * 「第 2 题，doctor」——一眼知道回去看哪道、错的是哪个词。
+     */
+    const wrongRows = [];
     p.attempts.forEach(function (a) {
-      if (a.correct || !a.kpLabel) return;
-      const label = friendlyKp(a.kpLabel);
-      if (wrongKps.indexOf(label) < 0) wrongKps.push(label);
+      if (a.correct) return;
+      const key = String(a.expected || '').trim() || friendlyKp(a.kpLabel);
+      if (!key) return;
+      wrongRows.push({ no: a.no, key: key });
     });
-    const items = wrongKps.slice(0, 5).map(function (k) {
-      return '<div class="st-sum-item"><span class="dot">·</span><span>' + esc(k) + '</span></div>';
+    const items = wrongRows.slice(0, 5).map(function (r) {
+      return '<div class="st-sum-item">' +
+        (r.no ? '<span class="no">第 ' + esc(String(r.no)) + ' 题</span>' : '') +
+        '<span class="key">' + esc(r.key) + '</span>' +
+      '</div>';
     }).join('');
     const isLastRound = state.round >= 2;
     const isLastGroup = state.stGroup >= MAX_GROUPS;
@@ -2386,7 +2395,7 @@
       '</div>' +
       capLine +
       // 列表本身就是「哪几道要再练」，不再补一句机制说明
-      (wrongKps.length
+      (wrongRows.length
         ? '<div class="st-sum-list">' + items + '</div>'
         : '<div class="st-sum-empty">' + (finished ? '这个单元练完了。' : '这一轮全对。') + '</div>') +
       '<div class="st-actions">' + action + '</div>' +

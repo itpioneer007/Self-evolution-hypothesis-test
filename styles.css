@@ -1487,7 +1487,8 @@ body.is-student .controls > #viewToggle { display: none; }
   background: var(--red-soft); border: 1px solid #f0d8d8; border-radius: 8px;
   padding: 9px 12px; font-size: 13px; color: var(--ink-soft);
 }
-.st-sum-item .dot { color: var(--red); font-weight: 700; }
+.st-sum-item .no { flex: 0 0 auto; font-size: 12.5px; color: var(--ink-hint); }
+.st-sum-item .key { color: var(--ink); font-weight: 600; }
 .st-sum-empty {
   margin: 24px 0 6px; padding: 12px; border-radius: 8px;
   background: #eef8f0; border: 1px solid #cfe6d6; color: #2f6b41; font-size: 13px;
