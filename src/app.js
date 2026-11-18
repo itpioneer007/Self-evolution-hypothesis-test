@@ -93,6 +93,62 @@
     return (state.wrongCases || []).filter(function (c) { return !c.demo; });
   }
 
+  /*
+   * 这一轮该考到哪一层。
+   *
+   * 抽成一个函数，是因为有两处要用同一套规则：真正出题的时候，
+   * 以及答完以后给学生的那句「下一轮会难一点还是简单一点」。
+   * 两处各写一遍迟早会不一致——学生看到「会难一点」，出的题却没变。
+   *
+   * 顺序：先看权重够不够（≥5 次作答），不够就用本轮掌握概率；最后看状态，
+   * 累了或连续答错就降一档。状态放在最后，是因为学生当下的疲劳比算法指标更该被照顾。
+   */
+  function planCap(learnerModel, weightsView) {
+    const L = SHT.LEVELS || [];
+    const useWeights = weightsView.answered >= 5 && L.indexOf(weightsView.cap) >= 0;
+    const learnerCapInfo = SHT.learner.levelCapOf(learnerModel, state.learningLayer);
+    const fatigue = SHT.learner.fatigueOf(learnerModel && learnerModel.recent);
+    const capByPerf = useWeights ? weightsView.cap : learnerCapInfo.cap;
+    let cap = capByPerf;
+    let source = useWeights ? 'weights' : 'learner';
+    if (fatigue.level === 'clear' && L.indexOf(cap) > 0) {
+      cap = L[L.indexOf(cap) - 1];
+      source = 'fatigue';
+    }
+    return {
+      cap: cap, capByPerf: capByPerf, source: source, fatigue: fatigue,
+      useWeights: useWeights, learnerCapInfo: learnerCapInfo
+    };
+  }
+
+  /*
+   * 难度变化台账。记的是「这次出题把上限放在哪、上一次是多少、凭什么」。
+   * 只进存档与导出，学生端不显示——他要的是题，不是参数。
+   */
+  function noteLevelTrace(capInfo, weightsView, plan, decisionSet) {
+    const list = Array.isArray(state.levelTrace) ? state.levelTrace : [];
+    const prev = list[list.length - 1];
+    const rules = (decisionSet.items || []).map(function (d) { return d.rule; })
+      .filter(function (x, i, arr) { return x && arr.indexOf(x) === i; });
+    state.levelTrace = list.concat([{
+      at: new Date().toISOString(),
+      group: state.stGroup,
+      round: state.round,
+      from: prev ? prev.to : (capInfo.startCap || ''),
+      to: capInfo.cap,
+      capByPerf: plan.capByPerf,
+      weightsCap: weightsView.cap,
+      learnerCap: plan.learnerCapInfo.cap,
+      weight: weightsView.weight,
+      answered: weightsView.answered,
+      fatigue: plan.fatigue.level,
+      fatigueReason: plan.fatigue.reason,
+      source: plan.source,
+      rules: rules,
+      why: capInfo.reason
+    }]).slice(-60);
+  }
+
   function blankPractice() {
     return {
       cursor: 0,
@@ -245,6 +301,12 @@
        */
       weights: SHT.weights.blank(),
       weightsView: null,
+      /*
+       * 难度变化台账：每次出题记一条「从哪一档到哪一档、凭什么」。
+       * 纯给开发看，学生端一个字都不显示；导出时带出去，
+       * 能回答「第 3 轮为什么突然变简单了」这种问题。
+       */
+      levelTrace: [],
       // 跨轮/跨组出过的题。只存能算指纹与格子的字段，供下一轮去重
       questionHistory: [],
       tab: 'agents',
@@ -408,6 +470,7 @@
     // 记录类字段：老存档补空表，不反推（反推出来的不是证据）
     if (!Array.isArray(parsed.profileLog)) parsed.profileLog = [];
     if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
+    if (!Array.isArray(parsed.levelTrace)) parsed.levelTrace = [];
     if (!Number.isFinite(parsed.sessionSeq)) parsed.sessionSeq = parsed.sessions.length;
     return parsed;
   }
@@ -2428,25 +2491,28 @@
   /*
    * 一句话交代「下一轮会怎么变」。
    *
-   * 这是整个闭环里唯一给学生看的反馈环节：他答完题，需要知道自己刚才那几题
-   * 改变了什么。界面上不出现「权重」「掌握概率」「难度档」这些词——学生只需要
-   * 知道题会难一点还是简单一点，以及凭的是什么（这轮对了几题、预计答对率多少）。
+   * 学生端只留这一句，而且不带任何数字：
+   * 难一点是挑战，简单一点是照顾，累了就先松一口。
+   * 「权重」「掌握概率」「难度档」「预计答对率」这些一律不出现——
+   * 那些是给开发看的，记录在 state.levelTrace 与导出里。
    */
   function nextRoundHintText() {
+    const model = SHT.learner.build(state.events || []);
     const w = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
-    if (!w.answered) return '';
+    if (!w.answered && !model.answeredCount) return '';
+    const plan = planCap(model, w);
     const order = SHT.LEVELS || [];
     const start = ((SHT.progress && SHT.progress.CAP_OF_LAYER) || {})[state.learningLayer] || '';
-    const s = stStats();
-    const fact = '这一轮 ' + s.done + ' 题答对 ' + s.right + ' 题';
-    const rate = '预计答对率 ' + Math.round((w.weight || 0) * 100) + '%';
-    if (start && order.indexOf(w.cap) > order.indexOf(start)) {
-      return '下一轮会难一点：' + fact + '，比预计的稳（' + rate + '）。';
+    if (plan.fatigue.level === 'clear') {
+      return '看着有点累了，下一轮先出简单一点的，慢慢来。';
     }
-    if (start && order.indexOf(w.cap) < order.indexOf(start)) {
-      return '下一轮会简单一点：' + fact + '，这几类还没稳住（' + rate + '）。';
+    if (start && order.indexOf(plan.cap) > order.indexOf(start)) {
+      return '这一轮答得不错，下一轮会难一点——试试看。';
     }
-    return '下一轮难度不变：' + fact + '，再考几道同类的题确认一下（' + rate + '）。';
+    if (start && order.indexOf(plan.cap) < order.indexOf(start)) {
+      return '下一轮先出简单一点的，把没稳的地方补上，再往上加。';
+    }
+    return '保持这个节奏，下一轮的难度和这一轮差不多。';
   }
 
   function stField(label, chips, cls) {
@@ -2673,10 +2739,16 @@
         '<div class="st-report-bar"><i class="' + (tone || '') + '" style="width:' + (value == null ? 0 : Math.round(value * 100)) + '%"></i></div>' +
         '<small>' + esc(note) + '</small></div>';
     };
-    const kpRows = report.knowledgePoints.map(function (k) {      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
+    /*
+     * 知识点评价只写学生能对上号的三件事：这处是真会还是看提示才会、
+     * 依据是什么、下一步做什么。不写「掌握概率 45%」——那是开发核对算法用的
+     * 数字，导出里有，摆在学生面前只会让他以为自己被打了分。
+     */
+    const kpRows = report.knowledgePoints.map(function (k) {
+      const ev = (k.evidence || []).join('；');
+      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
         '<div class="st-report-kp-head"><strong>' + esc(friendlyKp(k.kp)) + '</strong><span>' + esc(k.stateLabel) + (k.pathLabel ? ' · ' + esc(k.pathLabel) : '') + '</span></div>' +
-        '<div class="st-report-kp-meta">掌握概率：' + (k.mastery == null ? '待积累' : Math.round(k.mastery * 100) + '%') +
-          '　·　' + (k.evidence || []).join('；') + '</div>' +
+        (ev ? '<div class="st-report-kp-meta">' + esc(ev) + '</div>' : '') +
         '<div class="st-report-kp-next">下一步：' + esc(k.nextAction.action) + '</div>' +
       '</div>';
     }).join('');
@@ -2684,23 +2756,21 @@
       '<div class="st-report-head"><div><div class="st-eyebrow">第 ' + state.round + ' 轮学习评价单' +
         (finished ? (weak === 0 ? ' · 全部完成' : ' · 本次练到这里') : '') + '</div>' +
         '<h2 class="st-title">本轮学习表现</h2></div><div class="st-report-score"><b>' + score + '</b><span>表现分</span></div></div>' +
-      '<div class="st-report-sub">独立答对 ' + s.independent + '　提示后答对 ' + s.assisted + '　答错 ' + s.wrong + '　共 ' + s.done + ' 题</div>' +
-      '<div class="st-report-formula">' + esc(report.scoreFormula) + '</div>' +
+      '<div class="st-report-sub">自己答对 ' + s.independent + '　看提示后答对 ' + s.assisted + '　没答对 ' + s.wrong + '　共 ' + s.done + ' 题</div>' +
+      '<div class="st-report-formula">自己答对算 1 分，看提示答对算 0.5 分。</div>' +
       '<div class="st-report-dims">' +
-        dim('独立掌握率', d.independentRate, '首答正确、无提示、无重试', 'is-good') +
-        dim('提示后改对率', d.assistedRate, '提示后重新选择正确', 'is-warn') +
-        dim('答错率', d.wrongRate, '提示后仍未答对', 'is-bad') +
-        dim('覆盖率', d.coverage, '已完成 ' + d.completed + ' / ' + d.total, '') +
+        dim('自己答对', d.independentRate, '首答就对、没用提示', 'is-good') +
+        dim('看提示后答对', d.assistedRate, '提示后改对', 'is-warn') +
+        dim('没答对', d.wrongRate, '提示后还是错', 'is-bad') +
+        dim('做完了多少', d.coverage, '已完成 ' + d.completed + ' / ' + d.total, '') +
       '</div>' +
-      '<div class="st-report-section-title">知识点评价</div>' +
-      '<div class="st-report-kps">' + (kpRows || '<div class="st-tip is-muted">本轮还没有知识点记录。</div>') + '</div>' +
+      '<div class="st-report-section-title">这几处学得怎么样</div>' +
+      '<div class="st-report-kps">' + (kpRows || '<div class="st-tip is-muted">这一轮还没有记录。</div>') + '</div>' +
       (wrongItems
-        ? '<div class="st-report-section-title">错题明细</div>' +
+        ? '<div class="st-report-section-title">错的题</div>' +
           '<div class="st-sum-list">' + wrongItems + '</div>'
         : '') +
-      '<div class="st-report-pending">熟练度：平均作答 ' + Math.round(d.averageMs / 100) / 10 + ' 秒，待接入题目预计时长　·　保持度：待验证　·　迁移度：待验证</div>' +
       (nextHint ? '<div class="st-next-hint">' + esc(nextHint) + '</div>' : '') +
-      '<div class="st-report-caveat">' + report.caveats.map(esc).join('　') + '</div>' +
       '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
   }
@@ -3430,7 +3500,8 @@
      */
     const weightsView = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
     state.weightsView = weightsView;
-    const useWeights = weightsView.answered >= 5 && SHT.LEVELS.indexOf(weightsView.cap) >= 0;
+    // 表现 + 状态一起定档：累了或连错就降一档，学生的状态优先于算法指标
+    const plan = planCap(learnerModel, weightsView);
     const decisionSet = SHT.learner.decide(learnerModel, {
       unit: SHT.curriculum,
       layer: state.learningLayer,
@@ -3439,19 +3510,25 @@
       retired: retiredKps,
       // 权重直接定这一轮的难度档，也决定「同层里先出哪道最弱的」
       weights: state.weights || SHT.weights.blank(),
-      capOverride: useWeights ? weightsView.cap : ''
+      capOverride: plan.cap,
+      capSource: plan.source
     });
     state.decisions = decisionSet.items;
     const capInfo = Object.assign({}, decisionSet.levelCap, {
-      learnerCap: (decisionSet.levelCap && decisionSet.levelCap.learnerCap) ||
-        (decisionSet.levelCap && decisionSet.levelCap.cap),
+      learnerCap: plan.learnerCapInfo.cap,
       weightsCap: weightsView.cap,
       weightsAnswered: weightsView.answered,
       weight: weightsView.weight,
-      source: useWeights ? 'weights' : 'learner',
-      reason: useWeights ? weightsView.reason : (decisionSet.levelCap && decisionSet.levelCap.reason) || ''
+      fatigue: plan.fatigue,
+      capByPerf: plan.capByPerf,
+      source: plan.source,
+      reason: plan.source === 'fatigue'
+        ? '看状态降一档：' + plan.fatigue.reason + '；原本按表现算的是「' + plan.capByPerf + '」'
+        : (plan.useWeights ? weightsView.reason : (plan.learnerCapInfo.reason || ''))
     });
     state.levelCap = capInfo;
+    // 留痕：这次出题的难度档、从哪来、凭什么。学生端不显示，导出可查
+    noteLevelTrace(capInfo, weightsView, plan, decisionSet);
     state.decisionReason = decisionSet.reason;
     state.learnerModel = SHT.learner.digest(learnerModel, 8);
     // 课程角色仍读这份 brief；决策作为硬约束挂在旁边，生成时被代码覆盖
@@ -3899,6 +3976,8 @@
     SHT.devAudit.save = save;
     SHT.devAudit.toast = toast;
     SHT.devAudit.collectTraces = collectTraces;
+    // 定档规则暴露给测试与审计台：同一套判断，别在别处再抄一份
+    SHT.devAudit.planCap = planCap;
   }
 
   bind();

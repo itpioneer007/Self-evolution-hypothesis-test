@@ -519,6 +519,12 @@
       weightsDigest: (SHT.weights && SHT.weights.digest)
         ? SHT.weights.digest(state.weights || SHT.weights.blank())
         : null,
+      /*
+       * 难度变化台账：每次出题一行「从哪一档到哪一档、谁定的、凭什么」。
+       * 学生端不显示这个（他只该看到题），但它能回答评审最常问的那句
+       * 「第 3 轮为什么突然变简单了」——是权重降了，还是状态判定为累。
+       */
+      levelTrace: state.levelTrace || [],
       questionHistory: state.questionHistory || [],
       /*
        * 会话与画像变更：界面上不展示，但分析需要。

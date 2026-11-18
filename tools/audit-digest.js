@@ -122,6 +122,23 @@ rows.forEach((r) => {
 hr('六 凭什么出这些题（决策证据链）');
 const decisions = Array.isArray(j.decisions) ? j.decisions : [];
 const cap = j.levelCap || null;
+/*
+ * 难度变化台账放在最前面：这是「题为什么越来越难 / 突然变简单」的唯一出处。
+ * 每一行都是从哪一档到哪一档、谁定的、带不带疲劳判定。
+ */
+const trace = Array.isArray(j.levelTrace) ? j.levelTrace : [];
+if (trace.length) {
+  line('难度变化（第 1 条到最后 1 条）：');
+  trace.forEach(function (t) {
+    line('  ' + (t.group || 1) + ' 组 · 第 ' + (t.round || 1) + ' 轮　' +
+      (t.from || '起') + ' → ' + (t.to || '?') +
+      '　由 ' + ({ weights: '权重', learner: '掌握概率', fatigue: '状态（累/连错）' }[t.source] || t.source || '?') + ' 定' +
+      (t.fatigue === 'clear' ? '　[判为累：' + (t.fatigueReason || '') + ']' : '') +
+      (t.weightsCap ? '　权重档 ' + t.weightsCap + ' / 掌握概率档 ' + (t.learnerCap || '?') : ''));
+  });
+} else {
+  line('这份导出没有 levelTrace（老版本文件），看不到难度是怎么一步步变的。');
+}
 if (cap) {
   line('水平上限：' + cap.cap + '（起始 ' + cap.startCap + '，' +
     (cap.delta > 0 ? '按表现升 1 档' : cap.delta < 0 ? '按表现降 1 档' : '持平') +

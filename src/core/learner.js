@@ -201,6 +201,55 @@
   }
 
   /**
+   * 疲劳判定：这一轮是不是已经累了 / 卡住了。
+   *
+   * 只看最近 8 次作答，不看全量——跨轮累积的「慢」不代表现在累。
+   * 三条信号：
+   *   1 后半段比前半段慢 60% 以上（drift ≥ 1.6）
+   *   2 最近这几题里四成以上超过 20 秒（不是不会，是拖）
+   *   3 末尾连续答错 2 题以上
+   * 命中两条（或连错 3 题）判 clear，只命中一条判 mild。
+   * clear 才降一档：只慢一两题就降档，会把正常思考误判成累。
+   */
+  function fatigueOf(recent) {
+    const list = (recent || []).slice(-8);
+    const base = {
+      level: 'none', drift: 1, slowRate: 0, streak: 0, sample: list.length,
+      reason: '样本不足，先按不累处理'
+    };
+    if (list.length < 4) return base;
+    const half = Math.floor(list.length / 2);
+    const avg = function (arr) {
+      if (!arr.length) return 0;
+      return arr.reduce(function (n, x) { return n + num(x.durationMs, 0); }, 0) / arr.length;
+    };
+    const a = avg(list.slice(0, half));
+    const b = avg(list.slice(half));
+    const drift = a > 0 ? r4(b / a) : 1;
+    const slowRate = r4(list.filter(function (x) {
+      return num(x.durationMs, 0) >= 20000;
+    }).length / list.length);
+    let streak = 0;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (list[i].correct) break;
+      streak += 1;
+    }
+    let hits = 0;
+    if (drift >= 1.6) hits += 1;
+    if (slowRate >= 0.4) hits += 1;
+    if (streak >= 2) hits += 1;
+    const level = (hits >= 2 || streak >= 3) ? 'clear' : (hits === 1 ? 'mild' : 'none');
+    const bits = [];
+    if (drift >= 1.6) bits.push('后半段慢了 ' + Math.round((drift - 1) * 100) + '%');
+    if (slowRate >= 0.4) bits.push('最近 ' + list.length + ' 题里 ' + Math.round(slowRate * 100) + '% 超过 20 秒');
+    if (streak >= 2) bits.push('连续 ' + streak + ' 题答错');
+    return {
+      level: level, drift: drift, slowRate: slowRate, streak: streak, sample: list.length,
+      reason: bits.length ? bits.join('；') : '节奏平稳'
+    };
+  }
+
+  /**
    * 事件流 → 学习者状态。纯函数、可复算。
    * @param {Array} events 采集端写下的事件
    * @param {object} opts  { studentId } 只做筛选，不改变计算结果
@@ -300,6 +349,15 @@
       byKp: byKp,
       queue: queue,
       pace: pace,
+      // 最近几次作答的原始量：疲劳判定与下一轮难度都要用，
+      // 但界面上一个字都不显示（见 digest：只带摘要，不带这些明细）
+      recent: seqEv.slice(-8).map(function (e) {
+        return {
+          seq: e.seq, kp: e.kp, correct: !!e.correct,
+          durationMs: e.durationMs, changes: e.changes, hintUsed: !!e.hintUsed
+        };
+      }),
+      fatigue: fatigueOf(seqEv.slice(-8)),
       topTendency: topTendency,
       reason: reason
     };
@@ -425,9 +483,10 @@
     if (o.capOverride && L.indexOf(o.capOverride) >= 0) {
       capInfo.learnerCap = capInfo.cap;
       capInfo.cap = o.capOverride;
-      capInfo.source = 'weights';
+      // 谁定的这个档：weights（按权重）/ fatigue（看状态降一档）/ learner（按本轮掌握概率）
+      capInfo.source = o.capSource || 'weights';
     } else {
-      capInfo.source = 'learner';
+      capInfo.source = o.capSource || 'learner';
     }
     const kps = (o.kps || []).slice().sort(function (a, b) {
       return (a.pathStage || 9) - (b.pathStage || 9) || (a.pathStep || 0) - (b.pathStep || 0);
@@ -561,6 +620,7 @@
       answeredCount: m.answeredCount || 0,
       topTendency: m.topTendency || 'unseen',
       pace: m.pace || null,
+      fatigue: m.fatigue || null,
       queue: (m.queue || []).slice(0, n || 5),
       reason: m.reason || ''
     };
@@ -568,6 +628,6 @@
 
   SHT.learner = {
     TYPES: TYPES, CAP_EVENTS: CAP_EVENTS, RULES: RULES,
-    build: build, decide: decide, levelCapOf: levelCapOf, digest: digest
+    build: build, decide: decide, levelCapOf: levelCapOf, fatigueOf: fatigueOf, digest: digest
   };
 })(window);

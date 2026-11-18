@@ -289,6 +289,25 @@ console.log('--- 答题过后重出题：证据有没有真的进模型 ---');
     dOrder.items.map(i => i.kp + '@' + i.evidence.weight).join(' , '));
   assert('每条选题都写着出题当时的权重，能事后核对',
     dOrder.items.every(i => typeof i.evidence.weight === 'number'));
+
+  /*
+   * 疲劳判定：这是「学生累了要降级」的唯一入口，所以三条信号各测一次，
+   * 外加「只慢一两题不能降档」——不然正常思考会被当成累，越练越简单。
+   */
+  const r = function (ms, correct) { return { durationMs: ms, correct: !!correct }; };
+  const tired = SHT.learner.fatigueOf([r(3000, true), r(3000, true), r(12000, false), r(14000, false)]);
+  assert('后半段明显变慢 + 连错，判为累了',
+    tired.level === 'clear', JSON.stringify(tired));
+  const steady = SHT.learner.fatigueOf([r(4000, true), r(5000, true), r(4000, true), r(5000, true)]);
+  assert('答题节奏平稳，不判累', steady.level === 'none', steady.reason);
+  const streak = SHT.learner.fatigueOf([r(4000, true), r(3000, false), r(3500, false), r(3000, false)]);
+  assert('连错 3 题就判累，哪怕答得很快',
+    streak.level === 'clear', JSON.stringify(streak));
+  const mild = SHT.learner.fatigueOf([r(4000, true), r(3000, true), r(3500, false), r(3000, false)]);
+  assert('只连错两题算「有点累」，不降档',
+    mild.level === 'mild', JSON.stringify(mild));
+  const tooFew = SHT.learner.fatigueOf([r(9000, false), r(9000, false)]);
+  assert('样本太少先不判累，避免一开练就降级', tooFew.level === 'none', tooFew.reason);
 })();
 
 console.log('--- 权重接线（加载 app.js） ---');
@@ -398,14 +417,42 @@ console.log('--- 权重接线（加载 app.js） ---');
     JSON.stringify(saved.weights || {}).slice(0, 80));
 
   /*
-   * 闭环的最后一段：答完一轮，学生得看到「下一轮会怎么变」。
+   * 闭环的最后一段：答完一轮，学生得看到「下一轮会难一点还是简单一点」。
    * 上面已经点完两题（一题对、一题提示后仍错），游标走到末尾，界面应该落在评价单上。
+   * 这句话必须不带数字和内部术语——学生只要一个方向感和一句鼓励。
    */
   const summary = nodes['studentRoot'].innerHTML || '';
-  assert('答完一轮，评价单上写着下一轮难度会怎么变',
-    /下一轮(会难一点|会简单一点|难度不变)/.test(summary), summary.slice(0, 160));
-  assert('这句反馈带具体依据（答了几题、对了几题）',
-    /这一轮 \d+ 题答对 \d+ 题/.test(summary));
+  assert('答完一轮，评价单上说清下一轮会难一点还是简单一点',
+    /下一轮(会难一点|先出简单一点|的难度和这一轮差不多)/.test(summary), summary.slice(0, 160));
+  assert('这句提示里不出现权重、掌握概率、百分比这类内部口径',
+    !/权重|掌握概率|预计答对率|难度档/.test(summary));
+  assert('评价单上不再摆「掌握概率 45%」这种给开发看的数字',
+    !/掌握概率/.test(summary));
+
+  /*
+   * 定档规则：权重说他该考「用」层，但最近几题明显变慢又连错 → 降回「辨」。
+   * source 要写成 fatigue，导出时才能分清「按表现降的」和「看他累了降的」。
+   */
+  const tiredModel = {
+    recent: [
+      { durationMs: 3000, correct: true }, { durationMs: 3000, correct: true },
+      { durationMs: 12000, correct: false }, { durationMs: 14000, correct: false }
+    ],
+    answeredCount: 6, byKp: {}, eventCount: 40
+  };
+  const planTired = SHT2.devAudit.planCap(tiredModel, { answered: 8, cap: '用', weight: 0.55 });
+  assert('状态不好时，难度档从「用」降回「辨」',
+    planTired.cap === '辨' && planTired.source === 'fatigue', JSON.stringify(planTired.fatigue));
+  const planFit = SHT2.devAudit.planCap(
+    { recent: [], answeredCount: 0, byKp: {}, eventCount: 0 },
+    { answered: 8, cap: '用', weight: 0.55 }
+  );
+  assert('状态正常时按权重定档，不无故降级',
+    planFit.cap === '用' && planFit.source === 'weights');
+
+  // 留痕进导出：开发能看「难度什么时候变过、谁定的」，学生端界面一个字不显示
+  const payload = SHT2.devAudit.exportPayload();
+  assert('导出带难度变化台账（levelTrace）', Array.isArray(payload.levelTrace));
 })();
 
 console.log('\n' + (failed ? 'FAILED ' + failed : 'ALL PASS'));

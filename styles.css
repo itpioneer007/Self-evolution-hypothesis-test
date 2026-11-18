@@ -1540,10 +1540,8 @@ body.is-student .brand-sub:empty { display: none; }
 .st-report-kp-head span { flex:none; font-size:12px; color:var(--muted); }
 .st-report-kp-meta { margin-top:5px; color:var(--muted); font-size:12px; line-height:1.55; }
 .st-report-kp-next { margin-top:6px; color:var(--blue); font-size:12px; }
-.st-report-pending { margin-top:16px; padding:10px 12px; border-radius:8px; background:var(--warn-soft); color:var(--warn); font-size:12px; line-height:1.55; }
-/* 闭环反馈：下一轮会难一点还是简单一点。绿色是因为这是「有进展」的那一条，不报警。 */
+/* 学生端唯一一句难度提示：难一点是挑战，累了就先松一口。绿色表示这是鼓励，不是告警。 */
 .st-next-hint { margin-top:12px; padding:11px 13px; border-radius:8px; border-left:3px solid var(--green); background:var(--green-soft); color:var(--ink); font-size:13px; line-height:1.6; }
-.st-report-caveat { margin-top:10px; color:var(--muted); font-size:11px; line-height:1.55; }
 @media (max-width:760px) {
   .st-report-head { flex-direction:column; }
   .st-report-score { text-align:left; }
