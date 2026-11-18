@@ -511,6 +511,14 @@
       decisions: state.decisions || [],
       levelCap: state.levelCap || null,
       decisionReason: state.decisionReason || '',
+      /*
+       * 能力权重：每答一题按对数损失梯度更新一次（core/weights.js）。
+       * 导出原始权重表 + 摘要，能回答「这次答对让难度升了多少」「哪些考点权重最低」。
+       */
+      weights: state.weights || null,
+      weightsDigest: (SHT.weights && SHT.weights.digest)
+        ? SHT.weights.digest(state.weights || SHT.weights.blank())
+        : null,
       questionHistory: state.questionHistory || [],
       /*
        * 会话与画像变更：界面上不展示，但分析需要。

@@ -189,7 +189,7 @@ const PAGE = function () {
     'src/data/books.js', 'src/data/textbook.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
     'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/grade.js', 'src/core/diagnose.js', 'src/core/agents.js',
-    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/assessment.js',
+    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/weights.js', 'src/core/assessment.js',
     'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
   ];
   return [

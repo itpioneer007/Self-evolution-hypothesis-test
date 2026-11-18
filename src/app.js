@@ -236,6 +236,12 @@
       decisions: [],
       levelCap: null,
       decisionReason: '',
+      /*
+       * 跨轮累积的能力权重：每答一题按对数损失的梯度更新一次（core/weights.js）。
+       * 它是「难度随表现升降」的真正依据，也是以后接更复杂模型时的输入向量。
+       */
+      weights: SHT.weights.blank(),
+      weightsView: null,
       // 跨轮/跨组出过的题。只存能算指纹与格子的字段，供下一轮去重
       questionHistory: [],
       tab: 'agents',
@@ -393,6 +399,8 @@
     if (!Array.isArray(parsed.questionHistory)) parsed.questionHistory = [];
     if (!parsed.levelCap) parsed.levelCap = null;
     if (typeof parsed.decisionReason !== 'string') parsed.decisionReason = '';
+    // 权重：老存档补空表。不拿旧 attempts 反推——反推出来的不是当时的更新记录
+    if (!parsed.weights || typeof parsed.weights !== 'object') parsed.weights = SHT.weights.blank();
     if (!Number.isFinite(parsed.stGroup)) parsed.stGroup = 1;
     // 记录类字段：老存档补空表，不反推（反推出来的不是证据）
     if (!Array.isArray(parsed.profileLog)) parsed.profileLog = [];
@@ -1656,6 +1664,21 @@
       attachDiagnosis(q, final, roundNo);
     }
     p.attempts.push(final);
+    /*
+     * 权重更新：这一步是「痕迹 → 算法输入」真正的落点。
+     * 只拿最终判定更新一次（重试前的首答不重复计权）；
+     * 靠提示/重试答对按 0.6 打折，秒错只降半格，规则写在 core/weights.js 顶部。
+     */
+    state.weights = SHT.weights.update(state.weights || SHT.weights.blank(), {
+      kp: final.kpLabel || '',
+      ability: q.ability || final.ability || '',
+      correct: final.correct,
+      hintCount: final.hintCount || 0,
+      retried: !!isRetry,
+      durationMs: isRetry ? (final.retryDurationMs || final.durationMs) : final.durationMs,
+      changes: 0,
+      at: final.at
+    });
 
     emitEvent('submit', q, {
       picked: final.picked, expected: final.expected,
@@ -3322,12 +3345,29 @@
       retired: retiredKps
     });
     state.decisions = decisionSet.items;
-    state.levelCap = decisionSet.levelCap;
+    /*
+     * 难度上限的优先级：权重累积够多（≥5 次作答）就以它为准，否则用本轮 learner 的判断。
+     * 理由：前几题样本太少，按权重调档等于让一道题决定整轮难度；
+     * 攒够证据以后，跨轮权重比「本轮重算的掌握概率」更稳，也更贴近「答对升、答错降」的直觉。
+     */
+    const weightsView = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
+    state.weightsView = weightsView;
+    const useWeights = weightsView.answered >= 5 && SHT.LEVELS.indexOf(weightsView.cap) >= 0;
+    const capInfo = Object.assign({}, decisionSet.levelCap, {
+      learnerCap: decisionSet.levelCap && decisionSet.levelCap.cap,
+      weightsCap: weightsView.cap,
+      weightsAnswered: weightsView.answered,
+      weight: weightsView.weight,
+      source: useWeights ? 'weights' : 'learner',
+      reason: useWeights ? weightsView.reason : (decisionSet.levelCap && decisionSet.levelCap.reason) || ''
+    });
+    if (useWeights) capInfo.cap = weightsView.cap;
+    state.levelCap = capInfo;
     state.decisionReason = decisionSet.reason;
     state.learnerModel = SHT.learner.digest(learnerModel, 8);
     // 课程角色仍读这份 brief；决策作为硬约束挂在旁边，生成时被代码覆盖
     brief.decisions = decisionSet.items;
-    brief.levelCap = decisionSet.levelCap;
+    brief.levelCap = capInfo;
 
     // 勾选范围内已经全考过 → 自动扩池：把没考过的候选补进来，一次只考一点
     let scopeNow = kpScopePayload();
@@ -3348,7 +3388,7 @@
         count: countFor(state.round),
         brief: brief,
         decisions: decisionSet.items,
-        levelCap: decisionSet.levelCap,
+        levelCap: capInfo,
         history: (state.questionHistory || []).slice(),
         scope: scopeNow,
         memory: state.agentMemory,
