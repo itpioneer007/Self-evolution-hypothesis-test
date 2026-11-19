@@ -294,6 +294,12 @@ python -m http.server 8080
 
 这只调先后顺序，**不减少题量、也不禁止出句型**：词都补完还有空位，句型照出。依赖关系写在课程知识点上（`requires` / `requiresWords`，代码在 `src/data/knowledgePoints.js`），排序与理由在 `src/core/learner.js` 的 `missingPrereqs`；导出 `decisions[].blockedBy` 记着每条选题欠哪个词，`audit-digest` 第六段会打印「这句里的 X 还没稳住，所以排在这些词后面」。
 
+### 中文题干必须是英文答案的忠实翻译
+
+给中文选英文的句子题，题干和答案要逐点对等：答案里有几个人、哪个地点、哪些东西，题干就写几样；答案里没有的，一个字都不许添。否则就会出现题干写「我们学校有一个图书馆」、正确答案却是 `There is a library.` 这种对不上的题——「我们学校」在答案里没有 `in our school` 对应，凭空多了地点。
+
+根因是模型把句型表里的现成例句整句抄来当答案，再倒推一个更长的中文题干；而原来的代码闸只查「答案在不在选项里、超没超纲」，没查中英是否对等。修法是两头立规矩：生成提示第 14 条要求先照答案逐点写题干（附这个错例当反例），验证提示 3.2 条让验证者按 C4「题干自洽」判这类题挂掉。规矩写在 `src/core/agents.js` 的 `generate/verify.system`，条款文本在 `src/core/checklist.js`；`tools/smoke-test.js` 有四条断言盯着这些提示词不被改没。
+
 ### 考点推进
 
 每个考点按 **认 → 辨 → 用 → 表达** 升层（对外一律说成第 1–4 级：能认出 / 能分清 / 能自己用对 / 能说出来，见 `src/core/levelTrace.js`）。真会升一层，答错降一层；到顶层且已经会过两次就退役，不再排题。学生分层决定层次上限（A 到表达、B 到用、C 到辨），模型给出的层次超过上限会被代码压回去并留痕。
@@ -416,7 +422,7 @@ DEEPSEEK_API_KEY=sk-xxx node tools/live-run.js
 DEEPSEEK_API_KEY=sk-xxx node tools/ui-check.js
 ```
 
-当前状态：`smoke-test` **85 项全绿**，`e2e-browser` **14 项全绿**。两套都不需要 key；真实模型的两条脚本（`live-run` / `ui-check`）要 `DEEPSEEK_API_KEY` 才跑。
+当前状态：`smoke-test` **89 项全绿**，`e2e-browser` **14 项全绿**。两套都不需要 key；真实模型的两条脚本（`live-run` / `ui-check`）要 `DEEPSEEK_API_KEY` 才跑。
 
 新增判据请同时补断言。这个项目里反复出现过同一类问题——判据自己误判却看起来像模型出错（例如把占位符当成超纲词、把 `nears` 当成没学过的词），只有断言能拦住回归。
 

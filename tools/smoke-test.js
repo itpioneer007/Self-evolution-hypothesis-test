@@ -575,5 +575,22 @@ console.log('--- 权重接线（加载 app.js） ---');
   assert('导出带难度变化台账（levelTrace）', Array.isArray(payload.levelTrace));
 })();
 
+console.log('--- 中文题干要忠实翻译英文答案，不多添信息 ---');
+(function () {
+  const gen = SHT.ROLES.generate.system();
+  const ver = SHT.ROLES.verify.system();
+  assert('生成提示要求中文题干是英文答案的逐点翻译',
+    /逐点翻译/.test(gen) && /不许多写/.test(gen),
+    gen.slice(gen.indexOf('14.'), gen.indexOf('14.') + 60));
+  assert('生成提示用本题做过反例（我们学校 / in our school）',
+    /我们学校有一个图书馆/.test(gen) && /in our school/.test(gen));
+  assert('验证提示让验证者按 C4 查这种「题干多添地点」',
+    /判 C4/.test(ver) && /我们学校有一个图书馆/.test(ver),
+    ver.slice(ver.indexOf('3.2'), ver.indexOf('3.2') + 80));
+  const c4 = SHT.ALL_CHECKS.filter(function (c) { return c.id === 'C4'; })[0];
+  assert('C4 条款写明：答案没有的信息不许写进题干',
+    /答案没有的信息不许写进题干/.test(c4.text), c4.text);
+})();
+
 console.log('\n' + (failed ? 'FAILED ' + failed : 'ALL PASS'));
 if (failed) process.exitCode = 1;
