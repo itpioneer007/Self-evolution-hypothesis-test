@@ -382,6 +382,9 @@
   };
 
   const CAP_BY_LAYER = { A: '表达', B: '用', C: '辨' };
+  // 掌握概率调档线：≥0.65 升一档、≤0.35 降一档，至少要 3 次作答
+  const LEVEL_UP = 0.65;
+  const LEVEL_DOWN = 0.35;
   const LEVEL_BY_TENDENCY = {
     unknown: '认', slip: '辨', unstable: '辨', solid: '用', emerging: '辨', unseen: '认'
   };
@@ -405,8 +408,8 @@
     const n = (model && model.answeredCount) || 0;
     const avg = ps.length ? ps.reduce(function (a, b) { return a + b; }, 0) / ps.length : null;
     let delta = 0;
-    if (n >= 3 && avg != null && avg >= 0.65) delta = 1;
-    else if (n >= 3 && avg != null && avg <= 0.35) delta = -1;
+    if (n >= 3 && avg != null && avg >= LEVEL_UP) delta = 1;
+    else if (n >= 3 && avg != null && avg <= LEVEL_DOWN) delta = -1;
     const idx = Math.max(0, Math.min(L.length - 1, L.indexOf(base) + delta));
     return {
       layer: layer, cap: L[idx], startCap: base, delta: delta,
@@ -628,6 +631,8 @@
 
   SHT.learner = {
     TYPES: TYPES, CAP_EVENTS: CAP_EVENTS, RULES: RULES,
+    // 调档阈值：台账要写清「越过了哪条线」，所以把它导出，别在两处各写一个数
+    LEVEL_CAP: { up: LEVEL_UP, down: LEVEL_DOWN },
     build: build, decide: decide, levelCapOf: levelCapOf, fatigueOf: fatigueOf, digest: digest
   };
 })(window);

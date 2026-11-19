@@ -124,12 +124,42 @@
   /*
    * 难度变化台账。记的是「这次出题把上限放在哪、上一次是多少、凭什么」。
    * 只进存档与导出，学生端不显示——他要的是题，不是参数。
+   *
+   * 关键是把「凭什么」存成可核对的数据，不是一句「由权重定」：
+   *   basis.kind = weights → 做了几题、预计答对率多少、当时的阈值线各是多少
+   *   basis.kind = fatigue → 慢了多少、几成超时、连错几题
+   *   basis.kind = learner → 本轮平均掌握概率、样本量、阈值线
+   * 阈值一起存，是因为算法以后可能改；改了也要能解释老导出当时是按什么算的。
    */
   function noteLevelTrace(capInfo, weightsView, plan, decisionSet) {
     const list = Array.isArray(state.levelTrace) ? state.levelTrace : [];
     const prev = list[list.length - 1];
     const rules = (decisionSet.items || []).map(function (d) { return d.rule; })
       .filter(function (x, i, arr) { return x && arr.indexOf(x) === i; });
+    const wCap = (SHT.weights && SHT.weights.CAP) || {};
+    const lCap = (SHT.learner && SHT.learner.LEVEL_CAP) || {};
+    const f = plan.fatigue || {};
+    const basis = plan.source === 'fatigue'
+      ? {
+        kind: 'fatigue',
+        drift: f.drift, slowRate: f.slowRate, streak: f.streak, sample: f.sample,
+        reason: f.reason || '',
+        // 只看表现本该停在哪一档：说明「降这一级是照顾状态，不是能力不够」
+        capByPerf: plan.capByPerf
+      }
+      : (plan.useWeights
+        ? {
+          kind: 'weights',
+          weight: weightsView.weight, answered: weightsView.answered,
+          up: wCap.high, down: wCap.low
+        }
+        : {
+          kind: 'learner',
+          avgPKnown: plan.learnerCapInfo.avgPKnown,
+          basedOn: plan.learnerCapInfo.basedOn,
+          delta: plan.learnerCapInfo.delta,
+          up: lCap.up, down: lCap.down
+        });
     state.levelTrace = list.concat([{
       at: new Date().toISOString(),
       group: state.stGroup,
@@ -144,6 +174,7 @@
       fatigue: plan.fatigue.level,
       fatigueReason: plan.fatigue.reason,
       source: plan.source,
+      basis: basis,
       rules: rules,
       why: capInfo.reason
     }]).slice(-60);

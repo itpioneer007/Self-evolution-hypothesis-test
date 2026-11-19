@@ -142,12 +142,17 @@
       abilityWeight: abilityW,
       kpWeight: kpW,
       cap: cap,
-      // 给界面与导出的一句判断依据
-      reason: w >= CAP.high
-        ? '累积权重 ' + Math.round(w * 100) + '%，已稳定过线，可以往上顶一层'
-        : w >= CAP.low
-          ? '累积权重 ' + Math.round(w * 100) + '%，维持当前层'
-          : '累积权重 ' + Math.round(w * 100) + '%，还在认/辨之间，先保正确率',
+      /*
+       * 一句判断依据，出现在导出与开发视图里。
+       * 不写「累积权重 68%，已稳定过线」——看的人不知道「权重」是什么、
+       * 「过线」是哪条线。直接说：做了几题、预计能答对多少、越过了哪条线。
+       */
+      reason: '累计 ' + s.answered + ' 题作答后，预计这类题能答对 ' + Math.round(w * 100) + '%；' +
+        (w >= CAP.high
+          ? '超过 ' + Math.round(CAP.high * 100) + '% 的升档线，难度可以再往上走一级'
+          : w >= CAP.low
+            ? '在 ' + Math.round(CAP.low * 100) + '%–' + Math.round(CAP.high * 100) + '% 之间，难度维持不动'
+            : '低于 ' + Math.round(CAP.low * 100) + '% 的降档线，先保正确率，不急往上加'),
       answered: s.answered
     };
   }
@@ -172,6 +177,8 @@
   SHT.weights = {
     ETA: ETA,
     START: START,
+    // 调档阈值：≥60% 升一档、≤35% 降一档。导出让台账能写清「越过了哪条线」
+    CAP: CAP,
     blank: blank,
     predict: predict,
     update: update,

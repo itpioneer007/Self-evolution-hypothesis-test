@@ -11,6 +11,10 @@
  * 而不是假装复用率是 0%——那会把「文件缺字段」误报成「系统没复用」。
  */
 const fs = require('fs');
+const path = require('path');
+// 难度台账的翻译逻辑与界面共用同一份，避免脚本里再抄一套说法
+global.window = global;
+require(path.join(__dirname, '..', 'src', 'core', 'levelTrace.js'));
 
 const file = process.argv[2];
 if (!file) {
@@ -123,27 +127,30 @@ hr('六 凭什么出这些题（决策证据链）');
 const decisions = Array.isArray(j.decisions) ? j.decisions : [];
 const cap = j.levelCap || null;
 /*
- * 难度变化台账放在最前面：这是「题为什么越来越难 / 突然变简单」的唯一出处。
- * 每一行都是从哪一档到哪一档、谁定的、带不带疲劳判定。
+ * 难度台账放在最前面：这是「题为什么越来越难 / 突然变简单」的唯一出处。
+ * 每条写三样东西：从第几级到第几级、升降几级、凭什么（几个题、多少正确率、
+ * 越过哪条线，或者慢了多少、连错几题）。最后标出它在导出文件里的位置，
+ * 方便对着原文核——这一行不是脚本编的，是台账里那一条。
  */
 const trace = Array.isArray(j.levelTrace) ? j.levelTrace : [];
 if (trace.length) {
-  line('难度变化（第 1 条到最后 1 条）：');
-  trace.forEach(function (t) {
-    line('  ' + (t.group || 1) + ' 组 · 第 ' + (t.round || 1) + ' 轮　' +
-      (t.from || '起') + ' → ' + (t.to || '?') +
-      '　由 ' + ({ weights: '权重', learner: '掌握概率', fatigue: '状态（累/连错）' }[t.source] || t.source || '?') + ' 定' +
-      (t.fatigue === 'clear' ? '　[判为累：' + (t.fatigueReason || '') + ']' : '') +
-      (t.weightsCap ? '　权重档 ' + t.weightsCap + ' / 掌握概率档 ' + (t.learnerCap || '?') : ''));
+  line('说明：下面每行对应导出文件 levelTrace 数组里同序号的原始记录，文中数字都取自该记录，未做推断。');
+  line('　　　「累计正确率」在代码里叫权重，意思是「按他答过的题，估计这类题能答对多少」。');
+  trace.forEach(function (t, i) {
+    const e = SHT.levelTrace.explain(t);
+    line('  ' + (i + 1) + '）' + e.head);
+    line('     ' + e.why);
+    line('     调档依据：' + e.source + '　（导出 levelTrace 第 ' + (i + 1) + ' 条）');
   });
 } else {
   line('这份导出没有 levelTrace（老版本文件），看不到难度是怎么一步步变的。');
 }
 if (cap) {
-  line('水平上限：' + cap.cap + '（起始 ' + cap.startCap + '，' +
-    (cap.delta > 0 ? '按表现升 1 档' : cap.delta < 0 ? '按表现降 1 档' : '持平') +
+  line('本轮难度上限：' + SHT.levelTrace.levelText(cap.cap) +
+    '；起始为' + SHT.levelTrace.levelShort(cap.startCap) +
+    (cap.delta > 0 ? '，按表现升高 1 级' : cap.delta < 0 ? '，按表现降低 1 级' : '，按表现不变') +
     '；基于 ' + cap.basedOn + ' 次作答' +
-    (cap.avgPKnown == null ? '' : '，平均掌握概率 ' + Math.round(cap.avgPKnown * 100) + '%') + '）');
+    (cap.avgPKnown == null ? '' : '，平均掌握概率 ' + Math.round(cap.avgPKnown * 100) + '%'));
 }
 if (!decisions.length) {
   line('这份导出没有 decisions（老版本文件）。无法核对「凭什么出这题」，请重新导出一次。');

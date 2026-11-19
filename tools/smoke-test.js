@@ -32,6 +32,7 @@ require('../src/core/quota.js');
 require('../src/core/bkt.js');
 require('../src/core/learner.js');
 require('../src/core/weights.js');
+require('../src/core/levelTrace.js');
 require('../src/core/progress.js');
 require('../src/core/assessment.js');
 require('../src/core/agentMemory.js');
@@ -308,6 +309,41 @@ console.log('--- 答题过后重出题：证据有没有真的进模型 ---');
     mild.level === 'mild', JSON.stringify(mild));
   const tooFew = SHT.learner.fatigueOf([r(9000, false), r(9000, false)]);
   assert('样本太少先不判累，避免一开练就降级', tooFew.level === 'none', tooFew.reason);
+})();
+
+console.log('--- 难度台账要说人话：从第几级到第几级、凭什么 ---');
+(function () {
+  const up = {
+    group: 1, round: 1, from: '辨', to: '用', source: 'weights',
+    basis: { kind: 'weights', weight: 0.68, answered: 8, up: 0.6, down: 0.35 }
+  };
+  const e1 = SHT.levelTrace.explain(up);
+  assert('主句说「难度升高 1 级」，两端带级别与含义',
+    /难度升高 1 级/.test(e1.head) && /第 2 级「辨」（能分清/.test(e1.head) &&
+    /第 3 级「用」（能自己用对）/.test(e1.head), e1.head);
+  assert('凭什么写在一条里：做了几题、预计正确率、越过哪条线',
+    /累计 8 题/.test(e1.why) && /68%/.test(e1.why) && /60% 的升档线/.test(e1.why), e1.why);
+
+  const down = {
+    group: 2, round: 1, from: '用', to: '辨', source: 'fatigue',
+    basis: { kind: 'fatigue', drift: 3.1, slowRate: 0.5, streak: 2, sample: 8, capByPerf: '用' }
+  };
+  const e2 = SHT.levelTrace.explain(down);
+  assert('降档说清是状态原因，并交代「只看正确率本该在哪」',
+    /慢了 210%/.test(e2.why) && /这 8 题里有 4 题超过 20 秒/.test(e2.why) &&
+    /连错 2 题/.test(e2.why) && /只看正确率本该停在第 3 级/.test(e2.why), e2.why);
+  assert('主句说「难度降低 1 级」，两端是从第 3 级到第 2 级',
+    /难度降低 1 级/.test(e2.head) && /从第 3 级/.test(e2.head) && /到第 2 级/.test(e2.head), e2.head);
+
+  const old = { group: 1, round: 1, from: '', to: '用', source: 'weights', why: '累积权重 68%' };
+  const e3 = SHT.levelTrace.explain(old);
+  assert('老导出缺依据时如实说「凑不出」，不编',
+    /旧版本/.test(e3.why) && /重新导出/.test(e3.why), e3.why);
+
+  const same = { group: 1, round: 2, from: '用', to: '用', source: 'weights', basis: { kind: 'weights', weight: 0.5, answered: 6, up: 0.6, down: 0.35 } };
+  const e4 = SHT.levelTrace.explain(same);
+  assert('没调档时写「不变」，并说明数值落在区间内',
+    /不变/.test(e4.head) && /之间，不该调档/.test(e4.why), e4.head + ' | ' + e4.why);
 })();
 
 console.log('--- 权重接线（加载 app.js） ---');
