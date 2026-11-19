@@ -13,9 +13,18 @@
   const SHT = (root.SHT = root.SHT || {});
 
   const MAX_ATTEMPTS = 3;
-  // 课程角色多提几条当替补。为什么是 2：一次退不成的格子通常只有一格两格，
-  // 提太多会挤占正取的注意力（模型给 7 条时会顺手把后两条写成空话）。
-  const BENCH_SIZE = 2;
+  /*
+   * 预留条数：设定几道就必须出满几道，所以规划要一次多要一批当替补。
+   * 按正取的 80% 估算（模型退题率大致三到五成），最少 3 条、最多 8 条。
+   * 以前固定 2 条：5 道里退 3 道就补不上，最后只出 4 道，
+   * 而界面上写的是「5 道」——数量和承诺对不上。
+   */
+  const BENCH_MIN = 3;
+  const BENCH_MAX = 8;
+  const BENCH_RATE = 0.8;
+  function benchSizeOf(want) {
+    return Math.max(BENCH_MIN, Math.min(BENCH_MAX, Math.ceil(Number(want || 0) * BENCH_RATE)));
+  }
   // 「干扰项造不出来」这一族：V3 选项不合规 / V3b 干扰项太好排除 / V3c 干扰拼写不像错拼。
   // 连着卡在这几条上，说明不是题写坏了，是这个考点在这个单元里造不出可信的诱饵。
   const DISTRACTOR_CODES = ['V3', 'V3b', 'V3c'];
@@ -406,9 +415,9 @@
 
     // ---------- 环节 1：规划 ----------
     const want = scopeAlive.length ? Math.min(quotaSum, scopeAlive.length) : quotaSum;
-    // 正取 want 条，另外多要 BENCH_SIZE 条当替补：某一格实在出不成时由它顶上，
-    // 总比留个空格强——一轮 5 题只出 3 题，学生做完就没题了。
-    const wantBench = Math.min(BENCH_SIZE, Math.max(1, quotaSum));
+    // 正取 want 条，另外多要一批当替补：某一格实在出不成时由它顶上。
+    // 题量是硬约束（说 5 道就 5 道），所以预留量按退题率估，不再是固定 2 条。
+    const wantBench = benchSizeOf(want);
     onEvent({
       phase: 'plan',
       text: '规划中：' + want + ' 条考点' + (scopeAlive.length ? '（范围 ' + scopeAlive.length + ' 个）' : '') +
@@ -594,6 +603,18 @@
       const d = hit.item;
       if (SHT.LEVELS.indexOf(d.level) >= 0) p.level = d.level;
       if (SHT.DISTRACTORS.indexOf(d.distractor) >= 0) p.cellDistractor = d.distractor;
+      /*
+       * 考点名一律换成课程原文。
+       * 题上的 knowledgePoint 会被写进每一条答题事件，而答题事件又是学习者模型的键。
+       * 模型把「vocab · classroom · 教室物品」写成「教室物品」时，键就对不上课程清单，
+       * 下一轮 decide 按课程标签查不到这个考点，学生会表现为「明明答对过，却像没学过」。
+       * 原名留在 kpRaw 里，导出能看出模型当时写的是什么。
+       */
+      if (d.kp && d.kp !== p.kp) {
+        p.kpRaw = p.kp;
+        p.kp = d.kp;
+        p.kpAligned = hit.match;
+      }
       p.decision = {
         kp: d.kp, rule: d.rule, ruleText: d.ruleText, action: d.action,
         evidence: d.evidence, reason: d.reason, match: hit.match
@@ -601,6 +622,25 @@
     };
     plans.forEach(applyDecision);
     bench.forEach(applyDecision);
+
+    /*
+     * 决策单没覆盖到的计划（被配额挤出、模型自由发挥），再用本单元候选对一次。
+     * 只对齐「挂上决策」的那几条不够：替补顶上来的、换出来的题同样会带改写名，
+     * 它们一样会写进答题事件。
+     */
+    const kpPool = (unit.kps || SHT.kpsOf(unit.id) || []).map(function (k) {
+      return { kp: k.label, ability: k.ability, id: k.id };
+    });
+    const alignKp = function (p) {
+      if (p.kpAligned || !p.kp) return;
+      const hit = SHT.pipeline.matchPriority(p, kpPool);
+      if (!hit || !hit.item) { p.kpAligned = 'none'; return; }
+      p.kpRaw = p.kp;
+      p.kp = hit.item.kp;
+      p.kpAligned = hit.match;
+    };
+    plans.forEach(alignKp);
+    bench.forEach(alignKp);
 
     // ---------- 分格（代码，不让模型碰） ----------
     // 已用格子 = 本轮已有题 + 历史所有轮。历史格子进 used，跨轮换格子才真的生效。
@@ -689,6 +729,32 @@
       };
     }
 
+    /*
+     * 最后一道保险：替补池也空了，就从本单元还没考过的考点里取一条同能力的。
+     * 题量是硬约束——说 5 道就得 5 道，所以宁可换一个没考过的考点再试，
+     * 也不直接留空。不调规划模型：这一步要在退题的当下就决定，
+     * 等一次模型调用会把「这一格出不来」拖成整轮的等待。
+     */
+    function nextPoolKp(from) {
+      const open = kpPool.filter(function (k) {
+        const n = normKp(k.kp);
+        return n && !takenKp[n] && hint.retired.indexOf(k.kp) < 0;
+      });
+      const same = open.filter(function (k) { return k.ability === from.ability; })[0] || open[0];
+      if (!same) return null;
+      const lv = defaultLevel({ ability: same.ability, level: from.level });
+      return {
+        kp: same.kp,
+        ability: same.ability,
+        cause: from.cause,
+        whyThisOne: from.whyThisOne,
+        nextIfWrong: from.nextIfWrong,
+        level: SHT.LEVELS.indexOf(lv) > SHT.LEVELS.indexOf(hint.cap) ? hint.cap : lv,
+        probe: null,
+        fromPool: true
+      };
+    }
+
     for (let i = 0; i < plans.length; i += 1) {
       let plan = plans[i];
       let adopted = null;
@@ -697,7 +763,8 @@
       // 这一格历次被退回的条款号：用来判断「是不是诱饵造不出来」，而不是题写坏了
       let slotCodes = [];
       let switched = false;   // 换考点最多一次，再换就成了瞎试
-      let benched = false;    // 替补最多顶一次
+      let benchUsed = 0;      // 这一格最多换两次替补：一次不够时还有退路，又不会把整池吃光
+      let poolTried = 0;      // 替补也没了时，从没考过的考点里再试两条
 
       while (!adopted) {
         let moved = null;
@@ -726,17 +793,36 @@
           }
         }
 
-        // 次数用满了（或者没得换）：替补顶上；替补也没了就真放弃，这一格留空
-        if (!moved && attempt >= maxAttempts && !benched) {
+        // 次数用满了（或者没得换）：替补顶上
+        if (!moved && attempt >= maxAttempts && benchUsed < 2) {
           const b = nextBench(plan);
           if (b) {
-            benched = true;
+            benchUsed += 1;
             moved = { plan: b, why: '这一格没出成，替补顶上：「' + b.kp + '」' };
             failures.push(fail({
               stage: 'plan', planKp: plan.kp, attempt: attempt,
               codes: ['BENCH_UP'],
               reason: '这一格（' + plan.kp + '）没出成，由替补「' + b.kp + '」顶上',
               detail: ''
+            }));
+          }
+        }
+
+        /*
+         * 替补用完了、或者这一轮根本没留替补（模型规划刚好只给了正取数），
+         * 再从「本单元还没考过的考点」补一条。
+         * 这是保证「说 5 道就出 5 道」的最后一道保险：宁可换一个同能力的考点再试两次，
+         * 也不在这一格留空。每格最多这样补两次，避免整轮都在追一个出不了的考点。
+         */
+        if (!moved && attempt >= maxAttempts && poolTried < 2) {
+          const alt = nextPoolKp(plan);
+          if (alt) {
+            poolTried += 1;
+            moved = { plan: alt, why: '这一格和替补都没出成，改从还没考过的「' + alt.kp + '」补一道' };
+            failures.push(fail({
+              stage: 'plan', planKp: plan.kp, attempt: attempt,
+              codes: ['PLAN_POOL_FILL'],
+              reason: '这一格出不成，从没考过的考点里补一条：' + alt.kp, detail: ''
             }));
           }
         }
@@ -786,6 +872,10 @@
           qid: 'g' + Date.now().toString(36) + '-' + (i + 1),
           no: i + 1,
           knowledgePoint: plan.kp,
+          // 模型原来写的考点名（对齐前）。对齐方式留在 kpAligned：
+          // exact 逐字 / contain 包含 / near 按词面近似 / none 没对上（这条要人工看）。
+          kpRaw: plan.kpRaw || '',
+          kpAligned: plan.kpAligned || '',
           ability: plan.ability,
           cell: plan.cell,
           prompt: String(raw.prompt || '').trim(),
@@ -844,6 +934,27 @@
           feedback = '这道题和之前出过的一模一样（题干 / 选项 / 答案全同）。必须换题面、换选项或换答案，不能只调整顺序。';
           slotCodes.push('V_DUP');
           onEvent({ phase: 'reject', index: i, codes: ['V_DUP'], text: '第 ' + (i + 1) + ' 题与历史题重复，退回重出' });
+          continue;
+        }
+
+        /*
+         * 知识点归因检查：对不上本单元任何考点的题，答题记录没法算到哪个知识点上，
+         * 出了也只是让学生白答一次。这类直接退回重出，而不是带病入库。
+         * 能对上（exact / contain / near）的已经在前面被改写成课程原文了。
+         */
+        if (plan.kpAligned === 'none') {
+          failures.push(fail({
+            stage: 'validate', planKp: plan.kp, attempt: attempt,
+            codes: ['KP_UNMATCHED'],
+            reason: '知识点「' + plan.kp + '」对不上本单元任何考点，答题记录无法归因，退回重出',
+            detail: ''
+          }));
+          feedback = '知识点必须从本轮给的候选清单里原样照抄，不要改写；对不上的题一律不收。';
+          slotCodes = slotCodes.concat(['KP_UNMATCHED']);
+          onEvent({
+            phase: 'reject', index: i, codes: ['KP_UNMATCHED'],
+            text: '第 ' + (i + 1) + ' 题的知识点对不上课程清单，退回'
+          });
           continue;
         }
 
@@ -980,7 +1091,7 @@
         usedFps[SHT.contentFingerprint(adopted)] = true;
         onEvent({ phase: 'adopted', index: i, text: '第 ' + (i + 1) + ' 题通过' });
       } else {
-        const tried = (switched ? '换过相近考点、' : '') + (benched || plan.fromBench ? '替补也顶上过，' : '');
+        const tried = (switched ? '换过相近考点、' : '') + (benchUsed || plan.fromBench ? '替补也顶上过，' : '');
         failures.push(fail({
           stage: 'giveup', planKp: plan.kp, attempt: maxAttempts,
           codes: ['GIVE_UP'],
@@ -996,6 +1107,13 @@
     return {
       ok: questions.length > 0,
       plans: plans,
+      /*
+       * 题量硬约束：这一轮想要 want 道、实际出 questions.length 道。
+       * shortfall > 0 说明确实凑不满（模型或闸门的原因），界面与日志要明说缺几道，
+       * 不能让它悄悄变成「本来就说好 3 道」。
+       */
+      wanted: want,
+      shortfall: Math.max(0, want - questions.length),
       // 替补：这次用了哪几条、还剩几条。界面据此说清「本来还能顶上几条」
       bench: bench,
       benchUsed: bench.length - benchLeft.length,

@@ -11,7 +11,7 @@
  *   第 2 条计划  第一次出拼写题、干扰项写成 curtain / zebra  → 代码闸 V3c 退回，重出后通过
  *   第 3 条计划  第一次质检判 fail C3                       → 质检否决，重出后通过
  *   第 4 条计划  质检判 fail 但一个条款号都不给              → 无效否决，采纳但标 weak
- *   第 5 条计划  每次都出超纲词                              → 3 次不过，放弃并留 GIVE_UP
+ *   第 5 条计划  每次都出超纲词                              → 连败后由候选补位，仍出满 5 道
  *
  * 断言的是「退回之后有没有留下痕迹」，不是「题好不好」——题好不好得拿真模型跑。
  */
@@ -23,6 +23,19 @@ const { spawn } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const PORT = 8799;
+
+/*
+ * 测桩侧也要读课程数据：真实模型会照抄规划提示里给的考点原文，
+ * 测桩以前自己编「vocab · xxx · 混淆词义与拼写」，课程里根本没有这个名字。
+ * 代码现在会把对不上课程的题退回（KP_UNMATCHED），于是测桩全被拦，
+ * 看起来像产品问题。这里改成从课程真实考点里挑。
+ */
+global.window = global;
+global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+['src/data/books.js', 'src/data/textbook.js', 'src/data/knowledgePoints.js',
+ 'src/data/curriculum.js', 'src/core/enums.js'].forEach(function (f) {
+  require(path.join(REPO, f));
+});
 const EDGE_CANDIDATES = [
   process.env.EDGE_PATH,
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -83,17 +96,31 @@ function parseVocab(text) {
   return out;
 }
 
+function courseKps(userText) {
+  const m = String(userText).match(/单元：\s*([A-Za-z0-9-]+)/);
+  const id = m ? m[1] : 'U1';
+  return SHT.kpsOf(id) || SHT.kpsOf('U1') || [];
+}
+
 function buildPlans(userText) {
   if (MODE.round === 2) return planFromWrongCard(userText);
-  const words = parseVocab(userText).slice(0, 12);
-  const shapes = [['vocab', '认'], ['spelling', '辨'], ['sentence', '用'], ['vocab', '认'], ['vocab', '认']];
-  return shapes.map(function (s, i) {
-    const w = words[i] || words[0];
-    const kp = s[0] + ' · ' + w.en + ' · 混淆词义与拼写';
-    kpIndex[kp] = i;
+  const all = courseKps(userText);
+  /*
+   * 照抄课程标签；能力按「词 3 / 语音 1 / 句型 1」凑，和 e2e 传入的配额对齐。
+   * idx 固定 0..4：剧本里的 VERIFY_NO_CODE / V3c / C3 都按这个序号演。
+   */
+  const picked = []
+    .concat(all.filter(k => k.ability === 'vocab').slice(0, 3))
+    .concat(all.filter(k => k.ability === 'phonics').slice(0, 1))
+    .concat(all.filter(k => k.ability === 'sentence').slice(0, 1));
+  all.forEach(function (k) { if (picked.length < 5 && picked.indexOf(k) < 0) picked.push(k); });
+  return picked.slice(0, 5).map(function (k, i) {
+    kpIndex[k.label] = i;
     return {
-      kp: kp, ability: s[0], cause: '看到词想不起中文',
-      whyThisOne: '本单元核心词', nextIfWrong: '先配对再认词', level: s[1]
+      kp: k.label, ability: k.ability,
+      cause: '看到词想不起中文', whyThisOne: '本单元核心词',
+      nextIfWrong: '先配对再认词',
+      level: i === 1 ? '辨' : (i >= 3 ? '用' : '认')
     };
   });
 }
@@ -149,12 +176,34 @@ function buildQuestion(userText, idx) {
   };
 }
 
+/*
+ * 从考点名里取「第二段的英文词」，回词表定位题号。
+ * 为什么需要：代码现在会把考点名对齐成课程原文（模型自造的「vocab · classroom · 混淆词义与拼写」
+ * 会被改成「vocab · classroom · 教室物品」），kpIndex 那张按原名建的索引就查不到了。
+ * 不这么补，mock 会给所有题取同一个词，自己撞成 V_DUP，看起来像产品拒题。
+ */
+function idxFromKp(kp, userText) {
+  // 用整段（可能是 music room 这种带空格的词），只取第一个英文单词会漏掉多词短语
+  const seg = String(kp || '').split('·')[1] || '';
+  const w = seg.trim().toLowerCase();
+  if (!w) return 0;
+  const vocab = parseVocab(userText);
+  const i = vocab.findIndex(function (x) { return x.en.toLowerCase() === w; });
+  if (i >= 0) return i;
+  // 退一步按包含关系找：课程标签可能给的是「music room」，词表里写作「music room」
+  const j = vocab.findIndex(function (x) {
+    return w.indexOf(x.en.toLowerCase()) >= 0 || x.en.toLowerCase().indexOf(w) >= 0;
+  });
+  return j < 0 ? 0 : j;
+}
+
 function answerFor(role, user) {
   if (role === 'plan') return JSON.stringify({ plans: buildPlans(user) });
   if (role === 'generate') {
     const m = user.match(/- 考点：(.+)/);
     const kp = m ? m[1].trim() : '';
-    return JSON.stringify(buildQuestion(user, kpIndex[kp] == null ? 0 : kpIndex[kp]));
+    const idx = kpIndex[kp] != null ? kpIndex[kp] : idxFromKp(kp, user);
+    return JSON.stringify(buildQuestion(user, idx));
   }
   /*
    * 验证角色现在看不到知识点与出题意图（那是刻意拿掉的），所以 mock 只能按题面
@@ -171,7 +220,7 @@ function answerFor(role, user) {
    * 三个角色各演一件事，注释里写清是为了让后来的人知道「这几条失败码是设计出来的」：
    *   idx 0 → 只说 fail、不给条款号：应按弱通过采纳（VERIFY_NO_CODE）
    *   idx 2 → 第一次给 C3，退回重出后通过：验「拦得住、也能改对」
-   *   idx 3 → 每次都拦：连败三次后应放弃并留 GIVE_UP
+   *   idx 3 → 每次都拦：连败三次后应由候选补位（PLAN_POOL_FILL），不留空
    * 其它题目一律 pass。
    */
   if (idx === 0 && first) return JSON.stringify({ verdict: 'fail', fails: [], note: '说不上来哪里不对' });
@@ -189,7 +238,7 @@ const PAGE = function () {
     'src/data/books.js', 'src/data/textbook.js', 'src/data/curriculum.js', 'src/data/knowledgePoints.js',
     'src/data/wrongCases.js', 'src/core/enums.js', 'src/core/fingerprint.js', 'src/core/checklist.js',
     'src/core/wrongBook.js', 'src/core/practice.js', 'src/core/llm.js', 'src/core/grade.js', 'src/core/diagnose.js', 'src/core/agents.js',
-    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/weights.js', 'src/core/levelTrace.js', 'src/core/assessment.js',
+    'src/core/validate.js', 'src/core/quota.js', 'src/core/bkt.js', 'src/core/learner.js', 'src/core/weights.js', 'src/core/levelTrace.js', 'src/core/trend.js', 'src/core/assessment.js',
     'src/core/progress.js', 'src/core/agentMemory.js', 'src/core/pipeline.js'
   ];
   return [
@@ -206,7 +255,7 @@ const PAGE = function () {
     '    var events = [];',
     // 显式给配额：这个用例要验的是「退回 → 留痕 → 重出 → 放弃」这条链，
     // 不该被自动算出来的能力配额拦掉几条计划
-    '    var res = await SHT.pipeline.runRound({unit:unit,count:5,brief:SHT.pipeline.buildBrief({unitId:unit.id,rounds:[],wrongCases:[]}),existing:[],quota:{total:5,byAbility:{vocab:3,spelling:1,sentence:1}},onEvent:function(e){events.push(e.phase);}});',
+    '    var res = await SHT.pipeline.runRound({unit:unit,count:5,brief:SHT.pipeline.buildBrief({unitId:unit.id,rounds:[],wrongCases:[]}),existing:[],quota:{total:5,byAbility:{vocab:3,phonics:1,sentence:1}},onEvent:function(e){events.push(e.phase);}});',
     '    var cells = {};',
     '    res.questions.forEach(function(q){cells[SHT.cellKey(q.cell)]=1;});',
     /*
@@ -237,6 +286,11 @@ const PAGE = function () {
     '    var summary = {',
     '      ok: res.ok, unit: unit.id, planCount: res.plans.length, questionCount: res.questions.length,',
     '      distinctCells: Object.keys(cells).length,',
+    '      // 题上的知识点必须落回课程清单：模型改写过的名字会被代码纠正，',
+    '      // 否则答题事件按改写名聚合，下一轮按课程标签查不到，等于没学过。',
+    '      kpAllInCourse: res.questions.every(function(q){ return SHT.kpsOf(unit.id).some(function(k){ return k.label === q.knowledgePoint; }); }),',
+    '      kpRawChanged: res.questions.filter(function(q){ return q.kpRaw && q.kpRaw !== q.knowledgePoint; }).length,',
+    '      kpNotInCourse: res.questions.map(function(q){return q.knowledgePoint;}).filter(function(kp){ return !SHT.kpsOf(unit.id).some(function(k){ return k.label === kp; }); }),',
     '      questions: res.questions.map(function(q){return {no:q.no,type:q.cell.type,options:q.options,answer:q.answer,verdict:q.modelVerdict,verify:q.checks.__verify};}),',
     '      failures: res.failures.map(function(f){return {stage:f.stage,codes:f.codes,reason:String(f.reason||"")};}),',
     '      events: events, llm: SHT.llm.stats(),',
@@ -369,20 +423,32 @@ server.listen(PORT, '127.0.0.1', function () {
       s.llm.calls + ' 次调用 / 成功 ' + s.llm.ok);
     // 失败码分布打出来：数字对不上时先看是哪道闸在拦，别急着改期望值
     console.log('  失败码：' + s.failures.map(function (f) { return f.stage + ':' + f.codes.join('+'); }).join(' / '));
-    assert('5 条计划里 1 条被放弃、4 条落库', s.planCount === 5 && s.questionCount === 4,
+    // 题量是硬约束：说 5 道就 5 道。第 5 格连败后由「还没考过的考点」补上，
+    // 不允许悄悄少出一道——以前这里期望的是 4 道。
+    assert('一格连败后由候选补上，最终仍是 5 道', s.planCount === 5 && s.questionCount === 5,
       s.planCount + ' 计划 / ' + s.questionCount + ' 题');
-    assert('4 道题落在 4 个不同格子', s.distinctCells === s.questionCount, s.distinctCells + ' 格');
-    assert('代码闸退回拼写题的假干扰项（V3c）', byCode('V3c').length === 1,
-      JSON.stringify(byCode('V3c').map(function (f) { return f.reason; })));
+    assert('5 道题落在 5 个不同格子', s.distinctCells === s.questionCount, s.distinctCells + ' 格');
+    assert('题上的知识点都被纠正成课程原文（模型改写不污染学习记录）',
+      s.kpAllInCourse === true,
+      s.kpRawChanged + ' 道被纠正 / 共 ' + s.questionCount + ' 道；不在课程清单：' + JSON.stringify(s.kpNotInCourse));
+    /*
+     * 第 2 题故意塞两个不在本单元的假干扰项。拦下它的条款号可能是 V3c（不像错拼），
+     * 也可能是 V1（超纲词）——取决于这一格分到哪种题型。要验的是「代码闸拦住了」，
+     * 不是死守某个编号。
+     */
+    assert('代码闸退回第 2 题的假干扰项', byCode('V3c').length + byCode('V1').length >= 1,
+      JSON.stringify(byCode('V3c').concat(byCode('V1')).map(function (f) { return f.reason; })));
     // 剧本：idx2 给一次 C3 后退回重出并通过；idx3 每次都拦，用来验放弃路径。
     // 所以 C3 至少两次，且必须出现「被拦之后改对」，不能只看条数。
     assert('质检否决（C3）留痕并重出通过', byCode('C3').length >= 1 && s.events.indexOf('reject') > 0,
       byCode('C3').length + ' 次 C3');
     assert('质检只说 fail 不给条款号时按弱通过采纳', byCode('VERIFY_NO_CODE').length === 1 &&
       s.questions.some(function (q) { return q.verify === 'weak'; }));
-    assert('连续 3 次不过闸 → 放弃并留 GIVE_UP', byCode('GIVE_UP').length === 1 &&
+    // 连败三次后不再「留空」，而是换一条没考过的考点补位；GIVE_UP 只在候选也空时才出现。
+    assert('连续 3 次不过闸 → 从没考过的考点补位，不留空',
+      byCode('PLAN_POOL_FILL').length === 1 && byCode('GIVE_UP').length === 0 &&
       byCode('C3').length >= 4,
-      byCode('GIVE_UP').length + ' 次放弃 / ' + byCode('C3').length + ' 次 C3');
+      byCode('PLAN_POOL_FILL').length + ' 次补位 / ' + byCode('C3').length + ' 次 C3');
     assert('失败记录一条都没被吞（退回的题都留在记录里）', s.failures.length === 7,
       s.failures.length + ' 条');
 

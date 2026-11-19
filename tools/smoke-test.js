@@ -33,6 +33,7 @@ require('../src/core/bkt.js');
 require('../src/core/learner.js');
 require('../src/core/weights.js');
 require('../src/core/levelTrace.js');
+require('../src/core/trend.js');
 require('../src/core/progress.js');
 require('../src/core/assessment.js');
 require('../src/core/agentMemory.js');
@@ -309,6 +310,37 @@ console.log('--- 答题过后重出题：证据有没有真的进模型 ---');
     mild.level === 'mild', JSON.stringify(mild));
   const tooFew = SHT.learner.fatigueOf([r(9000, false), r(9000, false)]);
   assert('样本太少先不判累，避免一开练就降级', tooFew.level === 'none', tooFew.reason);
+})();
+
+console.log('--- 练了几天的方向：方向 / 广度 / 深度 ---');
+(function () {
+  const sessions = [
+    { rounds: [{ right: 2, wrong: 3 }, { right: 3, wrong: 2 }] },
+    { rounds: [{ right: 4, wrong: 1 }, { right: 4, wrong: 1 }] }
+  ];
+  const model = {
+    byKp: {
+      k1: { attempts: 3, wrong: 0, tendency: 'solid' },
+      k2: { attempts: 2, wrong: 1, tendency: 'emerging' },
+      k3: { attempts: 1, wrong: 1, tendency: 'unknown' }
+    }
+  };
+  const trace = [{ from: '辨', to: '用' }, { from: '用', to: '表达' }];
+  const t = SHT.trend.build({ sessions: sessions, levelTrace: trace, learnerModel: model, totalKps: 20 });
+  assert('方向：前段正确率 40%，后段 80%，算出升高 40 个百分点',
+    t.accuracy.first === 0.4 && t.accuracy.last === 0.8 && t.accuracy.delta === 0.4,
+    JSON.stringify(t.accuracy));
+  assert('广度：覆盖 3/20 个考点', t.coverage.known === 3 && t.coverage.total === 20,
+    JSON.stringify(t.coverage));
+  assert('深度：两个考点练过两次以上', t.coverage.deep === 2, String(t.coverage.deep));
+  assert('还没掌握的数出来（不算已经 solid 的）', t.weakLeft === 2, String(t.weakLeft));
+  assert('难度变化数得清：两次调整都是升高',
+    t.difficulty.steps === 2 && t.difficulty.ups === 2, JSON.stringify(t.difficulty));
+  assert('一句话里同时交代方向与广度深度',
+    /正确率/.test(t.summary) && /广度/.test(t.summary) && /深度/.test(t.summary), t.summary);
+  const one = SHT.trend.build({ sessions: [{ rounds: [{ right: 1, wrong: 0 }] }] });
+  assert('只练一轮时明说样本不够，不硬判走势',
+    one.accuracy.delta === null && /样本不够/.test(one.summary), one.summary);
 })();
 
 console.log('--- 难度台账要说人话：从第几级到第几级、凭什么 ---');

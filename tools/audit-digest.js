@@ -208,6 +208,32 @@ line('');
 
 /* ---------- 8 结论 ---------- */
 hr('八 可以说出口的结论');
+/*
+ * 练了几天的走势放在结论最前面：这是「题目有没有朝他走」的唯一直接证据。
+ * 数字都来自导出里的 trend，不对「自适应有效」下断言——正确率上升也可能是他自己学会了。
+ */
+const trendData = j.trend || null;
+if (trendData && trendData.summary) {
+  line(trendData.summary);
+  const a = trendData.accuracy || {};
+  const c = trendData.coverage || {};
+  const d = trendData.difficulty || {};
+  if (a.delta == null) {
+    line('  方向：只有 ' + (a.rounds || 0) + ' 轮有作答，样本不够，不判断走势。');
+  } else {
+    line('  方向：前段 ' + Math.round(a.first * 100) + '% → 后段 ' + Math.round(a.last * 100) +
+      '%（' + (a.delta > 0 ? '+' : '') + Math.round(a.delta * 100) + ' 个百分点）');
+  }
+  line('  广度：覆盖 ' + (c.known || 0) + (c.total ? '/' + c.total : '') + ' 个考点' +
+    '；深度：' + (c.deep || 0) + ' 个练过两次以上，平均每个 ' + (c.avgAttempts || 0) + ' 次');
+  if (d.steps) {
+    line('  难度：共 ' + d.steps + ' 次调整，其中 ' + (d.ups || 0) + ' 次升高；目前停在第 ' +
+      (SHT.levelTrace.ORDER.indexOf(d.to) + 1 || '?') + ' 级');
+  }
+} else {
+  line('这份导出没有 trend（老版本文件），看不到跨会话的方向、广度与深度。');
+}
+line('');
 const canProve = !!(prev && Array.isArray(wc));
 line('本轮 ' + qs.length + ' 道题里，' + hit + ' 道挂接到历史错题（parentQid 非空）。');
 if (hit > 0 && canProve) {

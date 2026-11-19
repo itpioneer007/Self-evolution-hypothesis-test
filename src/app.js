@@ -3664,10 +3664,11 @@
         state.activeNo = 1;
         state.agent = 'execute';
         state.stFail = '';
-        const left = res.plans.length - res.questions.length;
+        const short = Math.max(0, Number(res.shortfall || 0));
         toast('出了 ' + res.questions.length + ' 题' +
           (res.benchUsed ? '（替补顶上 ' + res.benchUsed + ' 次）' : '') +
-          (left ? '，' + left + ' 个格子没成，原因在失败记录里' : ''));
+          // 题量是硬约束：少了就明说少于设定，不让人以为「本来就说好这么多」
+          (short ? '，比设定的少 ' + short + ' 道（连续几次没出成，可以再点一次）' : ''));
       } else if (res.ok && planOnly) {
         round.plans = (res.plans || []).map(function (p) {
           return {

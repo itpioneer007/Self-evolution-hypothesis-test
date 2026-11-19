@@ -532,7 +532,18 @@
        * profileLog 能看「开了几次才定下来」，是画像可用性最直接的证据。
        */
       sessions: state.sessions || [],
-      profileLog: state.profileLog || []
+      profileLog: state.profileLog || [],
+      /*
+       * 跨会话走势：练了几天以后，答得是不是越来越稳、覆盖了多少考点（广度）、
+       * 有多少考点练过两次以上（深度）。学生端不显示，只给开发复盘方向对不对。
+       */
+      trend: SHT.trend ? SHT.trend.build({
+        sessions: state.sessions || [],
+        levelTrace: state.levelTrace || [],
+        learnerModel: (SHT.learner && SHT.learner.build)
+          ? SHT.learner.build(state.events || []) : {},
+        totalKps: (SHT.kpsOf && SHT.curriculum && SHT.kpsOf(SHT.curriculum.hostUnitId) || []).length
+      }) : null
     };
   }
 
