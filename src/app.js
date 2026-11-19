@@ -2519,33 +2519,6 @@
     };
   }
 
-  /*
-   * 一句话交代「下一轮会怎么变」。
-   *
-   * 学生端只留这一句，而且不带任何数字：
-   * 难一点是挑战，简单一点是照顾，累了就先松一口。
-   * 「权重」「掌握概率」「难度档」「预计答对率」这些一律不出现——
-   * 那些是给开发看的，记录在 state.levelTrace 与导出里。
-   */
-  function nextRoundHintText() {
-    const model = SHT.learner.build(state.events || []);
-    const w = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
-    if (!w.answered && !model.answeredCount) return '';
-    const plan = planCap(model, w);
-    const order = SHT.LEVELS || [];
-    const start = ((SHT.progress && SHT.progress.CAP_OF_LAYER) || {})[state.learningLayer] || '';
-    if (plan.fatigue.level === 'clear') {
-      return '看着有点累了，下一轮先出简单一点的，慢慢来。';
-    }
-    if (start && order.indexOf(plan.cap) > order.indexOf(start)) {
-      return '这一轮答得不错，下一轮会难一点——试试看。';
-    }
-    if (start && order.indexOf(plan.cap) < order.indexOf(start)) {
-      return '下一轮先出简单一点的，把没稳的地方补上，再往上加。';
-    }
-    return '保持这个节奏，下一轮的难度和这一轮差不多。';
-  }
-
   function stField(label, chips, cls) {
     return '<div class="st-field"><div class="st-label">' + esc(label) + '</div>' +
       '<div class="st-chips' + (cls || '') + '">' + chips + '</div></div>';
@@ -2648,20 +2621,14 @@
     let badge = r.correct ? '答对了' : '答错了';
     let answer = '你' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
       (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>');
-    let tip = '';
     if (retried) {
       badge = r.correct ? '提示后答对' : '提示后仍错';
       answer = '第一次' + (isOpen ? '写' : '选') + ' <b>' + esc((first && first.picked) || '') + '</b>' +
         '　提示后再' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
         (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>');
-      tip = r.correct
-        ? '首答错误已经保留；这次只记作「看提示才会」，之后还要用新题独立验证。'
-        : '首答和提示后的作答都记下了，下一轮会换新题再考一次。';
-    } else {
-      tip = r.correct
-        ? (q.probe ? '上次错过，这次独立答对了。' : '')
-        : (q.probe ? '还是错，之后再练一次。' : '记下了，下次换个问法再考。');
     }
+    // 「记下了 / 首答保留 / 下次换问法 / 上次错过」这类过程口径一律不给学生看，
+    // 它们是开发核对闭环用的，存在 attempts 与导出里；学生只看对错、答案、解析、错在哪。
     /*
      * 解析和错因是两件事，分开摆：
      * - 解析（analysis）讲这道题考什么、正确是什么——答对答错都要看，像试卷答案那样。
@@ -2681,7 +2648,6 @@
       '</div>' +
       explainHtml +
       wrongHtml +
-      (tip ? '<div class="st-tip is-muted">' + esc(tip) + '</div>' : '') +
     '</div>';
   }
 
@@ -2767,33 +2733,17 @@
     return report;
   }
 
+  /*
+   * 学生端结果页：只交代「这一轮结束了、接下来点哪个」。
+   *
+   * 表现分、四个比例、知识点评价、错题清单、下一轮难度提示这些统计/记录，
+   * 一律不摆给学生——它们是开发核算法用的，已经原样存进 round.report，
+   * 在开发视图 07「本轮评价」和导出 JSON 里看。学生要理解题目，看答题页
+   * 每题下方的解析与「错在哪」就够了，不需要一张评价单。
+   */
   function stSummaryHtml() {
     const s = stStats();
-    const p = practiceOf();
-    const report = currentRoundReport();
-    /*
-     * 错题明细：题号 + 这道题的正确答案。
-     * 上面的知识点评价按考点聚合，看不出「哪道题错了、错的是哪个词」；
-     * 这一段只补定位信息，学生回去翻题能对上号。
-     */
-    const wrongRows = [];
-    p.attempts.forEach(function (a) {
-      if (a.correct) return;
-      const key = String(a.expected || '').trim() || friendlyKp(a.kpLabel);
-      if (!key) return;
-      wrongRows.push({ no: a.no, key: key });
-    });
-    const wrongItems = wrongRows.slice(0, 5).map(function (r) {
-      return '<div class="st-sum-item">' +
-        (r.no ? '<span class="no">第 ' + esc(String(r.no)) + ' 题</span>' : '') +
-        '<span class="key">' + esc(r.key) + '</span>' +
-      '</div>';
-    }).join('');
     const isLastRound = state.round >= 2;
-    /*
-     * 停不停，看两件事：组数到没到硬上限，以及错题本里还有没有没掌握的内容。
-     * 「还有 3 处没掌握」这种话学生一看就懂，也知道为什么还让他再练一组。
-     */
     const weak = stWeakCount();
     const stop = state.stGroup >= MAX_GROUPS_HARD ||
       (state.stGroup >= MAX_GROUPS && weak === 0);
@@ -2803,56 +2753,15 @@
       action = '<button type="button" class="st-primary" data-st-action="next-round">下一轮</button>';
     } else if (!stop) {
       action = '<button type="button" class="st-primary" data-st-action="regroup">' +
-        (weak > 0 ? '还有 ' + weak + ' 处没掌握，再练一组' : '再练一组') + '</button>';
+        (weak > 0 ? '再练一组' : '再练一组') + '</button>';
     } else {
       action = '<button type="button" class="st-primary" data-st-action="restart">重新开始</button>';
     }
-    if (!report) {
-      return '<div class="st-page"><div class="st-card"><div class="st-title">本轮结果</div>' +
-        '<div class="st-tip">评价模块尚未加载。</div><div class="st-actions">' + action + '</div></div></div>';
-    }
-    const d = report.dimensions;
-    // 学生唯一能看到的「闭环反馈」：他这几题让下一轮变难还是变简单
-    const nextHint = nextRoundHintText();
-    const score = report.performanceScore == null ? '样本不足' : report.performanceScore;
-    const dim = function (label, value, note, tone) {
-      const p = value == null ? '—' : Math.round(value * 100) + '%';
-      return '<div class="st-report-dim"><div><span>' + esc(label) + '</span><b>' + p + '</b></div>' +
-        '<div class="st-report-bar"><i class="' + (tone || '') + '" style="width:' + (value == null ? 0 : Math.round(value * 100)) + '%"></i></div>' +
-        '<small>' + esc(note) + '</small></div>';
-    };
-    /*
-     * 知识点评价只写学生能对上号的三件事：这处是真会还是看提示才会、
-     * 依据是什么、下一步做什么。不写「掌握概率 45%」——那是开发核对算法用的
-     * 数字，导出里有，摆在学生面前只会让他以为自己被打了分。
-     */
-    const kpRows = report.knowledgePoints.map(function (k) {
-      const ev = (k.evidence || []).join('；');
-      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
-        '<div class="st-report-kp-head"><strong>' + esc(friendlyKp(k.kp)) + '</strong><span>' + esc(k.stateLabel) + (k.pathLabel ? ' · ' + esc(k.pathLabel) : '') + '</span></div>' +
-        (ev ? '<div class="st-report-kp-meta">' + esc(ev) + '</div>' : '') +
-        '<div class="st-report-kp-next">下一步：' + esc(k.nextAction.action) + '</div>' +
-      '</div>';
-    }).join('');
-    return '<div class="st-page"><div class="st-card st-report-card">' +
-      '<div class="st-report-head"><div><div class="st-eyebrow">第 ' + state.round + ' 轮学习评价单' +
-        (finished ? (weak === 0 ? ' · 全部完成' : ' · 本次练到这里') : '') + '</div>' +
-        '<h2 class="st-title">本轮学习表现</h2></div><div class="st-report-score"><b>' + score + '</b><span>表现分</span></div></div>' +
-      '<div class="st-report-sub">自己答对 ' + s.independent + '　看提示后答对 ' + s.assisted + '　没答对 ' + s.wrong + '　共 ' + s.done + ' 题</div>' +
-      '<div class="st-report-formula">自己答对算 1 分，看提示答对算 0.5 分。</div>' +
-      '<div class="st-report-dims">' +
-        dim('自己答对', d.independentRate, '首答就对、没用提示', 'is-good') +
-        dim('看提示后答对', d.assistedRate, '提示后改对', 'is-warn') +
-        dim('没答对', d.wrongRate, '提示后还是错', 'is-bad') +
-        dim('做完了多少', d.coverage, '已完成 ' + d.completed + ' / ' + d.total, '') +
-      '</div>' +
-      '<div class="st-report-section-title">这几处学得怎么样</div>' +
-      '<div class="st-report-kps">' + (kpRows || '<div class="st-tip is-muted">这一轮还没有记录。</div>') + '</div>' +
-      (wrongItems
-        ? '<div class="st-report-section-title">错的题</div>' +
-          '<div class="st-sum-list">' + wrongItems + '</div>'
-        : '') +
-      (nextHint ? '<div class="st-next-hint">' + esc(nextHint) + '</div>' : '') +
+    const doneText = '这一轮做完了，共 ' + s.done + ' 题，答对 ' + s.right + ' 题。';
+    return '<div class="st-page"><div class="st-card st-sum">' +
+      '<h1 class="st-title">' + (finished ? '本次练习结束' : '这一轮完成') + '</h1>' +
+      '<div class="st-sum-label">' + esc(doneText) + '</div>' +
+      '<div class="st-tip is-muted">每道题下面都写了考什么、错在哪，可以回去看。</div>' +
       '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
   }

@@ -1498,67 +1498,12 @@ body.is-student .controls > #viewToggle { display: none; }
 
 /* 本轮结果 */
 .st-sum { text-align: center; }
-.st-sum-num { font-size: 46px; font-weight: 700; color: var(--blue-deep); line-height: 1.1; }
-.st-sum-num small { font-size: 16px; font-weight: 600; color: var(--ink-hint); }
-.st-sum-label { font-size: 13px; color: var(--ink-hint); margin-top: 4px; }
-.st-sum-list { text-align: left; margin: 24px 0 6px; display: grid; gap: 8px; }
-.st-sum-item {
-  display: flex; gap: 10px; align-items: baseline;
-  background: var(--red-soft); border: 1px solid #f0d8d8; border-radius: 8px;
-  padding: 9px 12px; font-size: 13px; color: var(--ink-soft);
-}
-.st-sum-item .no { flex: 0 0 auto; font-size: 12.5px; color: var(--ink-hint); }
-.st-sum-item .key { color: var(--ink); font-weight: 600; }
-.st-sum-empty {
-  margin: 24px 0 6px; padding: 12px; border-radius: 8px;
-  background: #eef8f0; border: 1px solid #cfe6d6; color: #2f6b41; font-size: 13px;
-}
-
 /* 学生视图下底部那行是给开发者看的统计，收起来 */
 body.is-student .footbar { display: none; }
-body.is-student .st-sum-num small { margin-left: 4px; }
 /* 学生视图顶栏只有产品名，副标题空着时不要留一条空白 */
 body.is-student .brand-sub:empty { display: none; }
 .st-foot.is-warn { color: var(--red); margin-top: 6px; }
 .st-tip.is-muted { color: var(--ink-hint); margin-top: 8px; }
-
-/* ---------- 学生评价单 ---------- */
-.st-report-card { padding: 28px; }
-.st-report-head { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; }
-.st-report-score { min-width:100px; text-align:right; }
-.st-report-score b { display:block; font-size:42px; line-height:1; color:var(--blue); letter-spacing:-1px; }
-.st-report-score span { display:block; margin-top:6px; color:var(--muted); font-size:12px; }
-.st-report-sub { margin-top:12px; padding:10px 12px; border-radius:8px; background:var(--soft); color:var(--ink); }
-.st-report-formula { margin-top:8px; color:var(--muted); font-size:12px; }
-.st-report-dims { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-top:22px; }
-.st-report-dim { padding:12px; border:1px solid var(--line); border-radius:8px; background:#fff; }
-.st-report-dim > div:first-child { display:flex; justify-content:space-between; gap:8px; font-size:13px; }
-.st-report-dim b { color:var(--blue); }
-.st-report-dim small { display:block; margin-top:7px; color:var(--muted); font-size:11px; line-height:1.4; }
-.st-report-bar { height:7px; margin-top:10px; border-radius:20px; background:var(--line-soft); overflow:hidden; }
-.st-report-bar i { display:block; height:100%; border-radius:inherit; background:var(--blue); }
-.st-report-bar i.is-good { background:var(--green); }
-.st-report-bar i.is-warn { background:var(--warn); }
-.st-report-bar i.is-bad { background:var(--bad); }
-.st-report-section-title { margin-top:24px; font-size:13px; color:var(--muted); font-weight:700; }
-.st-report-kps { display:grid; gap:10px; margin-top:10px; }
-.st-report-kp { padding:13px 14px; border:1px solid var(--line); border-left:4px solid var(--blue-line); border-radius:8px; background:#fff; }
-.st-report-kp.is-good { border-left-color:var(--green); background:var(--green-soft); }
-.st-report-kp.is-warn { border-left-color:var(--warn); background:#fffaf0; }
-.st-report-kp.is-bad { border-left-color:var(--bad); background:#fffafa; }
-.st-report-kp-head { display:flex; justify-content:space-between; gap:12px; align-items:center; }
-.st-report-kp-head strong { font-size:14px; }
-.st-report-kp-head span { flex:none; font-size:12px; color:var(--muted); }
-.st-report-kp-meta { margin-top:5px; color:var(--muted); font-size:12px; line-height:1.55; }
-.st-report-kp-next { margin-top:6px; color:var(--blue); font-size:12px; }
-/* 学生端唯一一句难度提示：难一点是挑战，累了就先松一口。绿色表示这是鼓励，不是告警。 */
-.st-next-hint { margin-top:12px; padding:11px 13px; border-radius:8px; border-left:3px solid var(--green); background:var(--green-soft); color:var(--ink); font-size:13px; line-height:1.6; }
-@media (max-width:760px) {
-  .st-report-head { flex-direction:column; }
-  .st-report-score { text-align:left; }
-  .st-report-dims { grid-template-columns:1fr 1fr; }
-}
-@media (max-width:480px) { .st-report-dims { grid-template-columns:1fr; } }
 
 /* ---------- 06 用户画像 ---------- */
 .profile-page { padding:24px; max-width:1200px; margin:0 auto; }

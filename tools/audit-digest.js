@@ -211,6 +211,26 @@ if (!sess.length) {
       pl.slice(-6).map(function (x) { return x.kind + ' ' + x.from + '→' + x.to; }).join('；'));
   }
 }
+/*
+ * 学生端已撤掉评价单（只留答题），统计挪到开发视图 07 与这份摘要。
+ * 数字全部取自导出里的 report，不重算——要核的就是当时判了什么。
+ */
+const rep = j.report || null;
+if (rep) {
+  const rd = rep.dimensions || {};
+  const rp = function (v) { return v == null ? '—' : Math.round(v * 100) + '%'; };
+  line('本轮评价（学生端不展示，开发视图 07 与此处同源）：');
+  line('  表现分 ' + (rep.performanceScore == null ? '样本不足' : rep.performanceScore) +
+    '　自己答对 ' + rp(rd.independentRate) + '　看提示答对 ' + rp(rd.assistedRate) +
+    '　没答对 ' + rp(rd.wrongRate) + '　已完成 ' + (rd.completed || 0) + '/' + (rd.total || 0));
+  (rep.knowledgePoints || []).slice(0, 8).forEach(function (k, i) {
+    line('  ' + (i + 1) + '）' + k.kp + '：' + (k.stateLabel || k.state || '—') +
+      '　掌握概率 ' + (k.mastery == null ? '未测' : Math.round(k.mastery * 100) + '%') +
+      '　下一步 ' + ((k.nextAction && k.nextAction.action) || '—'));
+  });
+} else {
+  line('本轮评价：这份导出没有 report，看不到表现分与逐题判断（学生端已不展示，请用新版导出）。');
+}
 line('');
 
 /* ---------- 8 结论 ---------- */

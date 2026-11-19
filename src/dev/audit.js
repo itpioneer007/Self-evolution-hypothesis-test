@@ -91,7 +91,8 @@
     { id: 'verify', no: '03', title: '验证拦截', hint: '拦下哪道、为什么' },
     { id: 'diagnose', no: '04', title: '诊断反应', hint: '答错时记了什么' },
     { id: 'reuse', no: '05', title: '第二轮复用', hint: '错题变体的链条' },
-    { id: 'trace', no: '06', title: '角色留痕', hint: '每次调用一行' }
+    { id: 'trace', no: '06', title: '角色留痕', hint: '每次调用一行' },
+    { id: 'report', no: '07', title: '本轮评价', hint: '分数、维度、每题掌握判断——学生端已撤，看这里' }
   ];
 
   function counts(state) {
@@ -106,7 +107,8 @@
       verify: fails.filter(function (f) { return f.stage === 'verify' || f.stage === 'validate'; }).length,
       diagnose: wrong.length,
       reuse: variants.length,
-      trace: (state.traces || []).length
+      trace: (state.traces || []).length,
+      report: round.report ? (round.report.knowledgePoints || []).length : 0
     };
   }
 
@@ -429,6 +431,92 @@
       }).join('') + '</div></div>';
   }
 
+  /*
+   * 难度变化：学生端那句「下一轮难一点/简单一点」是从 levelTrace 算出来的。
+   * 提示撤掉后，判定本身不能丢——在这里按原始记录逐行列出，谁定的、凭什么都在。
+   */
+  function levelTraceCard(state) {
+    const trace = (state.levelTrace || []).slice(-12);
+    if (!trace.length) return '';
+    const rows = trace.map(function (t) {
+      const src = { weights: '累积正确率', learner: '本轮掌握概率', fatigue: '状态（累/连错）' }[t.source] || t.source || '—';
+      const why = t.basis && t.basis.kind === 'fatigue'
+        ? (t.fatigueReason || '按状态降档')
+        : (t.reason || '');
+      return [ (t.group || 1) + ' 组 · ' + (t.round || 1) + ' 轮',
+        (t.from || '起') + ' → ' + (t.to || '?'),
+        src, why ];
+    });
+    return '<div class="audit-card"><table class="audit-table">' +
+      '<thead><tr><th>哪一轮</th><th>难度</th><th>谁定的</th><th>凭什么</th></tr></thead>' +
+      '<tbody>' + rows.map(function (r) {
+        return '<tr>' + r.map(function (c, i) {
+          return '<td' + (i === 0 ? ' class="c-no"' : '') + '>' + esc(c) + '</td>';
+        }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  /* ---------- 07 本轮评价 ---------- */
+  /*
+   * 学生端只负责答题，这些统计与判断一律不摆给学生看，挪到这里。
+   * 数据原样取自 round.report（assessment.buildRoundReport 生成），一个字段都不重算：
+   * 开发要核对的就是「当时到底判了什么」，二次推断出来的数字没有核对价值。
+   */
+  function paneReport(state) {
+    const round = (state.rounds || {})[state.round] || {};
+    const report = round.report || null;
+    const head = paneHead('本轮评价', '学生端已撤掉这些统计，只留答题与解析。这里按作答当时的报告原样呈现，供开发核对算法；表现分不是英语水平。');
+    if (!report) {
+      return head + empty('这一轮还没有评价报告。报告在答完最后一题时生成，导出 JSON 里也能找到。');
+    }
+    const d = report.dimensions || {};
+    const pct = function (v) { return v == null ? '—' : Math.round(v * 100) + '%'; };
+    const dimRows = [
+      ['自己答对', pct(d.independentRate), '首答就对、没用提示'],
+      ['看提示后答对', pct(d.assistedRate), '提示后改对'],
+      ['没答对', pct(d.wrongRate), '提示后还是错'],
+      ['做完了多少', pct(d.coverage), '已完成 ' + (d.completed || 0) + ' / ' + (d.total || 0)]
+    ];
+    const kpRows = (report.knowledgePoints || []).map(function (k) {
+      return [
+        String(k.no || ''), k.kp || '', k.stateLabel || k.state || '',
+        k.mastery == null ? '—' : Math.round(k.mastery * 100) + '%',
+        (k.evidence || []).join('；') || '—',
+        (k.nextAction && k.nextAction.action) || '—'
+      ];
+    });
+    const formula = '<div class="audit-card"><div class="tr-kv"><b>评分口径</b>' +
+      esc(report.scoreFormula || '') + '</div>' +
+      '<div class="tr-kv"><b>证据等级</b>' + esc(report.evidenceLevel || '—') +
+      '　（依据：报告生成时标 ' + esc(report.version || '—') + '）</div>' +
+      (report.caveats || []).map(function (c) {
+        return '<div class="tr-kv"><b>注意</b>' + esc(c) + '</div>';
+      }).join('') + '</div>';
+    return head +
+      '<div class="audit-card"><div class="tr-kv"><b>表现分</b>' +
+        (report.performanceScore == null ? '样本不足' : report.performanceScore) +
+        '　（这一轮 ' + (d.completed || 0) + ' 题）</div>' +
+        '<div class="tr-kv"><b>生成时刻</b>' + esc(report.generatedAt || '—') + '</div></div>' +
+      '<div class="audit-card"><table class="audit-table">' +
+        '<thead><tr><th>维度</th><th>比例</th><th>怎么算的</th></tr></thead>' +
+        '<tbody>' + dimRows.map(function (r) {
+          return '<tr>' + r.map(function (c, i) {
+            return '<td' + (i === 0 ? ' class="c-no"' : '') + '>' + esc(c) + '</td>';
+          }).join('') + '</tr>';
+        }).join('') + '</tbody></table></div>' +
+      (kpRows.length
+        ? '<div class="audit-card"><table class="audit-table">' +
+          '<thead><tr><th>#</th><th>知识点</th><th>判断</th><th>掌握概率</th><th>依据</th><th>下一步</th></tr></thead>' +
+          '<tbody>' + kpRows.map(function (r) {
+            return '<tr>' + r.map(function (c, i) {
+              return '<td' + (i === 0 ? ' class="c-no"' : '') + '>' + esc(c) + '</td>';
+            }).join('') + '</tr>';
+          }).join('') + '</tbody></table></div>'
+        : empty('这一轮没有知识点明细。')) +
+      levelTraceCard(state) +
+      formula;
+  }
+
   /* ---------- 骨架 ---------- */
   function paneHead(title, note) {
     return '<div class="audit-pane-head"><h3>' + title + '</h3><p>' + note + '</p></div>';
@@ -454,7 +542,7 @@
     const active = PANES.some(function (p) { return p.id === ui.pane; }) ? ui.pane : 'plan';
     const body = {
       plan: panePlan, execute: paneExecute, verify: paneVerify,
-      diagnose: paneDiagnose, reuse: paneReuse, trace: paneTrace
+      diagnose: paneDiagnose, reuse: paneReuse, trace: paneTrace, report: paneReport
     }[active](state);
 
     el.innerHTML = '<div class="audit-layout">' + navHtml(state, active) +
@@ -512,6 +600,11 @@
       decisions: state.decisions || [],
       levelCap: state.levelCap || null,
       decisionReason: state.decisionReason || '',
+      /*
+       * 本轮评价报告：学生端已撤掉评价单，这是开发核对表现分、维度、
+       * 每题掌握判断的原始出处（开发视图 07「本轮评价」读的是同一份）。
+       */
+      report: round.report || null,
       /*
        * 能力权重：每答一题按对数损失梯度更新一次（core/weights.js）。
        * 导出原始权重表 + 摘要，能回答「这次答对让难度升了多少」「哪些考点权重最低」。

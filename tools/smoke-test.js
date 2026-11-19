@@ -551,17 +551,29 @@ console.log('--- 权重接线（加载 app.js） ---');
     JSON.stringify(saved.weights || {}).slice(0, 80));
 
   /*
-   * 闭环的最后一段：答完一轮，学生得看到「下一轮会难一点还是简单一点」。
-   * 上面已经点完两题（一题对、一题提示后仍错），游标走到末尾，界面应该落在评价单上。
-   * 这句话必须不带数字和内部术语——学生只要一个方向感和一句鼓励。
+   * 学生端只负责答题：答完一轮的结果页只说「做完了、答对几题」和下一步按钮。
+   * 表现分、四个比例、知识点评价、下一轮难度提示这些统计/记录一律不摆给学生，
+   * 它们原样存在 round.report / levelTrace 里，开发视图 07「本轮评价」能看。
    */
   const summary = nodes['studentRoot'].innerHTML || '';
-  assert('答完一轮，评价单上说清下一轮会难一点还是简单一点',
-    /下一轮(会难一点|先出简单一点|的难度和这一轮差不多)/.test(summary), summary.slice(0, 160));
-  assert('这句提示里不出现权重、掌握概率、百分比这类内部口径',
-    !/权重|掌握概率|预计答对率|难度档/.test(summary));
-  assert('评价单上不再摆「掌握概率 45%」这种给开发看的数字',
-    !/掌握概率/.test(summary));
+  assert('结果页只报完成与答对数，不摆评价单',
+    /这一轮做完了/.test(summary) && /答对 \d+ 题/.test(summary), summary.slice(0, 180));
+  assert('学生端不出现表现分、比例、掌握概率这些开发口径',
+    !/表现分|掌握概率|预计答对率|难度档|独立答对|看提示后答对|自己答对/.test(summary));
+  assert('学生端不出现难度变化提示（已搬到开发视图）',
+    !/下一轮会难一点|下一轮先出简单一点|保持这个节奏/.test(summary));
+  assert('结果页仍给下一步按钮（流程不中断）',
+    /data-st-action="(next-round|regroup|restart)"/.test(summary));
+  // 数据没丢：报告仍在 round.report 里，开发能查
+  const roundWithReport = SHT2.devAudit.state().rounds[SHT2.devAudit.state().round];
+  assert('评价报告仍落盘在 round.report（只是不展示）',
+    !!(roundWithReport && roundWithReport.report && roundWithReport.report.dimensions));
+  assert('开发视图注册了「本轮评价」页签，统计有地方看',
+    SHT2.devAudit.panes.some(function (p) { return p.id === 'report'; }));
+  const exported = SHT2.devAudit.exportPayload();
+  assert('导出里带走了评价报告与难度台账',
+    !!(exported.report && exported.report.dimensions) && Array.isArray(exported.levelTrace),
+    'report=' + !!exported.report + ' levelTrace=' + Array.isArray(exported.levelTrace));
 
   /*
    * 定档规则：权重说他该考「用」层，但最近几题明显变慢又连错 → 降回「辨」。
