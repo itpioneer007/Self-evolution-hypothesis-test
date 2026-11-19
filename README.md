@@ -82,7 +82,7 @@ python -m http.server 8080
 |---|---|---|
 | 选画像 | 教材 / 单元 / 我的水平（基础·中等·较好） | 决定 `bookId`、`unitId`、`learningLayer`；换单元只重建题目与计划，错题记录保留 |
 | 出题 | 一张「正在出题」的等待页 | `pipeline.runRound` 五段跑完：课程排考点 → 生成写题 → 代码闸 → 验证 → 落库。学生看不到角色、配额、失败记录 |
-| 答题 | 题干、选项、提交；答错当场给正确答案与错因 | 判分走冻结台账；答错立刻写进错题本，并带诊断结论 |
+| 答题 | 题干、选项、提交；判完在题目下方给「这道题考的是」（对错都给），答错另给一块「错在哪」（逐项说明你选的错在哪、正确项为什么对、另一项为什么错） | 判分走冻结台账；解析取 `analysis`，逐项说明取 `optionNotes`；答错立刻写进错题本，并带诊断结论 |
 | 本轮结果 | 答对几道 / 哪几个考点要再练 | 从本轮 attempts 汇总；错题考点会进下一轮 `brief.priority` |
 | 下一轮 | 一个按钮 | 第一轮 → 第二轮：把错题喂进 brief，`plan.probe` 标出复用，题目挂 `parentQid`；第二轮结束给「再练一组」，保留错题重开 |
 
@@ -424,7 +424,7 @@ DEEPSEEK_API_KEY=sk-xxx node tools/live-run.js
 DEEPSEEK_API_KEY=sk-xxx node tools/ui-check.js
 ```
 
-当前状态：`smoke-test` **98 项全绿**，`e2e-browser` **14 项全绿**。两套都不需要 key；真实模型的两条脚本（`live-run` / `ui-check`）要 `DEEPSEEK_API_KEY` 才跑。
+当前状态：`smoke-test` **104 项全绿**，`e2e-browser` **14 项全绿**。两套都不需要 key；真实模型的两条脚本（`live-run` / `ui-check`）要 `DEEPSEEK_API_KEY` 才跑。
 
 新增判据请同时补断言。这个项目里反复出现过同一类问题——判据自己误判却看起来像模型出错（例如把占位符当成超纲词、把 `nears` 当成没学过的词），只有断言能拦住回归。
 

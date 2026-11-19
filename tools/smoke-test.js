@@ -483,7 +483,9 @@ console.log('--- 权重接线（加载 app.js） ---');
   st.rounds[1].questions = [{
     qid: 'wire-1', no: 1, knowledgePoint: 'vocab · classroom · 教室物品', ability: 'vocab',
     cell: { type: '中英匹配', scene: '学校', level: '认', distractor: '同类不同物' },
-    prompt: '选出「教室」的英文。', options: ['classroom', 'library', 'playground'], answer: 'classroom'
+    prompt: '选出「教室」的英文。', options: ['classroom', 'library', 'playground'], answer: 'classroom',
+    analysis: 'classroom 是教室，另外两个是图书馆和操场。',
+    optionNotes: ['教室就是 classroom，选对了', 'library 是图书馆，不是教室', 'playground 是操场，不是教室']
   }];
   st.rounds[1].practice = Object.assign({}, st.rounds[1].practice, {
     cursor: 0, attempts: [], picked: null, revealed: null, shownAt: 0, draft: '', hintUsed: false
@@ -491,6 +493,11 @@ console.log('--- 权重接线（加载 app.js） ---');
 
   click('pick', { index: '0' });
   click('submit');
+  const afterRight = nodes['studentRoot'].innerHTML || '';
+  assert('答对也显示解析（像试卷答案一样讲这道题考什么）',
+    /这道题考的是/.test(afterRight) && /classroom 是教室/.test(afterRight), afterRight.slice(0, 200));
+  assert('答对时不显示「错在哪」那一块',
+    !/错在哪/.test(afterRight));
   const w = SHT2.devAudit.state().weights;
   assert('答对一题后权重被更新（不是只算不用）', w && w.answered === 1, w && String(w.answered));
   assert('更新落在考点与能力两层，且方向是上升',
@@ -503,7 +510,9 @@ console.log('--- 权重接线（加载 app.js） ---');
   st.rounds[1].questions.push({
     qid: 'wire-2', no: 2, knowledgePoint: 'vocab · library · 教室场所', ability: 'vocab',
     cell: { type: '中英匹配', scene: '学校', level: '认', distractor: '同类不同物' },
-    prompt: '选出「图书馆」的英文。', options: ['library', 'classroom', 'playground'], answer: 'library'
+    prompt: '选出「图书馆」的英文。', options: ['library', 'classroom', 'playground'], answer: 'library',
+    analysis: 'library 是图书馆，别和教室 classroom 混。',
+    optionNotes: ['图书馆就是 library', 'classroom 是教室，不是图书馆', 'playground 是操场，不是图书馆']
   });
   const pr = st.rounds[1].practice;
   pr.cursor = 1;
@@ -523,6 +532,11 @@ console.log('--- 权重接线（加载 app.js） ---');
    */
   click('pick', { index: '1' });
   click('submit');
+  const afterWrong = nodes['studentRoot'].innerHTML || '';
+  assert('答错时单独给「错在哪」一块', /错在哪/.test(afterWrong), afterWrong.slice(0, 240));
+  assert('「错在哪」写明他选的那项为什么错', /你选的/.test(afterWrong) && /classroom 是教室/.test(afterWrong));
+  assert('「错在哪」也写明正确项为什么对', /正确的是/.test(afterWrong) && /图书馆就是 library/.test(afterWrong));
+  assert('答错时解析照样在，不只写对错', /这道题考的是/.test(afterWrong) && /library 是图书馆/.test(afterWrong));
   // 错题是在离开本题时落账的（practiceNext），不是提交那一刻
   click('next');
   const after2 = SHT2.devAudit.state();

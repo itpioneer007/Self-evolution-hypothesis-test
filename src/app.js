@@ -2662,14 +2662,65 @@
         ? (q.probe ? '上次错过，这次独立答对了。' : '')
         : (q.probe ? '还是错，之后再练一次。' : '记下了，下次换个问法再考。');
     }
+    /*
+     * 解析和错因是两件事，分开摆：
+     * - 解析（analysis）讲这道题考什么、正确是什么——答对答错都要看，像试卷答案那样。
+     *   以前答对就不给，学生答对了也不知道自己因为什么对。
+     * - 逐项说明（optionNotes）只在答错时给，单独一块「错在哪」：他选的那项为什么错、
+     *   正确项为什么对。不能只写一句「对了」「选 B」就完事。
+     */
+    const explainHtml = why
+      ? '<div class="st-explain"><div class="st-explain-label">这道题考的是</div>' +
+        '<div class="st-explain-text">' + esc(why) + '</div></div>'
+      : '';
+    const wrongHtml = !r.correct ? stWrongOptionsHtml(q, r) : '';
     return '<div class="st-verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="st-verdict-top">' +
         '<span class="st-badge">' + badge + '</span>' +
         '<span class="st-verdict-ans">' + answer + '</span>' +
       '</div>' +
-      ((!r.correct || retried) && why ? '<div class="st-tip">' + esc(why) + '</div>' : '') +
+      explainHtml +
+      wrongHtml +
       (tip ? '<div class="st-tip is-muted">' + esc(tip) + '</div>' : '') +
     '</div>';
+  }
+
+  /*
+   * 答错时的「错在哪」：从 model 给的每个选项说明里挑出相关的几项。
+   * 学生选的那项、正确项、其余项各一行；没有说明的项不硬编。
+   */
+  function stWrongOptionsHtml(q, r) {
+    const notes = q.optionNotes || [];
+    if (!notes.length) return '';
+    const opts = (q.options || []).map(function (o) { return String(o == null ? '' : o).trim(); });
+    if (!opts.length) return '';
+    const idxOf = function (text) {
+      const t = SHT.normAnswer(text);
+      for (let i = 0; i < opts.length; i += 1) {
+        if (SHT.normAnswer(opts[i]) === t) return i;
+      }
+      return -1;
+    };
+    const picked = idxOf(r.picked);
+    const ans = idxOf(r.expected);
+    const rows = [];
+    const row = function (i, tag, cls) {
+      if (i < 0) return;
+      const why = String(notes[i] || '').trim();
+      if (!why) return;
+      rows.push('<div class="st-why-row ' + cls + '">' +
+        '<span class="tag">' + esc(tag) + '</span>' +
+        '<span>' + esc(opts[i]) + '：' + esc(why) + '</span>' +
+      '</div>');
+    };
+    row(picked, '你选的', 'is-wrong');
+    row(ans, '正确的是', 'is-right');
+    opts.forEach(function (_, i) {
+      if (i === picked || i === ans) return;
+      row(i, String.fromCharCode(65 + i), '');
+    });
+    return rows.length ? '<div class="st-explain is-wrong"><div class="st-explain-label">错在哪</div>' +
+      '<div class="st-why">' + rows.join('') + '</div></div>' : '';
   }
 
   function stQuizHtml() {
