@@ -155,6 +155,7 @@ if (cap) {
 if (!decisions.length) {
   line('这份导出没有 decisions（老版本文件）。无法核对「凭什么出这题」，请重新导出一次。');
 } else {
+  line('句型题用到本单元的词；词还没稳住时句型排在词后面，错因记在词上，不记成句型不会。');
   decisions.forEach(function (d, i) {
     const ev = d.evidence || {};
     line('D' + (i + 1) + '　' + shortKp(d.kp) + '　[' + (d.rule || '无规则') + ']　' +
@@ -168,6 +169,12 @@ if (!decisions.length) {
     line('    凭据：事件 seq ' + (seqs.length ? seqs.slice(-8).join(',') : '（无，未测考点）') +
       (seqs.length ? '，本文件里能查到 ' + found + ' / ' + seqs.length + ' 条' : ''));
     line('    判据：' + (d.ruleText || ''));
+    if (Array.isArray(d.blockedBy) && d.blockedBy.length) {
+      line('    用词：这句里的 ' + d.blockedBy.map(function (b) {
+        const parts = String(b || '').split('·');
+        return (parts[1] || parts[0] || '').trim();
+      }).join('、') + ' 还没稳住，所以排在这些词后面（先补词，再考句子）');
+    }
   });
   const withDecision = qs.filter(function (q) { return q.decision; }).length;
   line('题面核对：本轮 ' + qs.length + ' 道题里，' + withDecision + ' 道带着同一份决策记录。');

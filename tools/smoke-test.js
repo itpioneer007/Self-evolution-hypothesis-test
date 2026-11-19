@@ -312,6 +312,58 @@ console.log('--- 答题过后重出题：证据有没有真的进模型 ---');
   assert('样本太少先不判累，避免一开练就降级', tooFew.level === 'none', tooFew.reason);
 })();
 
+console.log('--- 句型依赖的词：词没稳住先补词，别记成句型不会 ---');
+(function () {
+  const kps = SHT.kpsOf('U1');
+  const sent = kps.filter(function (k) { return k.targetType === 'sentence' && k.pathStage === 1; })[0];
+  const word = SHT.kpByTargetId('U1:word:playground');
+  assert('句型的依赖是从句子原文里找出来的，不是写死的',
+    sent.requiresWords.indexOf('playground') >= 0 && sent.requiresWords.indexOf('classroom') >= 0,
+    JSON.stringify(sent.requiresWords));
+  assert('功能词不算依赖（This is a classroom 不该依赖 a / is）',
+    sent.requiresWords.indexOf('is') < 0 && sent.requiresWords.indexOf('a') < 0,
+    JSON.stringify(sent.requiresWords));
+  assert('每个依赖都能反查到课程里的词目标',
+    sent.requires.every(function (id) { return !!SHT.kpByTargetId(id); }));
+
+  let seq = 0;
+  const ev = [];
+  function push(kp, correct) {
+    seq += 1;
+    ev.push({ seq: seq, qid: 'q' + seq, kp: kp, studentId: 'S-001', round: 2,
+      ts: 1000 + seq * 100, type: 'submit',
+      payload: { correct: correct, final: true, attemptIndex: 1, durationMs: 5000 } });
+  }
+  // 其他词都答对两次；playground 一错一对还不稳；句型答错过。
+  kps.forEach(function (k) {
+    if (k.label !== word.label && k.label !== sent.label) { push(k.label, true); push(k.label, true); }
+  });
+  push(word.label, true); push(word.label, false);
+  push(sent.label, false);
+  const model = SHT.learner.build(ev);
+  const d = SHT.learner.decide(model, { layer: 'B', kps: kps, count: 5, weights: SHT.weights.blank() });
+  const wi = d.items.map(function (it) { return it.kp; }).indexOf(word.label);
+  const si = d.items.map(function (it) { return it.kp; }).indexOf(sent.label);
+  assert('词不稳时：词排在句型前面', wi >= 0 && si > wi, wi + ' / ' + si);
+  assert('句型标出欠哪个词', d.items[si].blockedBy.indexOf(word.label) >= 0,
+    JSON.stringify(d.items[si].blockedBy));
+  assert('选题理由写人话：句子里的 playground 还没稳住，先补词',
+    /句子里的\s*playground\s*还没稳住，先补词/.test(d.items[si].reason), d.items[si].reason);
+  assert('补词理由写清是句型在等它',
+    /阶段1句型在等这个词/.test(d.items[wi].reason), d.items[wi].reason);
+  const solid = d.items.filter(function (it) { return it.kp !== word.label && it.blockedBy.length === 0; });
+  assert('已经稳住的词不背「句型在等它」的理由',
+    solid.every(function (it) { return !/句型在等这个词/.test(it.reason); }));
+
+  // 把 playground 也答对两次，句型就不该再被挡
+  push(word.label, true); push(word.label, true);
+  const m2 = SHT.learner.build(ev);
+  const d2 = SHT.learner.decide(m2, { layer: 'B', kps: kps, count: 5, weights: SHT.weights.blank() });
+  const s2 = d2.items.filter(function (it) { return it.kp === sent.label; })[0];
+  assert('词稳住之后，句型不再被挡', s2 && s2.blockedBy.length === 0,
+    s2 ? JSON.stringify(s2.blockedBy) : '句型没进选题单');
+})();
+
 console.log('--- 练了几天的方向：方向 / 广度 / 深度 ---');
 (function () {
   const sessions = [

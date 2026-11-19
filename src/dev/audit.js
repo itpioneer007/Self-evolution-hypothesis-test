@@ -506,8 +506,9 @@
       learner: (SHT.learner && SHT.learner.build)
         ? SHT.learner.digest(SHT.learner.build(state.events || []), 5)
         : null,
-      // 本轮的选题决策：规则编号 + 数值证据 + 原始事件 seq。
-      // 老师问「凭什么出这道题」时，顺着 eventSeqs 能在 events 里逐条点开。
+      // 本轮的选题决策：规则编号 + 数值证据 + 原始事件 seq + 欠哪些前置词（blockedBy）。
+      // 老师问「凭什么出这道题」时，顺着 eventSeqs 能在 events 里逐条点开；
+      // 问「为什么不先考句子」时，看 blockedBy 里那些还没稳住的词。
       decisions: state.decisions || [],
       levelCap: state.levelCap || null,
       decisionReason: state.decisionReason || '',

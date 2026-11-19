@@ -510,10 +510,45 @@
       return SHT.weights.predict(o.weights || null, k.label || '', k.ability || '');
     }
 
+    /*
+     * 句型用到、但还没稳住的词。
+     * 以前只按权重排：一个答错过的句型会因为「最该验」被提到前面，
+     * 可学生真正不会的是句子里的那个词。结果词没补、句型又错一次，
+     * 错因还记在句型头上，越练越乱。
+     * 这里只调「谁先出」——不禁止出句型，题量也不动；词稳了自然不挡。
+     */
+    function missingPrereqs(k) {
+      const need = (k && k.requires) || [];
+      if (!need.length || !SHT.kpByTargetId) return [];
+      return need.map(function (id) {
+        const word = SHT.kpByTargetId(id);
+        return word && word.label;
+      }).filter(function (label) {
+        if (!label) return false;
+        const b = model && model.byKp && model.byKp[label];
+        return !b || b.tendency !== 'solid';
+      });
+    }
+
+    function wordName(label) {
+      const parts = String(label || '').split('·');
+      return (parts[1] || parts[0] || '').trim();
+    }
+
+    /** 只有句型确实因「这个词没稳」被挡，才算在等它——已掌握的词不该背这个理由。 */
+    function neededBy(k) {
+      const label = k.label || '';
+      if (!label) return [];
+      return kps.filter(function (other) {
+        return (other.requires || []).length && missingPrereqs(other).indexOf(label) >= 0;
+      }).map(function (other) { return '阶段' + (other.pathStage || 1) + '句型'; });
+    }
+
     function addItem(k, b) {
       const label = k.label || '';
       if (!label || usedKp[label] || retired.indexOf(label) >= 0) return false;
       usedKp[label] = true;
+      const blocked = missingPrereqs(k);
       if (!b) {
         const cold = items.length === 0 && !(model && model.eventCount);
         const rule = cold ? RULES.COLD_START : RULES.EXPLORE;
@@ -522,14 +557,16 @@
           targetType: k.targetType || '', targetId: k.targetId || '',
           pathStage: k.pathStage || null, pathLabel: k.pathLabel || '',
           action: 'explore', level: L[0], distractor: '同类不同物',
-          rule: rule.id, ruleText: rule.text,
+          blockedBy: blocked, rule: rule.id, ruleText: rule.text,
           evidence: {
             eventSeqs: [], qids: [], pKnown: null, attempts: 0, correct: 0, wrong: 0,
             fastWrong: 0, slowWrong: 0, guessRight: 0, changes: 0, hintUsed: 0,
             avgMs: 0, tendency: 'unseen', score: 0,
             note: '这个路径目标还没有作答记录'
           },
-          reason: '按学习路径进入「' + (k.pathLabel || '当前阶段') + '」；这个目标还没有作答记录'
+          reason: '按学习路径进入「' + (k.pathLabel || '当前阶段') + '」；这个目标还没有作答记录' +
+            (blocked.length ? '；句子里的 ' + blocked.map(wordName).join('、') + ' 还没稳住，先补词' : '') +
+            (neededBy(k).length ? '；' + neededBy(k)[0] + '在等这个词' : '')
         });
         return true;
       }
@@ -545,9 +582,11 @@
         targetType: k.targetType || '', targetId: k.targetId || '',
         pathStage: k.pathStage || null, pathLabel: k.pathLabel || '',
         action: actionOf(b.tendency), level: level, distractor: distractor,
-        rule: rule.id, ruleText: rule.text,
+        blockedBy: blocked, rule: rule.id, ruleText: rule.text,
         evidence: ev,
-        reason: reasonFor(b, rule, level, distractor) + '；路径：' + (k.pathLabel || '')
+        reason: reasonFor(b, rule, level, distractor) + '；路径：' + (k.pathLabel || '') +
+          (blocked.length ? '；句子里的 ' + blocked.map(wordName).join('、') + ' 还没稳住，先补词' : '') +
+          (neededBy(k).length ? '；' + neededBy(k)[0] + '在等这个词' : '')
       });
       return true;
     }
@@ -559,6 +598,9 @@
       const stageKps = kps.filter(function (k) { return (k.pathStage || 1) === stage; });
       const unseen = stageKps.filter(function (k) {
         return !(model && model.byKp && model.byKp[k.label]);
+      }).sort(function (a, b) {
+        // 同一阶段里，不欠前置词的先出；欠词的句型排到词后面。
+        return (missingPrereqs(a).length ? 1 : 0) - (missingPrereqs(b).length ? 1 : 0);
       });
       unseen.forEach(function (k) {
         if (items.length >= count) return;
@@ -575,11 +617,15 @@
         const pool = kps.filter(function (k) {
           return (k.pathStage || 1) === stage && !usedKp[k.label];
         }).map(function (k) {
-          return { k: k, b: model && model.byKp && model.byKp[k.label], w: weightOf(k) };
+          return {
+            k: k, b: model && model.byKp && model.byKp[k.label],
+            w: weightOf(k), blocked: missingPrereqs(k).length
+          };
         }).filter(function (x) {
           return x.b && x.b.tendency !== 'solid';
         }).sort(function (x, y) {
-          return x.w - y.w;
+          // 先看前置词稳没稳，再看预计正确率。两个都低的，先补那个不欠词的。
+          return x.blocked - y.blocked || x.w - y.w;
         });
         pool.forEach(function (x) {
           if (items.length >= count || usedKp[x.k.label]) return;

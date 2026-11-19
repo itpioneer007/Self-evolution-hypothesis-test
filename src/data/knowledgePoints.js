@@ -26,6 +26,32 @@
       taskForms: target.taskForms || ['认']
     }, target));
   }
+  /*
+   * 句型依赖哪些词，从句型原文里找，不靠谁拍脑袋标。
+   * 做法：拿本单元词表和句型正文比对，出现过的实词就是这个词型的用词基础。
+   * 功能词（a / the / this 之类）排除，否则「This is a classroom」会依赖 a 和 is。
+   * 长词先匹配，避免 music room 被 room 抢走。
+   */
+  function wordsInPattern(pattern, unit) {
+    const text = String(pattern || '');
+    const book = (SHT.BOOKS && SHT.BOOKS.current) ? SHT.BOOKS.current() : null;
+    const stop = Object.create(null);
+    ((book && book.meta && book.meta.allowedFunctionWords) || []).forEach(function (w) {
+      stop[String(w).toLowerCase()] = true;
+    });
+    const words = (unit.words || [])
+      .map(function (w) { return clean(w.en); })
+      .filter(function (w) { return w && !stop[w.toLowerCase()]; })
+      .sort(function (a, b) { return b.length - a.length; });
+    const hit = [];
+    words.forEach(function (w) {
+      const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('(^|[^A-Za-z])' + esc + '(?=$|[^A-Za-z])', 'i');
+      if (re.test(text) && hit.indexOf(w) < 0) hit.push(w);
+    });
+    return hit;
+  }
+
   function wordTarget(unit, word, stage, step, group, suffix) {
     return {
       id: 'course-' + unit.id + '-' + suffix,
@@ -42,6 +68,7 @@
     };
   }
   function sentenceTarget(unit, pattern, stage, step, group, suffix) {
+    const used = wordsInPattern(pattern, unit);
     return {
       id: 'course-' + unit.id + '-' + suffix,
       targetId: unit.id + ':sentence:' + suffix,
@@ -52,6 +79,10 @@
       why: '这是单元自学' + stage + '的一个独立句型目标，要单独用到完整语境中。',
       source: unit.id + ' 课程大纲 · 句型',
       example: '用本单元句型完成：' + short(pattern, 60),
+      // 这个句子用到本单元哪些词：靠目标编号回指，不存一份会过期的文字副本。
+      // 出题排序会用到它——词没稳住就先补词，别把「词不会」记成「句型不会」。
+      requires: used.map(function (en) { return unit.id + ':word:' + en; }),
+      requiresWords: used,
       cell: { type: '选词填空', scene: unit.topicDomain || '学校', level: '用', distractor: '母语负迁移' },
       nextIfWrong: '保留句型骨架，先替换一个词，再回到完整句子'
     };
@@ -117,5 +148,12 @@
     const key = clean(label);
     if (!key) return null;
     return SHT.ALL_KPS().filter(function (k) { return k.label === key; })[0] || null;
+  };
+  // 句型里记的是词的 targetId（如 U1:word:classroom），靠它反查学习记录用的考点名。
+  // 只在此处做一次映射，别在出题逻辑里各写一遍字符串拼接。
+  SHT.kpByTargetId = function (targetId) {
+    const key = clean(targetId);
+    if (!key) return null;
+    return SHT.ALL_KPS().filter(function (k) { return k.targetId === key; })[0] || null;
   };
 })(window);
