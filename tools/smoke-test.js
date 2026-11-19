@@ -575,6 +575,52 @@ console.log('--- 权重接线（加载 app.js） ---');
   assert('导出带难度变化台账（levelTrace）', Array.isArray(payload.levelTrace));
 })();
 
+console.log('--- 模型少给计划也要出满题：补格子 ---');
+(function () {
+  const all = SHT.kpsOf('U1').map(function (k) {
+    return { kp: k.label, ability: k.ability, id: k.id };
+  });
+  // 复现实际截图：配额要 5（vocab2/sentence1/phonics1/grammar1），模型只给 4 条
+  const four = [
+    { kp: all[0].kp, ability: all[0].ability, level: '认' },
+    { kp: all[1].kp, ability: all[1].ability, level: '认' },
+    { kp: all[6].kp, ability: all[6].ability, level: '用' },
+    { kp: all[7].kp, ability: all[7].ability, level: '用' }
+  ];
+  const short = [
+    { ability: 'phonics', want: 1, got: 0 },
+    { ability: 'grammar', want: 1, got: 0 }
+  ];
+  const r = SHT.pipeline.fillPlanSlots(four, 5, { kpPool: all, short: short, cap: '用' });
+  assert('4 条计划补到 5 条', r.plans.length === 5 && r.added.length === 1, r.plans.length + ' 条');
+  assert('补的是配额缺的那一类（语音或语法）',
+    r.added.length === 1 && ['phonics', 'grammar'].indexOf(r.added[0].ability) >= 0,
+    JSON.stringify(r.added));
+  assert('补的考点不在原计划里，不撞车',
+    new Set(r.plans.map(function (p) { return p.kp; })).size === 5);
+  assert('补的计划带来源标记，导出能看出是补的', r.added[0].fromPool === true);
+  assert('原计划数组没被改动', four.length === 4);
+  const enough = SHT.pipeline.fillPlanSlots(four, 4, { kpPool: all });
+  assert('计划已够时不补，不硬塞第 5 条', enough.plans.length === 4 && enough.added.length === 0);
+  const noPool = SHT.pipeline.fillPlanSlots(four, 9, { kpPool: all, cap: '用' });
+  assert('候选不够也只补到能补的为止，不造假考点',
+    noPool.plans.length <= all.length, noPool.plans.length + ' / 候选 ' + all.length);
+})();
+
+(function () {
+  const planUser = SHT.ROLES.plan.user({
+    bookName: '四上课程', bookMeta: { grade: '四年级', term: '上册', units: 10 },
+    unit: SHT.BOOKS.current().units[0], want: 5, bench: 3,
+    quota: { byAbility: { vocab: 2, sentence: 1, phonics: 1, grammar: 1 } },
+    stage: {}, scope: [], brief: {}
+  });
+  assert('规划提示写明本轮正取条数，模型不能少给',
+    /本轮正取 5 条/.test(planUser), planUser.slice(0, 120));
+  const planSys = SHT.ROLES.plan.system();
+  assert('规划硬约束要求给够条数，一条都不能少',
+    /恰好给够/.test(planSys) && /一条都不能少/.test(planSys));
+})();
+
 console.log('--- 中文题干要忠实翻译英文答案，不多添信息 ---');
 (function () {
   const gen = SHT.ROLES.generate.system();

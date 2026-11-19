@@ -156,6 +156,60 @@
     return (root.SHT_BOOK && root.SHT_BOOK.getUnit) ? root.SHT_BOOK.getUnit(unitId) : null;
   }
 
+  /*
+   * 规划条数补齐（纯函数）：说 5 道就必须有 5 格。
+   *
+   * 根因：模型常只给 4 条计划——配额分了 vocab2/sentence1/phonics1/grammar1，
+   * 它少给一条照样返回成功。出题循环以前按 plans.length 走，规划少一条就少出一题；
+   * 出题阶段的替补/候选补位只在「已有格子」里打转，救不了根本不存在的那一格。
+   *
+   * 这里在规划层补齐：先补配额里没给够的能力，再补任意没用过的考点。
+   * 补的是「本还想考、模型漏了」的目标，不是假题——后面照样过生成和代码闸，
+   * 出不成仍由替补顶上，只是格子数从一开始就是 want。
+   *
+   * @returns {{plans:Array, added:Array}} 新数组，不改入参
+   */
+  SHT.pipeline.fillPlanSlots = function (plans, want, opts) {
+    const o = opts || {};
+    const pool = o.kpPool || [];
+    const retired = o.retired || [];
+    const short = o.short || [];
+    const cap = o.cap || '';
+    const out = (plans || []).slice();
+    const used = Object.create(null);
+    out.forEach(function (p) { used[normKpText(p.kp)] = true; });
+    const added = [];
+    if (out.length >= want) return { plans: out, added: added };
+
+    const need = [];
+    short.forEach(function (s) {
+      for (let n = 0; n < Math.max(0, (s.want || 0) - (s.got || 0)) && need.length < want - out.length; n += 1) {
+        need.push(s.ability);
+      }
+    });
+    while (need.length < want - out.length) need.push('');
+    need.forEach(function (ability) {
+      if (out.length >= want) return;
+      const open = pool.filter(function (k) {
+        const n = normKpText(k.kp);
+        return n && !used[n] && retired.indexOf(k.kp) < 0;
+      });
+      const pick = (ability && open.filter(function (k) { return k.ability === ability; })[0]) || open[0];
+      if (!pick) return;
+      used[normKpText(pick.kp)] = true;
+      const lv = defaultLevel({ ability: pick.ability, level: cap });
+      const p = {
+        kp: pick.kp, ability: pick.ability,
+        cause: '', whyThisOne: '规划少给了一条，从本单元还没排的考点补上',
+        nextIfWrong: '', level: lv, fromPool: true
+      };
+      out.push(p);
+      added.push(p);
+    });
+    out.forEach(function (p, i) { p.no = i + 1; });
+    return { plans: out, added: added };
+  };
+
   SHT.pipeline.buildBrief = function (opts) {
     const o = opts || {};
     const unitId = o.unitId || (SHT.curriculum && SHT.curriculum.id);
@@ -433,7 +487,7 @@
         system: planAgent.system(),
         user: planAgent.user(Object.assign({}, ctxBase, {
           brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [],
-          count: want + wantBench, bench: wantBench,
+          count: want + wantBench, bench: wantBench, want: want,
           scope: scopeAlive, stage: hint, quota: quota
         })) + (recall('plan') ? '\n\n' + recall('plan') : ''),
         maxTokens: 1600
@@ -554,6 +608,30 @@
       plans = deduped;
       plans.forEach(function (p, i) { p.no = i + 1; });
       onEvent({ phase: 'planned', plans: plans, text: '考点去重后剩 ' + plans.length + ' 条' });
+    }
+
+    /*
+     * 规划条数补齐：说 5 道就必须有 5 格。
+     * 模型经常只给 4 条计划（配额分了 vocab2/sentence1/phonics1/grammar1，
+     * 它少给一条也照样返回），以前出题循环按 plans.length 走， Planning 少一条
+     * 就少出一题，替补与候选补位都只在「已有的格子」里打转，救不了缺失的那一格。
+     * 这里在规划层就把格子补齐：优先补配额里没给够的能力，其次补任意没用过的考点。
+     * 补的是「这一轮还想过但模型漏了」的目标，不是硬凑假题——后面照样过生成与代码闸，
+     * 出不成仍然由替补/候选顶上，只是格子数从一开始就是 want。
+     */
+    if (plans.length < want) {
+      const filled = SHT.pipeline.fillPlanSlots(plans, want, {
+        kpPool: kpPool, retired: hint.retired,
+        short: (quotaReport && quotaReport.short) || [], cap: hint.cap
+      });
+      plans = filled.plans;
+      filled.added.forEach(function (p) {
+        failures.push(fail({
+          stage: 'plan', attempt: 1, planKp: p.kp, codes: ['PLAN_FILL'],
+          reason: '模型给的计划不够 ' + want + ' 条，从本单元未排考点补一条：' + p.kp, detail: ''
+        }));
+      });
+      onEvent({ phase: 'planned', plans: plans, text: '规划补齐到 ' + plans.length + ' 条（目标 ' + want + '）' });
     }
 
     /*
