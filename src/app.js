@@ -283,6 +283,7 @@
       wrongCases: [],
       failures: [],
       llmBusy: false,
+      llmProgress: 0,
       // 本轮要考察的知识点范围（候选清单里的 id）。空数组 = 不限制，交规划环节现场提
       kpScope: [],
       agentMemory: SHT.agentMemory.blank(),
@@ -2444,11 +2445,23 @@
     return '正在准备';
   }
 
+  function progressOf(ev) {
+    const total = countFor(state.round) || 1;
+    const idx = typeof ev.index === 'number' ? ev.index : 0;
+    const p = ev.phase || '';
+    if (p === 'done') return 100;
+    if (p === 'planned' || p === 'plan') return 12;
+    if (p === 'generate') return 12 + Math.round((idx / total) * 70);
+    if (p === 'verify') return 12 + Math.round((idx / total) * 70) + 10;
+    if (p === 'adopted') return 12 + Math.round(((idx + 1) / total) * 70);
+    return state.llmProgress || 12;
+  }
+
   function stGeneratingHtml() {
     // 等待页只说「在做什么」。上一轮错什么、这轮怎么补，属于机制解释，写完题自然见分晓。
     return '<div class="st-page"><div class="st-card is-center">' +
       '<h2 class="st-title">正在出题</h2>' +
-      '<div class="st-bar"><span style="width:62%"></span></div>' +
+      '<div class="st-bar"><span style="width:' + (state.llmProgress || 8) + '%"></span></div>' +
       '<div class="st-step">' + esc(stStepText(state.llmStep)) + '</div>' +
     '</div></div>';
   }
@@ -2612,7 +2625,6 @@
         '<div class="st-report-kp-head"><strong>' + esc(friendlyKp(k.kp)) + '</strong><span>' + esc(k.stateLabel) + (k.pathLabel ? ' · ' + esc(k.pathLabel) : '') + '</span></div>' +
         '<div class="st-report-kp-meta">掌握概率：' + (k.mastery == null ? '待积累' : Math.round(k.mastery * 100) + '%') +
           '　·　' + (k.evidence || []).join('；') + '</div>' +
-        '<div class="st-report-kp-next">下一步：' + esc(k.nextAction.action) + '</div>' +
       '</div>';
     }).join('');
     return '<div class="st-page"><div class="st-card st-report-card">' +
@@ -2624,7 +2636,6 @@
         dim('独立掌握率', d.independentRate, '首答正确、无提示、无重试', 'is-good') +
         dim('提示后改对率', d.assistedRate, '提示后重新选择正确', 'is-warn') +
         dim('答错率', d.wrongRate, '提示后仍未答对', 'is-bad') +
-        dim('覆盖率', d.coverage, '已完成 ' + d.completed + ' / ' + d.total, '') +
       '</div>' +
       '<div class="st-report-section-title">知识点评价</div>' +
       '<div class="st-report-kps">' + (kpRows || '<div class="st-tip is-muted">本轮还没有知识点记录。</div>') + '</div>' +
@@ -3301,6 +3312,7 @@
     const token = (runToken += 1);
     state.llmBusy = true;
     state.llmStep = '准备';
+    state.llmProgress = 8;
     // 这一轮什么时候开始的：日志按时间排，人要知道这批题是什么时候出的
     currentRound().startedAt = new Date().toISOString();
     save();
@@ -3411,6 +3423,7 @@
         planOnly: !!planOnly,
         onEvent: function (ev) {
           if (token !== runToken) return;
+          state.llmProgress = progressOf(ev);
           setStep(ev.text || '');
         }
       });
