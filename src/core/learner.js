@@ -77,23 +77,35 @@
     const submits = evs.filter(function (e) { return e.type === 'submit'; });
     const last = submits.length ? submits[submits.length - 1] : null;
     const pay = (last && last.payload) || {};
+    // 首答那枪。采集端在首答错时会先发一条 final=false 的 submit，再给提示让人重选；
+    // 所以「有两条 submit」就等于「这题答过两枪」。以前只读最后一条，首答那次错
+    // 在模型里根本不存在 —— 一次答错 + 提示后答对，被记成「答 1 次、错 0 次」。
+    const firstSub = submits.length > 1 ? submits[0] : null;
+    const firstPay = (firstSub && firstSub.payload) || {};
 
-    // 改选次数：采集端发 change 是首选；若只发了 pick，也按相邻 index 变化兜底计一次。
-    let changes = 0;
-    let prevIdx = null;
-    let seenPick = false;
-    picks.forEach(function (e) {
-      const idx = e.payload && e.payload.index;
-      if (e.type === 'change') changes += 1;
-      else if (seenPick && idx != null && prevIdx != null && idx !== prevIdx) changes += 1;
-      if (e.type === 'pick' && idx != null) { seenPick = true; prevIdx = idx; }
-    });
+    // 改选次数：分「首枪前」和「整题」两个口径。
+    // 判「手滑」只能看首枪前改没改过——提示之后乱点，跟第一印象无关。
+    function changesBefore(beforeSeq) {
+      let n = 0;
+      let prevIdx = null;
+      let seenPick = false;
+      picks.forEach(function (e) {
+        if (beforeSeq != null && num(e.seq, 0) >= beforeSeq) return;
+        const idx = e.payload && e.payload.index;
+        if (e.type === 'change') n += 1;
+        else if (seenPick && idx != null && prevIdx != null && idx !== prevIdx) n += 1;
+        if (e.type === 'pick' && idx != null) { seenPick = true; prevIdx = idx; }
+      });
+      return n;
+    }
 
-    const hintUsed = evs.some(function (e) { return e.type === 'hint'; }) || !!pay.hintUsed;
     const shownAt = (evs.filter(function (e) { return e.type === 'shown'; })[0] || {}).ts;
     const endEv = last || evs[evs.length - 1];
     const fallbackMs = shownAt != null && endEv ? num(endEv.ts, 0) - num(shownAt, 0) : 0;
     const durationMs = clamp(last ? num(pay.durationMs, fallbackMs) : fallbackMs, 0, 300000);
+    const firstDurationMs = firstSub
+      ? clamp(num(firstPay.durationMs, 0), 0, 300000)
+      : durationMs;
 
     return {
       qid: g.qid,
@@ -102,12 +114,18 @@
       seq: g.seq,
       answered: !!last,
       correct: last ? !!pay.correct : null,
+      // 首答对不对，以及提示后是不是还有一枪。这两条是「真会 / 看提示才会」的分界。
+      retried: !!firstSub,
+      firstCorrect: firstSub ? !!firstPay.correct : (last ? !!pay.correct : null),
+      firstHintUsed: firstSub ? !!firstPay.hintUsed : (last ? !!pay.hintUsed : false),
+      firstDurationMs: firstDurationMs,
+      firstChanges: firstSub ? changesBefore(num(firstSub.seq, 0)) : changesBefore(null),
       picked: String(pay.picked || ''),
       expected: String(pay.expected || ''),
       via: String(pay.via || ''),
       durationMs: durationMs,
-      changes: changes,
-      hintUsed: hintUsed,
+      changes: changesBefore(null),
+      hintUsed: evs.some(function (e) { return e.type === 'hint'; }) || !!pay.hintUsed,
       revealed: evs.some(function (e) { return e.type === 'reveal'; }),
       left: evs.some(function (e) { return e.type === 'leave'; }),
       // 这一题由哪些事件构成。决策要把它带出去，验收时才能顺着 seq 回查原始轨迹，
@@ -130,6 +148,8 @@
   /** 过程证据 → 倾向。这是「蛛丝马迹」真正被用上的地方。 */
   function tendencyOf(b) {
     if (!b.attempts) return 'unseen';
+    // 提示之后还是错，比「秒错」更硬：那是真的不会，不能再用「粗心」糊过去。
+    if (b.retriedWrong > 0) return 'unknown';
     if (b.guessRight > 0 && b.wrong === 0) return 'unstable';  // 靠提示或改选才对，不能算会
     if (b.slowWrong >= 1 || b.wrong >= 3) return 'unknown';    // 想很久还错 / 反复错 = 没掌握
     // 每次错都是「几秒内、没改选」→ 更像手滑，不是不会。
@@ -155,6 +175,7 @@
       (1 - b.pKnown) * 60 +
       b.wrong * 8 +
       b.slowWrong * 6 +
+      b.retriedWrong * 10 +   // 提示后仍错＝真不会，排在「粗心」前面
       b.guessRight * 5 +
       b.hintUsed * 3 +
       b.changes * 2 +
@@ -167,6 +188,8 @@
     bits.push('答 ' + b.attempts + ' 次 / 对 ' + b.correct + ' 次');
     if (b.fastWrong) bits.push('快速错 ' + b.fastWrong + ' 次');
     if (b.slowWrong) bits.push('久想仍错 ' + b.slowWrong + ' 次');
+    if (b.retriedWrong) bits.push('提示后仍错 ' + b.retriedWrong + ' 次');
+    if (b.retriedRight) bits.push('提示后改对 ' + b.retriedRight + ' 次');
     if (b.changes) bits.push('改选 ' + b.changes + ' 次');
     if (b.hintUsed) bits.push('用提示 ' + b.hintUsed + ' 次');
     bits.push('掌握概率 ' + Math.round(b.pKnown * 100) + '%');
@@ -175,6 +198,55 @@
     else if (b.tendency === 'unstable') bits.push('下一轮换个角度再考一次');
     else if (b.tendency === 'unknown') bits.push('先降一档重出');
     return bits.join('；');
+  }
+
+  /**
+   * 疲劳判定：这一轮是不是已经累了 / 卡住了。
+   *
+   * 只看最近 8 次作答，不看全量——跨轮累积的「慢」不代表现在累。
+   * 三条信号：
+   *   1 后半段比前半段慢 60% 以上（drift ≥ 1.6）
+   *   2 最近这几题里四成以上超过 20 秒（不是不会，是拖）
+   *   3 末尾连续答错 2 题以上
+   * 命中两条（或连错 3 题）判 clear，只命中一条判 mild。
+   * clear 才降一档：只慢一两题就降档，会把正常思考误判成累。
+   */
+  function fatigueOf(recent) {
+    const list = (recent || []).slice(-8);
+    const base = {
+      level: 'none', drift: 1, slowRate: 0, streak: 0, sample: list.length,
+      reason: '样本不足，先按不累处理'
+    };
+    if (list.length < 4) return base;
+    const half = Math.floor(list.length / 2);
+    const avg = function (arr) {
+      if (!arr.length) return 0;
+      return arr.reduce(function (n, x) { return n + num(x.durationMs, 0); }, 0) / arr.length;
+    };
+    const a = avg(list.slice(0, half));
+    const b = avg(list.slice(half));
+    const drift = a > 0 ? r4(b / a) : 1;
+    const slowRate = r4(list.filter(function (x) {
+      return num(x.durationMs, 0) >= 20000;
+    }).length / list.length);
+    let streak = 0;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (list[i].correct) break;
+      streak += 1;
+    }
+    let hits = 0;
+    if (drift >= 1.6) hits += 1;
+    if (slowRate >= 0.4) hits += 1;
+    if (streak >= 2) hits += 1;
+    const level = (hits >= 2 || streak >= 3) ? 'clear' : (hits === 1 ? 'mild' : 'none');
+    const bits = [];
+    if (drift >= 1.6) bits.push('后半段慢了 ' + Math.round((drift - 1) * 100) + '%');
+    if (slowRate >= 0.4) bits.push('最近 ' + list.length + ' 题里 ' + Math.round(slowRate * 100) + '% 超过 20 秒');
+    if (streak >= 2) bits.push('连续 ' + streak + ' 题答错');
+    return {
+      level: level, drift: drift, slowRate: slowRate, streak: streak, sample: list.length,
+      reason: bits.length ? bits.join('；') : '节奏平稳'
+    };
   }
 
   /**
@@ -199,7 +271,7 @@
       if (!byKp[kp]) {
         byKp[kp] = {
           kp: kp, attempts: 0, correct: 0, wrong: 0,
-          fastWrong: 0, slowWrong: 0, guessRight: 0,
+          fastWrong: 0, slowWrong: 0, guessRight: 0, retriedWrong: 0, retriedRight: 0,
           changes: 0, hintUsed: 0, totalMs: 0, qids: [], eventSeqs: [], sequence: []
         };
         order.push(kp);
@@ -207,9 +279,16 @@
       const b = byKp[kp];
       b.attempts += 1;
       if (e.correct) b.correct += 1; else b.wrong += 1;
-      if (!e.correct && e.durationMs > 0 && e.durationMs < 4000 && e.changes === 0) b.fastWrong += 1;
-      if (!e.correct && e.durationMs >= 12000) b.slowWrong += 1;
-      if (e.correct && (e.hintUsed || e.changes > 0)) b.guessRight += 1;
+      // 快慢与改写都看首枪：第一印象才说明「会不会」，提示之后的动作已经被提示带偏了。
+      const firstMs = e.retried ? e.firstDurationMs : e.durationMs;
+      const firstChanges = e.retried ? e.firstChanges : e.changes;
+      if (!e.correct && firstMs > 0 && firstMs < 4000 && firstChanges === 0) b.fastWrong += 1;
+      if (!e.correct && firstMs >= 12000) b.slowWrong += 1;
+      // 提示之后还是错：这不是手滑，也不是没看清，是这一处真不会。单独计数，
+      // 否则「3 秒错 + 提示后还错」会被判成粗心，下一轮换干扰项再验一次，白跑一轮。
+      if (e.retried && !e.correct) b.retriedWrong += 1;
+      if (e.retried && e.correct) b.retriedRight += 1;
+      if (e.correct && (e.hintUsed || firstChanges > 0)) b.guessRight += 1;
       b.changes += e.changes;
       if (e.hintUsed) b.hintUsed += 1;
       b.totalMs += e.durationMs;
@@ -270,6 +349,15 @@
       byKp: byKp,
       queue: queue,
       pace: pace,
+      // 最近几次作答的原始量：疲劳判定与下一轮难度都要用，
+      // 但界面上一个字都不显示（见 digest：只带摘要，不带这些明细）
+      recent: seqEv.slice(-8).map(function (e) {
+        return {
+          seq: e.seq, kp: e.kp, correct: !!e.correct,
+          durationMs: e.durationMs, changes: e.changes, hintUsed: !!e.hintUsed
+        };
+      }),
+      fatigue: fatigueOf(seqEv.slice(-8)),
       topTendency: topTendency,
       reason: reason
     };
@@ -294,6 +382,9 @@
   };
 
   const CAP_BY_LAYER = { A: '表达', B: '用', C: '辨' };
+  // 掌握概率调档线：≥0.65 升一档、≤0.35 降一档，至少要 3 次作答
+  const LEVEL_UP = 0.65;
+  const LEVEL_DOWN = 0.35;
   const LEVEL_BY_TENDENCY = {
     unknown: '认', slip: '辨', unstable: '辨', solid: '用', emerging: '辨', unseen: '认'
   };
@@ -317,8 +408,8 @@
     const n = (model && model.answeredCount) || 0;
     const avg = ps.length ? ps.reduce(function (a, b) { return a + b; }, 0) / ps.length : null;
     let delta = 0;
-    if (n >= 3 && avg != null && avg >= 0.65) delta = 1;
-    else if (n >= 3 && avg != null && avg <= 0.35) delta = -1;
+    if (n >= 3 && avg != null && avg >= LEVEL_UP) delta = 1;
+    else if (n >= 3 && avg != null && avg <= LEVEL_DOWN) delta = -1;
     const idx = Math.max(0, Math.min(L.length - 1, L.indexOf(base) + delta));
     return {
       layer: layer, cap: L[idx], startCap: base, delta: delta,
@@ -356,6 +447,7 @@
       qids: (b.qids || []).slice(-10),
       pKnown: b.pKnown, attempts: b.attempts, correct: b.correct, wrong: b.wrong,
       fastWrong: b.fastWrong, slowWrong: b.slowWrong, guessRight: b.guessRight,
+      retriedWrong: b.retriedWrong || 0,
       changes: b.changes, hintUsed: b.hintUsed, avgMs: b.avgMs,
       tendency: b.tendency, score: b.score, note: ''
     };
@@ -364,8 +456,8 @@
   function reasonFor(b, rule, level, distractor) {
     const nums = '掌握概率 ' + Math.round(b.pKnown * 100) + '%｜作答 ' + b.attempts +
       ' 次（对 ' + b.correct + ' / 错 ' + b.wrong + '）｜秒错 ' + b.fastWrong +
-      ' 次、久想仍错 ' + b.slowWrong + ' 次、改选 ' + b.changes + ' 次、提示 ' +
-      b.hintUsed + ' 次｜平均 ' + b.avgMs + 'ms';
+      ' 次、久想仍错 ' + b.slowWrong + ' 次、提示后仍错 ' + (b.retriedWrong || 0) +
+      ' 次、改选 ' + b.changes + ' 次、提示 ' + b.hintUsed + ' 次｜平均 ' + b.avgMs + 'ms';
     const seqs = (b.eventSeqs || []).slice(-8).join(',');
     return nums + ' → ' + rule.text + '；本条出「' + level + '」层 / 干扰项「' + distractor + '」' +
       (seqs ? '；依据事件 seq ' + seqs : '');
@@ -374,13 +466,31 @@
   /**
    * 学习者状态 → 这一轮的选题单。纯函数、可复算。
    * @param {object} model build() 的输出
-   * @param {object} opts { unit, layer, kps, count, retired }
+   * @param {object} opts {
+   *   unit, layer, kps, count, retired,
+   *   weights,      跨轮累积的权重快照；给「同层里先出最弱的」排序用
+   *   capOverride   权重算出来的难度上限。给了就用它，而不是只用本轮掌握概率
+   * }
    */
   function decide(model, opts) {
     const o = opts || {};
     const L = levels();
     const count = Math.max(1, Math.floor(num(o.count, 5)));
     const capInfo = levelCapOf(model, o.layer);
+    /*
+     * 难度上限的最终决定权交给累积权重。
+     * 以前的顺序是反的：先用「本轮重算的掌握概率」把每条选题的层次定死，
+     * 之后再拿权重改一个 state.levelCap 的数字。数字变了，题没变 ——
+     * 学生连对十道，下一轮出题还是那一层，看着像没学。
+     */
+    if (o.capOverride && L.indexOf(o.capOverride) >= 0) {
+      capInfo.learnerCap = capInfo.cap;
+      capInfo.cap = o.capOverride;
+      // 谁定的这个档：weights（按权重）/ fatigue（看状态降一档）/ learner（按本轮掌握概率）
+      capInfo.source = o.capSource || 'weights';
+    } else {
+      capInfo.source = o.capSource || 'learner';
+    }
     const kps = (o.kps || []).slice().sort(function (a, b) {
       return (a.pathStage || 9) - (b.pathStage || 9) || (a.pathStep || 0) - (b.pathStep || 0);
     });
@@ -394,10 +504,51 @@
     });
     stageList.sort(function (a, b) { return a - b; });
 
+    /** 这个考点预计的正确率。没答过给 0.5（和 weights.js 的先验一致）。 */
+    function weightOf(k) {
+      if (!SHT.weights) return 0.5;
+      return SHT.weights.predict(o.weights || null, k.label || '', k.ability || '');
+    }
+
+    /*
+     * 句型用到、但还没稳住的词。
+     * 以前只按权重排：一个答错过的句型会因为「最该验」被提到前面，
+     * 可学生真正不会的是句子里的那个词。结果词没补、句型又错一次，
+     * 错因还记在句型头上，越练越乱。
+     * 这里只调「谁先出」——不禁止出句型，题量也不动；词稳了自然不挡。
+     */
+    function missingPrereqs(k) {
+      const need = (k && k.requires) || [];
+      if (!need.length || !SHT.kpByTargetId) return [];
+      return need.map(function (id) {
+        const word = SHT.kpByTargetId(id);
+        return word && word.label;
+      }).filter(function (label) {
+        if (!label) return false;
+        const b = model && model.byKp && model.byKp[label];
+        return !b || b.tendency !== 'solid';
+      });
+    }
+
+    function wordName(label) {
+      const parts = String(label || '').split('·');
+      return (parts[1] || parts[0] || '').trim();
+    }
+
+    /** 只有句型确实因「这个词没稳」被挡，才算在等它——已掌握的词不该背这个理由。 */
+    function neededBy(k) {
+      const label = k.label || '';
+      if (!label) return [];
+      return kps.filter(function (other) {
+        return (other.requires || []).length && missingPrereqs(other).indexOf(label) >= 0;
+      }).map(function (other) { return '阶段' + (other.pathStage || 1) + '句型'; });
+    }
+
     function addItem(k, b) {
       const label = k.label || '';
       if (!label || usedKp[label] || retired.indexOf(label) >= 0) return false;
       usedKp[label] = true;
+      const blocked = missingPrereqs(k);
       if (!b) {
         const cold = items.length === 0 && !(model && model.eventCount);
         const rule = cold ? RULES.COLD_START : RULES.EXPLORE;
@@ -406,28 +557,36 @@
           targetType: k.targetType || '', targetId: k.targetId || '',
           pathStage: k.pathStage || null, pathLabel: k.pathLabel || '',
           action: 'explore', level: L[0], distractor: '同类不同物',
-          rule: rule.id, ruleText: rule.text,
+          blockedBy: blocked, rule: rule.id, ruleText: rule.text,
           evidence: {
             eventSeqs: [], qids: [], pKnown: null, attempts: 0, correct: 0, wrong: 0,
             fastWrong: 0, slowWrong: 0, guessRight: 0, changes: 0, hintUsed: 0,
             avgMs: 0, tendency: 'unseen', score: 0,
             note: '这个路径目标还没有作答记录'
           },
-          reason: '按学习路径进入「' + (k.pathLabel || '当前阶段') + '」；这个目标还没有作答记录'
+          reason: '按学习路径进入「' + (k.pathLabel || '当前阶段') + '」；这个目标还没有作答记录' +
+            (blocked.length ? '；句子里的 ' + blocked.map(wordName).join('、') + ' 还没稳住，先补词' : '') +
+            (neededBy(k).length ? '；' + neededBy(k)[0] + '在等这个词' : '')
         });
         return true;
       }
       const rule = ruleOf(b.tendency);
       const level = levelFor(b, capInfo.cap);
       const distractor = DISTRACTOR_BY_TENDENCY[b.tendency] || '同类不同物';
+      const ev = evidenceOfDecision(b);
+      // 这条考点现在预计能答对多少。写进证据里，下一轮出题前就能比对：
+      // 权重降了还是升了，题的层次有没有跟着动。
+      ev.weight = r4(weightOf(k));
       items.push({
         kp: label, kpId: k.id || '', ability: k.ability || 'vocab',
         targetType: k.targetType || '', targetId: k.targetId || '',
         pathStage: k.pathStage || null, pathLabel: k.pathLabel || '',
         action: actionOf(b.tendency), level: level, distractor: distractor,
-        rule: rule.id, ruleText: rule.text,
-        evidence: evidenceOfDecision(b),
-        reason: reasonFor(b, rule, level, distractor) + '；路径：' + (k.pathLabel || '')
+        blockedBy: blocked, rule: rule.id, ruleText: rule.text,
+        evidence: ev,
+        reason: reasonFor(b, rule, level, distractor) + '；路径：' + (k.pathLabel || '') +
+          (blocked.length ? '；句子里的 ' + blocked.map(wordName).join('、') + ' 还没稳住，先补词' : '') +
+          (neededBy(k).length ? '；' + neededBy(k)[0] + '在等这个词' : '')
       });
       return true;
     }
@@ -439,6 +598,9 @@
       const stageKps = kps.filter(function (k) { return (k.pathStage || 1) === stage; });
       const unseen = stageKps.filter(function (k) {
         return !(model && model.byKp && model.byKp[k.label]);
+      }).sort(function (a, b) {
+        // 同一阶段里，不欠前置词的先出；欠词的句型排到词后面。
+        return (missingPrereqs(a).length ? 1 : 0) - (missingPrereqs(b).length ? 1 : 0);
       });
       unseen.forEach(function (k) {
         if (items.length >= count) return;
@@ -447,13 +609,27 @@
     }
 
     // 第二遍才处理已经露过一次但还不稳的目标。
+    // 同一个阶段里先出权重最低的那个：权重低＝预计最答不对＝这一轮最该验的地方。
+    // 以前是按路径顺序从头取，排在后面但更弱的考点会一直被跳过，多轮下来差距越拉越大。
     if (items.length < count) {
       for (let si = 0; si < stageList.length && items.length < count; si += 1) {
         const stage = stageList[si];
-        kps.filter(function (k) { return (k.pathStage || 1) === stage; }).forEach(function (k) {
-          if (items.length >= count || usedKp[k.label]) return;
-          const b = model && model.byKp && model.byKp[k.label];
-          if (b && b.tendency !== 'solid') addItem(k, b);
+        const pool = kps.filter(function (k) {
+          return (k.pathStage || 1) === stage && !usedKp[k.label];
+        }).map(function (k) {
+          return {
+            k: k, b: model && model.byKp && model.byKp[k.label],
+            w: weightOf(k), blocked: missingPrereqs(k).length
+          };
+        }).filter(function (x) {
+          return x.b && x.b.tendency !== 'solid';
+        }).sort(function (x, y) {
+          // 先看前置词稳没稳，再看预计正确率。两个都低的，先补那个不欠词的。
+          return x.blocked - y.blocked || x.w - y.w;
+        });
+        pool.forEach(function (x) {
+          if (items.length >= count || usedKp[x.k.label]) return;
+          addItem(x.k, x.b);
         });
       }
     }
@@ -473,7 +649,11 @@
       items: items,
       levelCap: capInfo,
       reason: '本轮 ' + items.length + ' 条选题，依据 ' + ((model && model.eventCount) || 0) +
-        ' 条轨迹事件；按学习路径先处理未覆盖目标；水平上限「' + capInfo.cap + '」（起始 ' + capInfo.startCap + '，' + capText +
+        ' 条轨迹事件；按学习路径先处理未覆盖目标；水平上限「' + capInfo.cap + '」' +
+        (capInfo.source === 'weights'
+          ? '（按跨轮累积权重定档' + (capInfo.learnerCap ? '，本轮掌握概率原本算的是「' + capInfo.learnerCap + '」' : '') + '）'
+          : '（按本轮掌握概率定档）') +
+        '，起始 ' + capInfo.startCap + '，' + capText +
         '，基于 ' + capInfo.basedOn + ' 次作答' +
         (capInfo.avgPKnown == null ? '' : '、平均掌握概率 ' + Math.round(capInfo.avgPKnown * 100) + '%') + '）' +
         (items.length ? '；首条依据：' + items[0].reason : '')
@@ -489,6 +669,7 @@
       answeredCount: m.answeredCount || 0,
       topTendency: m.topTendency || 'unseen',
       pace: m.pace || null,
+      fatigue: m.fatigue || null,
       queue: (m.queue || []).slice(0, n || 5),
       reason: m.reason || ''
     };
@@ -496,6 +677,8 @@
 
   SHT.learner = {
     TYPES: TYPES, CAP_EVENTS: CAP_EVENTS, RULES: RULES,
-    build: build, decide: decide, levelCapOf: levelCapOf, digest: digest
+    // 调档阈值：台账要写清「越过了哪条线」，所以把它导出，别在两处各写一个数
+    LEVEL_CAP: { up: LEVEL_UP, down: LEVEL_DOWN },
+    build: build, decide: decide, levelCapOf: levelCapOf, fatigueOf: fatigueOf, digest: digest
   };
 })(window);

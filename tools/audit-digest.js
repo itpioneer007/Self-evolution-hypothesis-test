@@ -11,6 +11,10 @@
  * 而不是假装复用率是 0%——那会把「文件缺字段」误报成「系统没复用」。
  */
 const fs = require('fs');
+const path = require('path');
+// 难度台账的翻译逻辑与界面共用同一份，避免脚本里再抄一套说法
+global.window = global;
+require(path.join(__dirname, '..', 'src', 'core', 'levelTrace.js'));
 
 const file = process.argv[2];
 if (!file) {
@@ -122,15 +126,36 @@ rows.forEach((r) => {
 hr('六 凭什么出这些题（决策证据链）');
 const decisions = Array.isArray(j.decisions) ? j.decisions : [];
 const cap = j.levelCap || null;
+/*
+ * 难度台账放在最前面：这是「题为什么越来越难 / 突然变简单」的唯一出处。
+ * 每条写三样东西：从第几级到第几级、升降几级、凭什么（几个题、多少正确率、
+ * 越过哪条线，或者慢了多少、连错几题）。最后标出它在导出文件里的位置，
+ * 方便对着原文核——这一行不是脚本编的，是台账里那一条。
+ */
+const trace = Array.isArray(j.levelTrace) ? j.levelTrace : [];
+if (trace.length) {
+  line('说明：下面每行对应导出文件 levelTrace 数组里同序号的原始记录，文中数字都取自该记录，未做推断。');
+  line('　　　「累计正确率」在代码里叫权重，意思是「按他答过的题，估计这类题能答对多少」。');
+  trace.forEach(function (t, i) {
+    const e = SHT.levelTrace.explain(t);
+    line('  ' + (i + 1) + '）' + e.head);
+    line('     ' + e.why);
+    line('     调档依据：' + e.source + '　（导出 levelTrace 第 ' + (i + 1) + ' 条）');
+  });
+} else {
+  line('这份导出没有 levelTrace（老版本文件），看不到难度是怎么一步步变的。');
+}
 if (cap) {
-  line('水平上限：' + cap.cap + '（起始 ' + cap.startCap + '，' +
-    (cap.delta > 0 ? '按表现升 1 档' : cap.delta < 0 ? '按表现降 1 档' : '持平') +
+  line('本轮难度上限：' + SHT.levelTrace.levelText(cap.cap) +
+    '；起始为' + SHT.levelTrace.levelShort(cap.startCap) +
+    (cap.delta > 0 ? '，按表现升高 1 级' : cap.delta < 0 ? '，按表现降低 1 级' : '，按表现不变') +
     '；基于 ' + cap.basedOn + ' 次作答' +
-    (cap.avgPKnown == null ? '' : '，平均掌握概率 ' + Math.round(cap.avgPKnown * 100) + '%') + '）');
+    (cap.avgPKnown == null ? '' : '，平均掌握概率 ' + Math.round(cap.avgPKnown * 100) + '%'));
 }
 if (!decisions.length) {
   line('这份导出没有 decisions（老版本文件）。无法核对「凭什么出这题」，请重新导出一次。');
 } else {
+  line('句型题用到本单元的词；词还没稳住时句型排在词后面，错因记在词上，不记成句型不会。');
   decisions.forEach(function (d, i) {
     const ev = d.evidence || {};
     line('D' + (i + 1) + '　' + shortKp(d.kp) + '　[' + (d.rule || '无规则') + ']　' +
@@ -144,6 +169,12 @@ if (!decisions.length) {
     line('    凭据：事件 seq ' + (seqs.length ? seqs.slice(-8).join(',') : '（无，未测考点）') +
       (seqs.length ? '，本文件里能查到 ' + found + ' / ' + seqs.length + ' 条' : ''));
     line('    判据：' + (d.ruleText || ''));
+    if (Array.isArray(d.blockedBy) && d.blockedBy.length) {
+      line('    用词：这句里的 ' + d.blockedBy.map(function (b) {
+        const parts = String(b || '').split('·');
+        return (parts[1] || parts[0] || '').trim();
+      }).join('、') + ' 还没稳住，所以排在这些词后面（先补词，再考句子）');
+    }
   });
   const withDecision = qs.filter(function (q) { return q.decision; }).length;
   line('题面核对：本轮 ' + qs.length + ' 道题里，' + withDecision + ' 道带着同一份决策记录。');
@@ -180,10 +211,56 @@ if (!sess.length) {
       pl.slice(-6).map(function (x) { return x.kind + ' ' + x.from + '→' + x.to; }).join('；'));
   }
 }
+/*
+ * 学生端已撤掉评价单（只留答题），统计挪到开发视图 07 与这份摘要。
+ * 数字全部取自导出里的 report，不重算——要核的就是当时判了什么。
+ */
+const rep = j.report || null;
+if (rep) {
+  const rd = rep.dimensions || {};
+  const rp = function (v) { return v == null ? '—' : Math.round(v * 100) + '%'; };
+  line('本轮评价（学生端不展示，开发视图 07 与此处同源）：');
+  line('  表现分 ' + (rep.performanceScore == null ? '样本不足' : rep.performanceScore) +
+    '　自己答对 ' + rp(rd.independentRate) + '　看提示答对 ' + rp(rd.assistedRate) +
+    '　没答对 ' + rp(rd.wrongRate) + '　已完成 ' + (rd.completed || 0) + '/' + (rd.total || 0));
+  (rep.knowledgePoints || []).slice(0, 8).forEach(function (k, i) {
+    line('  ' + (i + 1) + '）' + k.kp + '：' + (k.stateLabel || k.state || '—') +
+      '　掌握概率 ' + (k.mastery == null ? '未测' : Math.round(k.mastery * 100) + '%') +
+      '　下一步 ' + ((k.nextAction && k.nextAction.action) || '—'));
+  });
+} else {
+  line('本轮评价：这份导出没有 report，看不到表现分与逐题判断（学生端已不展示，请用新版导出）。');
+}
 line('');
 
 /* ---------- 8 结论 ---------- */
 hr('八 可以说出口的结论');
+/*
+ * 练了几天的走势放在结论最前面：这是「题目有没有朝他走」的唯一直接证据。
+ * 数字都来自导出里的 trend，不对「自适应有效」下断言——正确率上升也可能是他自己学会了。
+ */
+const trendData = j.trend || null;
+if (trendData && trendData.summary) {
+  line(trendData.summary);
+  const a = trendData.accuracy || {};
+  const c = trendData.coverage || {};
+  const d = trendData.difficulty || {};
+  if (a.delta == null) {
+    line('  方向：只有 ' + (a.rounds || 0) + ' 轮有作答，样本不够，不判断走势。');
+  } else {
+    line('  方向：前段 ' + Math.round(a.first * 100) + '% → 后段 ' + Math.round(a.last * 100) +
+      '%（' + (a.delta > 0 ? '+' : '') + Math.round(a.delta * 100) + ' 个百分点）');
+  }
+  line('  广度：覆盖 ' + (c.known || 0) + (c.total ? '/' + c.total : '') + ' 个考点' +
+    '；深度：' + (c.deep || 0) + ' 个练过两次以上，平均每个 ' + (c.avgAttempts || 0) + ' 次');
+  if (d.steps) {
+    line('  难度：共 ' + d.steps + ' 次调整，其中 ' + (d.ups || 0) + ' 次升高；目前停在第 ' +
+      (SHT.levelTrace.ORDER.indexOf(d.to) + 1 || '?') + ' 级');
+  }
+} else {
+  line('这份导出没有 trend（老版本文件），看不到跨会话的方向、广度与深度。');
+}
+line('');
 const canProve = !!(prev && Array.isArray(wc));
 line('本轮 ' + qs.length + ' 道题里，' + hit + ' 道挂接到历史错题（parentQid 非空）。');
 if (hit > 0 && canProve) {

@@ -93,6 +93,93 @@
     return (state.wrongCases || []).filter(function (c) { return !c.demo; });
   }
 
+  /*
+   * 这一轮该考到哪一层。
+   *
+   * 抽成一个函数，是因为有两处要用同一套规则：真正出题的时候，
+   * 以及答完以后给学生的那句「下一轮会难一点还是简单一点」。
+   * 两处各写一遍迟早会不一致——学生看到「会难一点」，出的题却没变。
+   *
+   * 顺序：先看权重够不够（≥5 次作答），不够就用本轮掌握概率；最后看状态，
+   * 累了或连续答错就降一档。状态放在最后，是因为学生当下的疲劳比算法指标更该被照顾。
+   */
+  function planCap(learnerModel, weightsView) {
+    const L = SHT.LEVELS || [];
+    const useWeights = weightsView.answered >= 5 && L.indexOf(weightsView.cap) >= 0;
+    const learnerCapInfo = SHT.learner.levelCapOf(learnerModel, state.learningLayer);
+    const fatigue = SHT.learner.fatigueOf(learnerModel && learnerModel.recent);
+    const capByPerf = useWeights ? weightsView.cap : learnerCapInfo.cap;
+    let cap = capByPerf;
+    let source = useWeights ? 'weights' : 'learner';
+    if (fatigue.level === 'clear' && L.indexOf(cap) > 0) {
+      cap = L[L.indexOf(cap) - 1];
+      source = 'fatigue';
+    }
+    return {
+      cap: cap, capByPerf: capByPerf, source: source, fatigue: fatigue,
+      useWeights: useWeights, learnerCapInfo: learnerCapInfo
+    };
+  }
+
+  /*
+   * 难度变化台账。记的是「这次出题把上限放在哪、上一次是多少、凭什么」。
+   * 只进存档与导出，学生端不显示——他要的是题，不是参数。
+   *
+   * 关键是把「凭什么」存成可核对的数据，不是一句「由权重定」：
+   *   basis.kind = weights → 做了几题、预计答对率多少、当时的阈值线各是多少
+   *   basis.kind = fatigue → 慢了多少、几成超时、连错几题
+   *   basis.kind = learner → 本轮平均掌握概率、样本量、阈值线
+   * 阈值一起存，是因为算法以后可能改；改了也要能解释老导出当时是按什么算的。
+   */
+  function noteLevelTrace(capInfo, weightsView, plan, decisionSet) {
+    const list = Array.isArray(state.levelTrace) ? state.levelTrace : [];
+    const prev = list[list.length - 1];
+    const rules = (decisionSet.items || []).map(function (d) { return d.rule; })
+      .filter(function (x, i, arr) { return x && arr.indexOf(x) === i; });
+    const wCap = (SHT.weights && SHT.weights.CAP) || {};
+    const lCap = (SHT.learner && SHT.learner.LEVEL_CAP) || {};
+    const f = plan.fatigue || {};
+    const basis = plan.source === 'fatigue'
+      ? {
+        kind: 'fatigue',
+        drift: f.drift, slowRate: f.slowRate, streak: f.streak, sample: f.sample,
+        reason: f.reason || '',
+        // 只看表现本该停在哪一档：说明「降这一级是照顾状态，不是能力不够」
+        capByPerf: plan.capByPerf
+      }
+      : (plan.useWeights
+        ? {
+          kind: 'weights',
+          weight: weightsView.weight, answered: weightsView.answered,
+          up: wCap.high, down: wCap.low
+        }
+        : {
+          kind: 'learner',
+          avgPKnown: plan.learnerCapInfo.avgPKnown,
+          basedOn: plan.learnerCapInfo.basedOn,
+          delta: plan.learnerCapInfo.delta,
+          up: lCap.up, down: lCap.down
+        });
+    state.levelTrace = list.concat([{
+      at: new Date().toISOString(),
+      group: state.stGroup,
+      round: state.round,
+      from: prev ? prev.to : (capInfo.startCap || ''),
+      to: capInfo.cap,
+      capByPerf: plan.capByPerf,
+      weightsCap: weightsView.cap,
+      learnerCap: plan.learnerCapInfo.cap,
+      weight: weightsView.weight,
+      answered: weightsView.answered,
+      fatigue: plan.fatigue.level,
+      fatigueReason: plan.fatigue.reason,
+      source: plan.source,
+      basis: basis,
+      rules: rules,
+      why: capInfo.reason
+    }]).slice(-60);
+  }
+
   function blankPractice() {
     return {
       cursor: 0,
@@ -105,6 +192,9 @@
       gradeError: '',
       hintUsed: false,
       hintGone: -1,
+      // 这一题里改了几次选项（含把已选的取消）。犹豫是最便宜的一条「不会但不敢确定」的证据：
+      // 秒错且没改选才像手滑，改选过再错就不能按手滑算，所以这个数必须一路带到权重里去。
+      changes: 0,
       revealed: null,
       // 这一题是什么时候出现在屏幕上的。作答耗时要靠它算——耗时是诊断的一条证据：
       // 3 秒内选错和想了 20 秒选错，不是同一回事。
@@ -242,6 +332,12 @@
        */
       weights: SHT.weights.blank(),
       weightsView: null,
+      /*
+       * 难度变化台账：每次出题记一条「从哪一档到哪一档、凭什么」。
+       * 纯给开发看，学生端一个字都不显示；导出时带出去，
+       * 能回答「第 3 轮为什么突然变简单了」这种问题。
+       */
+      levelTrace: [],
       // 跨轮/跨组出过的题。只存能算指纹与格子的字段，供下一轮去重
       questionHistory: [],
       tab: 'agents',
@@ -253,7 +349,7 @@
       view: 'student',
       // 学生端是否已经开始过一次（决定停在「选画像」还是直接续答）
       stStarted: false,
-      // 第几组练习。一组 = 两轮，最多 MAX_GROUPS 组，跑完给终态，不再无限「再练一组」
+      // 第几组练习。一组 = 两轮；默认两组，错题还没掌握最多续到四组（MAX_GROUPS_HARD）
       stGroup: 1,
       // 上一次出题失败的原因。学生端没有「失败记录」页，得在画像页上直接说清楚
       stFail: '',
@@ -406,6 +502,7 @@
     // 记录类字段：老存档补空表，不反推（反推出来的不是证据）
     if (!Array.isArray(parsed.profileLog)) parsed.profileLog = [];
     if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
+    if (!Array.isArray(parsed.levelTrace)) parsed.levelTrace = [];
     if (!Number.isFinite(parsed.sessionSeq)) parsed.sessionSeq = parsed.sessions.length;
     return parsed;
   }
@@ -1494,9 +1591,10 @@
     const q = activePracticeQuestion();
     const prev = p.picked;
     p.picked = p.picked === index ? null : index;
-    // 第一次选记 pick，之后再动就是 change。改选次数是「犹豫」最直接的证据，
-    // 覆盖式地只留最终选项的话，这条信息永久丢失。
+    // 第一次选记 pick，之后再动（换选项，或把已选的取消）都是 change。
+    // 改选次数是「犹豫」最直接的证据，覆盖式地只留最终选项的话，这条信息永久丢失。
     if (q) emitEvent(prev == null ? 'pick' : 'change', q, { index: p.picked, prevIndex: prev });
+    if (prev != null) p.changes = Number(p.changes || 0) + 1;
     save(); renderPractice();
   }
 
@@ -1605,6 +1703,7 @@
         answerMode: isOpen ? 'open' : 'choice',
         hintCount: p.hintUsed ? 1 : 0,
         durationMs: durationMs,
+        changes: Number(p.changes || 0),
         at: now
       };
       attachDiagnosis(q, first, roundNo);
@@ -1622,6 +1721,9 @@
       p.hintUsed = true;
       p.picked = null;
       p.draft = '';
+      // 重试是新的一枪：改选次数从头计，首答的犹豫已经记在 first 里了。
+      // 不重置的话，首答的三次乱点会被算到提示后这一枪头上，判成「犹豫着还是错」。
+      p.changes = 0;
       p.shownAt = Date.now();
       emitEvent('hint', q, { auto: true, retry: true, hint: p.retryHint });
       save(); renderAll();
@@ -1655,6 +1757,7 @@
       answerMode: isOpen ? 'open' : 'choice',
       hintCount: isRetry ? 1 : (p.hintUsed ? 1 : 0),
       durationMs: durationMs,
+      changes: Number(p.changes || 0),
       at: now
     };
     if (isRetry && first) {
@@ -1677,9 +1780,17 @@
       hintCount: final.hintCount || 0,
       retried: !!isRetry,
       durationMs: isRetry ? (final.retryDurationMs || final.durationMs) : final.durationMs,
-      changes: 0,
+      changes: Number(final.changes || 0),
       at: final.at
     });
+    /*
+     * 把这道题让权重动了多少，顺手记在这条作答上。
+     * 导出时「他第 3 题答对，这一类从 42% 升到 56%」能直接读到，
+     * 不用再拿整份事件流重放一遍才敢说「难度确实跟着动了」。
+     */
+    const kpCell = state.weights.kp[final.kpLabel || ''];
+    final.weightAfter = kpCell ? kpCell.w : null;
+    final.weightDelta = kpCell ? kpCell.lastDelta : null;
 
     emitEvent('submit', q, {
       picked: final.picked, expected: final.expected,
@@ -1914,6 +2025,7 @@
     p.gradeError = '';
     p.hintUsed = false;
     p.hintGone = -1;
+    p.changes = 0;
     p.retry = null;
     p.retryFirst = null;
     p.retryHint = '';
@@ -2357,8 +2469,23 @@
     { id: 'A', label: '较好', note: '想多练一点' }
   ];
 
-  // 一组 = 两轮。跑完最多两组就给终态，不再无限「再练一组」。
+  /*
+   * 一组 = 两轮。
+   *
+   * 以前跑满两组就硬停：不管错题掌握没掌握，都只能「重新开始」。
+   * 但闭环的意义是「答完再看下一步」，题还有没会的就该继续，没得练了才停。
+   * 所以现在分两道线：默认两组；如果错题本里还有没掌握的，最多续到四组。
+   * 四组是硬上限，避免又回到「无限出下一轮」那种没有终点的状态。
+   */
   const MAX_GROUPS = 2;
+  const MAX_GROUPS_HARD = 4;
+
+  /** 错题本里还没掌握的条数。判断「还要不要再练」用它，比数总题数好解释。 */
+  function stWeakCount() {
+    return (state.wrongCases || []).filter(function (c) {
+      return !c.demo && c.masteryState !== 'mastered';
+    }).length;
+  }
 
   function stQuestions() { return practiceQuestions(); }
 
@@ -2507,28 +2634,72 @@
     let badge = r.correct ? '答对了' : '答错了';
     let answer = '你' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
       (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>');
-    let tip = '';
     if (retried) {
       badge = r.correct ? '提示后答对' : '提示后仍错';
       answer = '第一次' + (isOpen ? '写' : '选') + ' <b>' + esc((first && first.picked) || '') + '</b>' +
         '　提示后再' + (isOpen ? '写' : '选') + ' <b>' + esc(r.picked || '') + '</b>' +
         (r.correct ? '' : '　正确 <b class="ok">' + esc(r.expected) + '</b>');
-      tip = r.correct
-        ? '首答错误已经保留；这次只记作「看提示才会」，之后还要用新题独立验证。'
-        : '首答和提示后的作答都记下了，下一轮会换新题再考一次。';
-    } else {
-      tip = r.correct
-        ? (q.probe ? '上次错过，这次独立答对了。' : '')
-        : (q.probe ? '还是错，之后再练一次。' : '记下了，下次换个问法再考。');
     }
+    // 「记下了 / 首答保留 / 下次换问法 / 上次错过」这类过程口径一律不给学生看，
+    // 它们是开发核对闭环用的，存在 attempts 与导出里；学生只看对错、答案、解析、错在哪。
+    /*
+     * 解析和错因是两件事，分开摆：
+     * - 解析（analysis）讲这道题考什么、正确是什么——答对答错都要看，像试卷答案那样。
+     *   以前答对就不给，学生答对了也不知道自己因为什么对。
+     * - 逐项说明（optionNotes）只在答错时给，单独一块「错在哪」：他选的那项为什么错、
+     *   正确项为什么对。不能只写一句「对了」「选 B」就完事。
+     */
+    const explainHtml = why
+      ? '<div class="st-explain"><div class="st-explain-label">这道题考的是</div>' +
+        '<div class="st-explain-text">' + esc(why) + '</div></div>'
+      : '';
+    const wrongHtml = !r.correct ? stWrongOptionsHtml(q, r) : '';
     return '<div class="st-verdict ' + (r.correct ? 'is-good' : 'is-bad') + '">' +
       '<div class="st-verdict-top">' +
         '<span class="st-badge">' + badge + '</span>' +
         '<span class="st-verdict-ans">' + answer + '</span>' +
       '</div>' +
-      ((!r.correct || retried) && why ? '<div class="st-tip">' + esc(why) + '</div>' : '') +
-      (tip ? '<div class="st-tip is-muted">' + esc(tip) + '</div>' : '') +
+      explainHtml +
+      wrongHtml +
     '</div>';
+  }
+
+  /*
+   * 答错时的「错在哪」：从 model 给的每个选项说明里挑出相关的几项。
+   * 学生选的那项、正确项、其余项各一行；没有说明的项不硬编。
+   */
+  function stWrongOptionsHtml(q, r) {
+    const notes = q.optionNotes || [];
+    if (!notes.length) return '';
+    const opts = (q.options || []).map(function (o) { return String(o == null ? '' : o).trim(); });
+    if (!opts.length) return '';
+    const idxOf = function (text) {
+      const t = SHT.normAnswer(text);
+      for (let i = 0; i < opts.length; i += 1) {
+        if (SHT.normAnswer(opts[i]) === t) return i;
+      }
+      return -1;
+    };
+    const picked = idxOf(r.picked);
+    const ans = idxOf(r.expected);
+    const rows = [];
+    const row = function (i, tag, cls) {
+      if (i < 0) return;
+      const why = String(notes[i] || '').trim();
+      if (!why) return;
+      rows.push('<div class="st-why-row ' + cls + '">' +
+        '<span class="tag">' + esc(tag) + '</span>' +
+        '<span>' + esc(opts[i]) + '：' + esc(why) + '</span>' +
+      '</div>');
+    };
+    row(picked, '你选的', 'is-wrong');
+    row(ans, '正确的是', 'is-right');
+    opts.forEach(function (_, i) {
+      if (i === picked || i === ans) return;
+      row(i, String.fromCharCode(65 + i), '');
+    });
+    return rows.length ? '<div class="st-explain is-wrong"><div class="st-explain-label">错在哪</div>' +
+      '<div class="st-why">' + rows.join('') + '</div></div>' : '';
   }
 
   function stQuizHtml() {
@@ -2575,76 +2746,35 @@
     return report;
   }
 
+  /*
+   * 学生端结果页：只交代「这一轮结束了、接下来点哪个」。
+   *
+   * 表现分、四个比例、知识点评价、错题清单、下一轮难度提示这些统计/记录，
+   * 一律不摆给学生——它们是开发核算法用的，已经原样存进 round.report，
+   * 在开发视图 07「本轮评价」和导出 JSON 里看。学生要理解题目，看答题页
+   * 每题下方的解析与「错在哪」就够了，不需要一张评价单。
+   */
   function stSummaryHtml() {
     const s = stStats();
-    const p = practiceOf();
-    const report = currentRoundReport();
-    /*
-     * 错题明细：题号 + 这道题的正确答案。
-     * 上面的知识点评价按考点聚合，看不出「哪道题错了、错的是哪个词」；
-     * 这一段只补定位信息，学生回去翻题能对上号。
-     */
-    const wrongRows = [];
-    p.attempts.forEach(function (a) {
-      if (a.correct) return;
-      const key = String(a.expected || '').trim() || friendlyKp(a.kpLabel);
-      if (!key) return;
-      wrongRows.push({ no: a.no, key: key });
-    });
-    const wrongItems = wrongRows.slice(0, 5).map(function (r) {
-      return '<div class="st-sum-item">' +
-        (r.no ? '<span class="no">第 ' + esc(String(r.no)) + ' 题</span>' : '') +
-        '<span class="key">' + esc(r.key) + '</span>' +
-      '</div>';
-    }).join('');
     const isLastRound = state.round >= 2;
-    const isLastGroup = state.stGroup >= MAX_GROUPS;
-    const finished = isLastRound && isLastGroup;
+    const weak = stWeakCount();
+    const stop = state.stGroup >= MAX_GROUPS_HARD ||
+      (state.stGroup >= MAX_GROUPS && weak === 0);
+    const finished = isLastRound && stop;
     let action;
     if (!isLastRound) {
       action = '<button type="button" class="st-primary" data-st-action="next-round">下一轮</button>';
-    } else if (!isLastGroup) {
-      action = '<button type="button" class="st-primary" data-st-action="regroup">再练一组</button>';
+    } else if (!stop) {
+      action = '<button type="button" class="st-primary" data-st-action="regroup">' +
+        (weak > 0 ? '再练一组' : '再练一组') + '</button>';
     } else {
       action = '<button type="button" class="st-primary" data-st-action="restart">重新开始</button>';
     }
-    if (!report) {
-      return '<div class="st-page"><div class="st-card"><div class="st-title">本轮结果</div>' +
-        '<div class="st-tip">评价模块尚未加载。</div><div class="st-actions">' + action + '</div></div></div>';
-    }
-    const d = report.dimensions;
-    const score = report.performanceScore == null ? '样本不足' : report.performanceScore;
-    const dim = function (label, value, note, tone) {
-      const p = value == null ? '—' : Math.round(value * 100) + '%';
-      return '<div class="st-report-dim"><div><span>' + esc(label) + '</span><b>' + p + '</b></div>' +
-        '<div class="st-report-bar"><i class="' + (tone || '') + '" style="width:' + (value == null ? 0 : Math.round(value * 100)) + '%"></i></div>' +
-        '<small>' + esc(note) + '</small></div>';
-    };
-    const kpRows = report.knowledgePoints.map(function (k) {
-      return '<div class="st-report-kp ' + (k.tone || '') + '">' +
-        '<div class="st-report-kp-head"><strong>' + esc(friendlyKp(k.kp)) + '</strong><span>' + esc(k.stateLabel) + (k.pathLabel ? ' · ' + esc(k.pathLabel) : '') + '</span></div>' +
-        '<div class="st-report-kp-meta">掌握概率：' + (k.mastery == null ? '待积累' : Math.round(k.mastery * 100) + '%') +
-          '　·　' + (k.evidence || []).join('；') + '</div>' +
-      '</div>';
-    }).join('');
-    return '<div class="st-page"><div class="st-card st-report-card">' +
-      '<div class="st-report-head"><div><div class="st-eyebrow">第 ' + state.round + ' 轮学习评价单' + (finished ? ' · 全部完成' : '') + '</div>' +
-        '<h2 class="st-title">本轮学习表现</h2></div><div class="st-report-score"><b>' + score + '</b><span>表现分</span></div></div>' +
-      '<div class="st-report-sub">独立答对 ' + s.independent + '　提示后答对 ' + s.assisted + '　答错 ' + s.wrong + '　共 ' + s.done + ' 题</div>' +
-      '<div class="st-report-formula">' + esc(report.scoreFormula) + '</div>' +
-      '<div class="st-report-dims">' +
-        dim('独立掌握率', d.independentRate, '首答正确、无提示、无重试', 'is-good') +
-        dim('提示后改对率', d.assistedRate, '提示后重新选择正确', 'is-warn') +
-        dim('答错率', d.wrongRate, '提示后仍未答对', 'is-bad') +
-      '</div>' +
-      '<div class="st-report-section-title">知识点评价</div>' +
-      '<div class="st-report-kps">' + (kpRows || '<div class="st-tip is-muted">本轮还没有知识点记录。</div>') + '</div>' +
-      (wrongItems
-        ? '<div class="st-report-section-title">错题明细</div>' +
-          '<div class="st-sum-list">' + wrongItems + '</div>'
-        : '') +
-      '<div class="st-report-pending">熟练度：平均作答 ' + Math.round(d.averageMs / 100) / 10 + ' 秒，待接入题目预计时长　·　保持度：待验证　·　迁移度：待验证</div>' +
-      '<div class="st-report-caveat">' + report.caveats.map(esc).join('　') + '</div>' +
+    const doneText = '这一轮做完了，共 ' + s.done + ' 题，答对 ' + s.right + ' 题。';
+    return '<div class="st-page"><div class="st-card st-sum">' +
+      '<h1 class="st-title">' + (finished ? '本次练习结束' : '这一轮完成') + '</h1>' +
+      '<div class="st-sum-label">' + esc(doneText) + '</div>' +
+      '<div class="st-tip is-muted">每道题下面都写了考什么、错在哪，可以回去看。</div>' +
       '<div class="st-actions">' + action + '</div>' +
     '</div></div>';
   }
@@ -2813,9 +2943,17 @@
     runModelRound(false);
   }
 
-  // 两轮跑完后再练一组：题目重来，错题与轨迹保留。组数有上限，跑完就是终态。
+  // 两轮跑完后再练一组：题目重来，错题与轨迹保留。错题还有没掌握的才允许续，最多四组。
   function stRegroup() {
-    if (state.stGroup >= MAX_GROUPS) return;
+    if (state.stGroup >= MAX_GROUPS_HARD) {
+      toast('已经练满 ' + MAX_GROUPS_HARD + ' 组了，先歇一会儿');
+      return;
+    }
+    if (state.stGroup >= MAX_GROUPS && stWeakCount() === 0) {
+      // 没有可练的了就不硬凑一组：再出也只会是「已经会了的题」，浪费时间。
+      toast('错题都掌握了，不用再练一组');
+      return;
+    }
     if (!SHT.llm.isReady()) { openModel(); toast('先在右上角「设置」里填好密钥'); return; }
     state.stGroup += 1;
     state.round = 1;
@@ -3357,32 +3495,45 @@
     const learnerModel = SHT.learner.build(state.events || []);
     const retiredKps = Object.keys((state.progress && state.progress.points) || {})
       .filter(function (k) { return state.progress.points[k].retired; });
+    /*
+     * 难度上限的优先级：权重累积够多（≥5 次作答）就以它为准，否则用本轮 learner 的判断。
+     * 理由：前几题样本太少，按权重调档等于让一道题决定整轮难度；
+     * 攒够证据以后，跨轮权重比「本轮重算的掌握概率」更稳，也更贴近「答对升、答错降」的直觉。
+     *
+     * 注意这段必须在 decide 之前算。以前是先 decide（按掌握概率把每条题的层次定死）、
+     * 再改 capInfo.cap —— 只改了一个数字，题目层次一条都没动，等于权重没生效。
+     */
+    const weightsView = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
+    state.weightsView = weightsView;
+    // 表现 + 状态一起定档：累了或连错就降一档，学生的状态优先于算法指标
+    const plan = planCap(learnerModel, weightsView);
     const decisionSet = SHT.learner.decide(learnerModel, {
       unit: SHT.curriculum,
       layer: state.learningLayer,
       kps: unitKps(),
       count: countFor(state.round),
-      retired: retiredKps
+      retired: retiredKps,
+      // 权重直接定这一轮的难度档，也决定「同层里先出哪道最弱的」
+      weights: state.weights || SHT.weights.blank(),
+      capOverride: plan.cap,
+      capSource: plan.source
     });
     state.decisions = decisionSet.items;
-    /*
-     * 难度上限的优先级：权重累积够多（≥5 次作答）就以它为准，否则用本轮 learner 的判断。
-     * 理由：前几题样本太少，按权重调档等于让一道题决定整轮难度；
-     * 攒够证据以后，跨轮权重比「本轮重算的掌握概率」更稳，也更贴近「答对升、答错降」的直觉。
-     */
-    const weightsView = SHT.weights.difficultyOf(state.weights || SHT.weights.blank());
-    state.weightsView = weightsView;
-    const useWeights = weightsView.answered >= 5 && SHT.LEVELS.indexOf(weightsView.cap) >= 0;
     const capInfo = Object.assign({}, decisionSet.levelCap, {
-      learnerCap: decisionSet.levelCap && decisionSet.levelCap.cap,
+      learnerCap: plan.learnerCapInfo.cap,
       weightsCap: weightsView.cap,
       weightsAnswered: weightsView.answered,
       weight: weightsView.weight,
-      source: useWeights ? 'weights' : 'learner',
-      reason: useWeights ? weightsView.reason : (decisionSet.levelCap && decisionSet.levelCap.reason) || ''
+      fatigue: plan.fatigue,
+      capByPerf: plan.capByPerf,
+      source: plan.source,
+      reason: plan.source === 'fatigue'
+        ? '看状态降一档：' + plan.fatigue.reason + '；原本按表现算的是「' + plan.capByPerf + '」'
+        : (plan.useWeights ? weightsView.reason : (plan.learnerCapInfo.reason || ''))
     });
-    if (useWeights) capInfo.cap = weightsView.cap;
     state.levelCap = capInfo;
+    // 留痕：这次出题的难度档、从哪来、凭什么。学生端不显示，导出可查
+    noteLevelTrace(capInfo, weightsView, plan, decisionSet);
     state.decisionReason = decisionSet.reason;
     state.learnerModel = SHT.learner.digest(learnerModel, 8);
     // 课程角色仍读这份 brief；决策作为硬约束挂在旁边，生成时被代码覆盖
@@ -3488,10 +3639,11 @@
         state.activeNo = 1;
         state.agent = 'execute';
         state.stFail = '';
-        const left = res.plans.length - res.questions.length;
+        const short = Math.max(0, Number(res.shortfall || 0));
         toast('出了 ' + res.questions.length + ' 题' +
           (res.benchUsed ? '（替补顶上 ' + res.benchUsed + ' 次）' : '') +
-          (left ? '，' + left + ' 个格子没成，原因在失败记录里' : ''));
+          // 题量是硬约束：少了就明说少于设定，不让人以为「本来就说好这么多」
+          (short ? '，比设定的少 ' + short + ' 道（连续几次没出成，可以再点一次）' : ''));
       } else if (res.ok && planOnly) {
         round.plans = (res.plans || []).map(function (p) {
           return {
@@ -3831,6 +3983,8 @@
     SHT.devAudit.save = save;
     SHT.devAudit.toast = toast;
     SHT.devAudit.collectTraces = collectTraces;
+    // 定档规则暴露给测试与审计台：同一套判断，别在别处再抄一份
+    SHT.devAudit.planCap = planCap;
   }
 
   bind();
