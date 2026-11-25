@@ -23,13 +23,6 @@
     });
   }
 
-  function bookOptions() {
-    return SHT.BOOKS.list().map(function (b) {
-      return '<option value="' + esc(b.id) + '"' + (b.id === state.bookId ? ' selected' : '') + '>' +
-        esc(b.shortName) + '</option>';
-    }).join('');
-  }
-
   function unitOptions() {
     const b = SHT.BOOKS.get(state.bookId) || SHT.BOOKS.current();
     return (b.units || []).map(function (u) {
@@ -38,13 +31,29 @@
     }).join('');
   }
 
+  function profileHtml() {
+    const b = SHT.BOOKS.get(state.bookId) || SHT.BOOKS.current();
+    const u = SHT.curriculum || b.getUnit(state.unitId) || b.units[0];
+    return '<div class="profile-card">' +
+      '<div class="profile-head"><span class="profile-badge">已固定</span>学生画像</div>' +
+      '<p class="profile-note">画像由课程数据生成，出题时自动带入，不用填写。</p>' +
+      '<dl class="profile-list">' +
+        '<div><dt>年级</dt><dd>' + esc(b.meta.grade || '四年级') + '</dd></div>' +
+        '<div><dt>教材</dt><dd>' + esc(b.meta.shortName) + '</dd></div>' +
+        '<div><dt>当前单元</dt><dd>' + esc(u.id + ' ' + u.title + '（' + u.titleZh + '）') + '</dd></div>' +
+        '<div><dt>已学词汇</dt><dd>' + (u.words || []).length + ' 个</dd></div>' +
+        '<div><dt>已学句型</dt><dd>' + (u.sentencePatterns || []).length + ' 条</dd></div>' +
+      '</dl>' +
+      '</div>';
+  }
+
   function formHtml() {
-    return '<section class="setup">' +
+    return '<section class="setup entry">' +
       '<h1>三角色出题</h1>' +
-      '<p class="sub">指定方案定考点，执行写成题，反馈打分；不合格就换下一轮，每轮都留着。</p>' +
+      '<p class="sub">指定方案定考点，执行写成题，反馈打分；不合格换下一轮，每轮都留着。</p>' +
+      profileHtml() +
       '<div class="setup-grid">' +
-        '<label>教材<select data-f="book">' + bookOptions() + '</select></label>' +
-        '<label>单元<select data-f="unit">' + unitOptions() + '</select></label>' +
+        '<label>出题单元<select data-f="unit">' + unitOptions() + '</select></label>' +
         '<label>每轮题数<input type="number" min="1" max="12" data-f="count" value="' + state.count + '"></label>' +
       '</div>' +
       (state.error ? '<p class="error">' + esc(state.error) + '</p>' : '') +
@@ -178,6 +187,8 @@
   function render() {
     const el = $('root');
     if (!el) return;
+    const stage = root.document.querySelector('.stage');
+    if (stage) stage.classList.toggle('is-entry', !state.rounds.length);
     el.innerHTML = state.running ? runningHtml() : (state.rounds.length ? resultHtml() : formHtml());
   }
 
@@ -258,13 +269,7 @@
     if (!el) return;
     el.addEventListener('change', function (e) {
       const f = e.target.dataset && e.target.dataset.f;
-      if (f === 'book') {
-        state.bookId = e.target.value;
-        const b = SHT.BOOKS.get(state.bookId);
-        state.unitId = b.units[0].id;
-        SHT.setBook(state.bookId, state.unitId);
-        render();
-      } else if (f === 'unit') {
+      if (f === 'unit') {
         state.unitId = e.target.value;
         SHT.setUnit(state.unitId);
         render();
