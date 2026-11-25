@@ -1,17 +1,22 @@
 :root {
-  /* 语义色：角色名对齐通用设计系统，色值保持本项目绿色主题 */
-  --background: #f4f7f5;
+  /*
+   * 语义色：来自 UI/UX Pro Max 的绿色系配色（E-commerce / Hyperlocal），
+   * 主色在推荐值 #059669 基础上升一档到 #047857——原值对白底只有 3.77:1，
+   * 达不到正文 4.5:1；现在 5.48:1，沉稳、不刺眼，仍属翡翠绿同系。
+   */
+  --background: #f6faf8;      /* 极浅薄荷底，比原来的灰绿更透气 */
   --surface: #ffffff;
-  --foreground: #1b2620;
-  --muted-foreground: #5c6f63;
-  --border: #dfe8e2;
-  --primary: #167c4b;
-  --primary-soft: #e7f4ec;
+  --foreground: #064e3b;      /* 深墨绿，对浅底 9.2:1，长时间看不发虚 */
+  --muted-foreground: #52665c; /* 次文字约 7:1，不再是发灰的浅字 */
+  --border: #d9e8df;
+  --primary: #047857;
+  --primary-hover: #036248;
+  --primary-soft: #d1fae5;    /* 选中态浅底，和主色一眼能看出同系 */
   --warning: #8a5709;
   --warning-soft: #fff8ea;
-  --destructive: #b23b3b;
-  --destructive-soft: #fbecec;
-  --ring: #167c4b;
+  --destructive: #b42318;
+  --destructive-soft: #fef3f2;
+  --ring: #047857;
   --radius: 10px;
   /* 动效时长：设计系统建议 150–300ms；这里只用 200ms */
   --motion: 200ms;
@@ -69,7 +74,7 @@ label input, label select {
 }
 .btn:hover { border-color: var(--primary); }
 .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
-.btn-primary:hover { background: #10653c; border-color: #10653c; }
+.btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .error { color: var(--destructive); background: var(--destructive-soft); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 14px; }
@@ -94,12 +99,12 @@ label input, label select {
   background: transparent; border: 1px solid transparent; border-radius: 8px;
   padding: 12px 12px 11px; margin-bottom: 6px; color: var(--foreground); font: inherit;
 }
-.round-item:hover { background: #f2f7f4; }
+.round-item:hover { background: var(--primary-soft); }
 .round-item.is-active { border-color: var(--primary); background: var(--primary-soft); }
 .round-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .round-no { font-weight: 600; font-size: 14px; }
 .round-status { font-size: 11px; padding: 2px 8px; border-radius: 12px; white-space: nowrap; }
-.round-status.is-pass { color: var(--primary); background: #d6ecdf; }
+.round-status.is-pass { color: var(--primary); background: var(--primary-soft); }
 .round-status.is-fail { color: var(--destructive); background: var(--destructive-soft); }
 .round-score { display: block; font-size: 25px; font-weight: 700; line-height: 1.3; margin-top: 6px; }
 .round-score small { font-size: 12px; font-weight: 400; }
@@ -118,8 +123,8 @@ label input, label select {
 .detail-status.is-pass { color: var(--primary); background: var(--primary-soft); }
 .detail-status.is-fail { color: var(--destructive); background: var(--destructive-soft); }
 
-.round-feedback { background: #fff8ea; border: 1px solid #f0dfbe; border-radius: var(--radius);
-  padding: 12px 18px; margin-bottom: 14px; font-size: 13px; color: #6b5220; }
+.round-feedback { background: var(--warning-soft); border: 1px solid #ecd9ae; border-radius: var(--radius);
+  padding: 12px 18px; margin-bottom: 14px; font-size: 13px; color: var(--warning); }
 .round-feedback b { display: block; margin-bottom: 4px; }
 .round-feedback p { margin: 2px 0; }
 

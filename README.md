@@ -76,7 +76,9 @@ python .codebuddy/skills/ui-ux-pro-max/scripts/search.py "education assessment t
 python .codebuddy/skills/ui-ux-pro-max/scripts/search.py "focus visible keyboard navigation" --domain ux
 ```
 
-当前界面已经应用了它给的这些规则：极简瑞士风格（网格 / 留白 / 高对比）、语义化颜色 token（保留本项目绿色主题）、每个控件有可见键盘焦点、徽章不换行截断且含义不只靠颜色、动效统一 200ms 并尊重系统的「减少动态效果」。它推荐的落地页 Hero+CTA 模式不适合工具界面，没有采用。
+当前界面已经应用了它给的这些规则：极简瑞士风格（网格 / 留白 / 高对比）、语义化颜色 token、每个控件有可见键盘焦点、徽章不换行截断且含义不只靠颜色、动效统一 200ms 并尊重系统的「减少动态效果」。它推荐的落地页 Hero+CTA 模式不适合工具界面，没有采用。
+
+**配色**取自技能数据里的绿色系（E-commerce / Hyperlocal 那套），主色在推荐的 `#059669` 基础上升一档到 `#047857`——原值对白底只有 3.77:1，达不到正文 4.5:1；调整后 5.48:1，沉稳不刺眼。正文 `#064e3b`（9.2:1）、次文字 `#52665c`（6.15:1）、背景 `#f6faf8` 极浅薄荷、选中态 `#d1fae5`、未通过 `#b42318`（6.57:1）。全部组合都过 4.5:1，查了 `ux-guidelines` 里 Contrast Readability / Color Contrast 两条规则。技能查出来的靛蓝、紫色配色没有采用——不符合本项目的绿色主题。
 
 ## 回退
 
