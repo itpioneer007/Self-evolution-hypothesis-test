@@ -66,6 +66,22 @@ async function main() {
   assert('反馈会拦「题干多添地点」这类错',
     /中英对等/.test(sysVer) && /我们学校/.test(sysVer) && /in our school/.test(sysVer));
   assert('执行要求每个选项都写说明', /optionNotes 与 options 一一对应/.test(sysGen));
+  assert('反馈提示词含查重与新意检查、只换名词判高度重复扣20分',
+    /查重与新意检查/.test(sysVer) && /高度重复/.test(sysVer) &&
+    /额外扣 20 分/.test(sysVer) && /必须改变句式结构或情境/.test(sysVer));
+  const q0 = { prompt: 'The monkey eats a banana.', options: ['monkey', 'lion'], answer: 'monkey' };
+  const q1 = { prompt: 'The elephant eats a banana.', options: ['elephant', 'lion'], answer: 'elephant' };
+  const qSame = { prompt: 'the monkey eats a banana', options: ['lion', 'monkey'], answer: 'monkey' };
+  assert('查重指纹：只换主语不算完全重复（交给反馈角色扣分）',
+    SHT.pipeline.isRepeat(q0, [q1]) === false);
+  assert('查重指纹：一模一样的题（忽略标点大小写选项序）判重复',
+    SHT.pipeline.isRepeat(q0, [qSame]) === true);
+  const verSeen = SHT.ROLES.verify.user({
+    unit: u, bookName: '测试教材', plan: {}, question: q1,
+    seen: ['题干：The monkey eats a banana.；选项：monkey / lion；答案：monkey']
+  });
+  assert('反馈输入里带上已出过的题目列表',
+    /已出过的题目列表/.test(verSeen) && /The monkey eats a banana/.test(verSeen));
 
   const planUser = SHT.ROLES.plan.user({ unit: u, bookName: '测试教材', count: 5 });
   assert('方案收到的提示里写明要定 5 个点', /请指定 5 个考点/.test(planUser));
@@ -156,6 +172,13 @@ async function main() {
       }));
     assert('第二轮方案换了，题目也跟着换',
       calls.some(function (c) { return c.role === 'generate' && /第2轮考点/.test(c.user); }));
+    assert('第二轮三个角色都能看到第一轮出过的题目（查重有输入）',
+      ['plan', 'generate', 'verify'].every(function (role) {
+        return calls.some(function (c) {
+          return c.role === role && Array.isArray(c.seen) && c.seen.length > 0 &&
+            /第一轮/.test(c.seen.join(' '));
+        });
+      }));
     assert('评分明细留在题目快照里',
       r.rounds[0].questions[0].scoresDetail &&
       r.rounds[0].questions[0].scoresDetail.interest_context.score === 3);
@@ -170,6 +193,44 @@ async function main() {
     assert('出题流程不抛异常', false, e && e.stack ? e.stack : String(e));
   } finally {
     SHT.llm.call = originalCall;
+  }
+
+  console.log('--- 查重兜底：模型误放行相同题也要挡住 ---');
+  const dupOriginal = SHT.llm.call;
+  let dupVerify = 0;
+  SHT.llm.call = async function (o) {
+    if (o.role === 'plan') {
+      return { ok: true, json: { plans: [{ kp: 'classroom 的词义', ability: 'vocab', level: '认', angle: '中英匹配' }] } };
+    }
+    if (o.role === 'generate') {
+      // 每轮都出同一道题，故意制造重复
+      return { ok: true, json: {
+        prompt: '选出「教室」的英文。', options: ['classroom', 'playground', 'library'],
+        answer: 'classroom', analysis: 'classroom 是教室。',
+        optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。']
+      } };
+    }
+    if (o.role === 'verify') {
+      dupVerify += 1;
+      // 第一轮故意不通过以进入第二轮；第二轮模型误判为通过
+      const pass = dupVerify > 1;
+      return { ok: true, json: { passed: pass, total_score: pass ? 95 : 70,
+        feedback_to_thinker: pass ? '' : '再想想', scores_detail: {} } };
+    }
+    return { ok: false, error: { message: '未知角色' } };
+  };
+  try {
+    const r = await SHT.pipeline.runRound({ unit: u, bookName: '测试教材', count: 1 });
+    const second = r.rounds[1] && r.rounds[1].questions[0];
+    assert('第二轮相同题被兜底判为未通过', !!second && second.passed === false);
+    assert('兜底扣分并写清改句式或情境',
+      !!second && second.score === 75 && /必须改变句式结构或情境/.test(second.feedback));
+    assert('兜底不篡改首轮模型原始打分',
+      r.rounds[0].questions[0].passed === false && r.rounds[0].questions[0].score === 70);
+  } catch (e) {
+    assert('查重兜底流程不抛异常', false, e && e.stack ? e.stack : String(e));
+  } finally {
+    SHT.llm.call = dupOriginal;
   }
 
 }

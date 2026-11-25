@@ -75,6 +75,11 @@
           lines.push('请据此修订这一条方案，让它更具体、更好执行，不要照旧，也不要写题目。');
           lines.push('');
         }
+        if (ctx.seen && ctx.seen.length) {
+          lines.push('前面几轮已经考过这些题，考点、句式、情境都要换新的，不许只换名词重出一遍：');
+          ctx.seen.slice(-12).forEach(function (s, i) { lines.push((i + 1) + '. ' + s); });
+          lines.push('');
+        }
         lines.push('请指定 ' + ctx.count + ' 个考点。只输出 JSON。');
         return lines.join('\n');
       }
@@ -126,6 +131,11 @@
           });
           lines.push('');
         }
+        if (ctx.seen && ctx.seen.length) {
+          lines.push('前面轮次已经出过这些题。不许只换主语或名词重出一遍，要改句式结构或情境：');
+          ctx.seen.slice(-12).forEach(function (s, i) { lines.push((i + 1) + '. ' + s); });
+          lines.push('');
+        }
         lines.push('可用词表：' + wordsText(u));
         lines.push('');
         lines.push('可用功能词：' + funcText(u));
@@ -164,6 +174,13 @@
           '8. 格式规范 format_compliance（7分）：是否严格输出JSON？三个选项互不相同、答案与某一项完全一致、三项 optionNotes 都填了、解析不超过25个字。',
           '9. 中英对等 prompt_answer_alignment（10分）：中文题干必须是英文答案的逐点翻译。答案里有几个人、哪个地点、哪些东西，题干就写几样；答案里没有的一个字不许添。反例：答案 There is a library. 题干写「我们学校有一个图书馆」，多了「我们学校」而答案没有 in our school——此项0分，总分压到85分以下。',
           '10. 方案意图一致性 intent_consistency（10分）：核心检查。将执行题目与出题方案对比：方案要求 monkey，题目是不是变成了别的？方案要求考三单，题目是不是变成了现在进行时？偏离方案直接扣光此项。',
+          '',
+          '# 查重与新意检查（先于十个维度）',
+          '你会同时收到一份【已出过的题目列表】。先把当前题目和列表逐条对比：',
+          '1. 如果只是把主语或名词换掉，句式和情境都没变（例：The monkey eats 变成 The elephant eats），判为「高度重复」：额外扣 20 分，passed 必须为 false。',
+          '2. 题干结构、选项排列、解题思路和列表里某一题一样，哪怕换了词，也算高度重复，同样额外扣 20 分、passed=false。',
+          '3. 判为高度重复时，feedback_to_thinker 必须写明「必须改变句式结构或情境」，并指出哪些句式或情境已经用过、该换成什么方向。',
+          '4. 没有重复才按下面十个维度正常打分；重复题即使其他维度都满分，也一律不通过。',
           '',
           '# 输出要求',
           '你必须且只能输出纯 JSON，不要包含任何 markdown 语法（如 ```json），不要有任何解释性文字：',
@@ -214,6 +231,11 @@
           '- 能力：' + (p.ability || ''),
           '- 层次：' + (p.level || ''),
           '- 切入角度：' + (p.angle || ''),
+          '',
+          '# 已出过的题目列表（查重用）',
+          (ctx.seen && ctx.seen.length)
+            ? ctx.seen.map(function (s, i) { return (i + 1) + '. ' + s; }).join('\n')
+            : '暂无，这是第一题。',
           '',
           '# 执行题目',
           '- 题干：' + JSON.stringify(q.prompt || ''),

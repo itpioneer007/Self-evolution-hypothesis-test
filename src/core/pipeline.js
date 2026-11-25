@@ -11,12 +11,32 @@
   const MAX_ROUNDS = 4;
   const PASS_LINE = 85;
 
+  /* 查重指纹：题干+选项+答案 归一化后拼串，只拦「整套照搬」，不碰正常同考点不同题。 */
+  function normalize(s) {
+    return String(s == null ? '' : s).toLowerCase()
+      .replace(/[\s\u3000]/g, '')
+      .replace(/[，。！？、；：""''（）()《》\[\]{}.,!?;:'"\/\\-]/g, '');
+  }
+  function fingerprint(q) {
+    const opts = (Array.isArray(q.options) ? q.options : []).map(normalize).sort().join('|');
+    return normalize(q.prompt) + '###' + opts + '###' + normalize(q.answer);
+  }
+  function isRepeat(q, seen) {
+    const fp = fingerprint(q);
+    return (seen || []).some(function (s) { return fingerprint(s) === fp; });
+  }
+  function seenLine(q) {
+    return '题干：' + (q.prompt || '') + '；选项：' + (q.options || []).join(' / ') +
+      '；答案：' + (q.answer || '');
+  }
+
   function call(role, ctx) {
     const r = SHT.ROLES[role];
     return SHT.llm.call({
       role: role,
       system: r.system(),
       user: r.user(ctx),
+      seen: ctx.seen || [],
       temperature: 0.6,
       maxTokens: role === 'generate' ? 1200 : 1600
     });
@@ -87,12 +107,16 @@
     const errors = [];
     const bookMeta = (root.SHT && root.SHT.BOOKS && SHT.BOOKS.current().meta) || {};
     let planFeedback = [];
+    const seen = [];
 
     for (let roundNo = 1; roundNo <= MAX_ROUNDS; roundNo += 1) {
+      // 上一轮及更早的题目，用来在本轮出完之后做确定性查重兜底
+      const beforeRound = seen.slice();
       onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：正在指定方案', round: roundNo });
 
       const planRes = await call('plan', {
-        unit: unit, bookName: bookName, count: count, feedback: planFeedback.slice()
+        unit: unit, bookName: bookName, count: count,
+        feedback: planFeedback.slice(), seen: seen.map(seenLine)
       });
       if (!planRes.ok) {
         errors.push({ round: roundNo, role: 'plan', message: planRes.error ? planRes.error.message : '方案没返回' });
@@ -108,7 +132,9 @@
         const plan = plans[i];
         const no = i + 1;
         onEvent({ role: 'generate', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在写', round: roundNo, no: no });
-        const gen = await call('generate', { unit: unit, bookName: bookName, plan: plan });
+        const gen = await call('generate', {
+          unit: unit, bookName: bookName, plan: plan, seen: seen.map(seenLine)
+        });
         if (!gen.ok) {
           errors.push({ round: roundNo, no: no, role: 'generate',
             message: gen.error ? gen.error.message : '没出题' });
@@ -124,7 +150,8 @@
 
         onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在打分', round: roundNo, no: no });
         const ver = await call('verify', {
-          unit: unit, bookName: bookName, bookMeta: bookMeta, plan: plan, question: q
+          unit: unit, bookName: bookName, bookMeta: bookMeta, plan: plan,
+          question: q, seen: seen.map(seenLine)
         });
         if (!ver.ok) {
           q.passed = null;
@@ -138,8 +165,15 @@
           q.passed = v.passed === true;
           q.scoresDetail = v.scores_detail || null;
           q.feedback = String(v.feedback_to_thinker || '');
-          if (!q.passed && q.feedback) feedbacks.push(q.feedback);
         }
+        // 确定性兜底：整题和之前某轮一模一样，模型漏判也直接打回
+        if (isRepeat(q, beforeRound)) {
+          q.passed = false;
+          q.score = q.score == null ? null : Math.max(0, q.score - 20);
+          q.feedback = '这道题和之前出过的题一样，必须改变句式结构或情境。';
+        }
+        if (!q.passed && q.feedback) feedbacks.push(q.feedback);
+        if (q.prompt) seen.push(q);
         questions.push(q);
         onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：' +
           (q.passed ? '通过' : '未通过'), round: roundNo, no: no, question: q });
@@ -171,6 +205,7 @@
   SHT.pipeline = {
     runRound: runRound,
     fillPlans: fillPlans,
+    isRepeat: isRepeat,
     MAX_ROUNDS: MAX_ROUNDS,
     PASS_LINE: PASS_LINE
   };
