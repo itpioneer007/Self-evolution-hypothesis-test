@@ -42,14 +42,29 @@ async function main() {
     !/掌握概率|错题本|学生画像/.test(sysGen));
   const verUser = SHT.ROLES.verify.user({
     unit: u, bookName: '测试教材',
+    plan: { kp: 'classroom 的词义', ability: 'vocab', level: '认', angle: '中英匹配' },
     question: { prompt: '选出「教室」的英文。', options: ['classroom'], answer: 'classroom',
       analysis: '', optionNotes: [] }
   });
-  assert('反馈看不到出题意图（收到的题目里没有考点、层次、切入角度）',
-    !/考点|层次|切入角度|plan/.test(verUser));
+  assert('反馈能看到学生画像、出题方案、执行题目三项输入',
+    /学生画像/.test(verUser) && /出题方案/.test(verUser) && /执行题目/.test(verUser));
+  assert('反馈拿到的方案里有考点、层次、切入角度',
+    /classroom 的词义/.test(verUser) && /中英匹配/.test(verUser));
+  const dims = (sysVer.match(/（(\d+)分）/g) || []).map(function (x) { return Number(x.replace(/\D/g, '')); });
+  assert('十个维度满分合计 100 分', dims.length === 10 && dims.reduce(function (a, b) { return a + b; }, 0) === 100,
+    dims.join('+'));
+  assert('85 分及格线、低于 85 判 false 写进提示词',
+    /及格线85分/.test(sysVer) && /低于85分时 passed 必须为 false/.test(sysVer));
+  assert('严重跑偏的严厉警告写进提示词',
+    /请策划重新审视方案，是不是你的方案描述不够具体/.test(sysVer));
+  assert('答案不唯一、中英不对等会压到 85 分以下',
+    /答案不唯一、中英不对等/.test(sysVer));
+  assert('输出模板里的 JSON 结构合法（scores_detail 后有逗号）',
+    /\},\n"feedback_to_thinker"/.test(sysVer));
   assert('执行要求中文题干与英文答案逐点对等',
     /逐点翻译/.test(sysGen) && /一个字不许添/.test(sysGen));
-  assert('反馈会拦「题干多添地点」这类错', /中英对等/.test(sysVer) && /多添/.test(sysVer));
+  assert('反馈会拦「题干多添地点」这类错',
+    /中英对等/.test(sysVer) && /我们学校/.test(sysVer) && /in our school/.test(sysVer));
   assert('执行要求每个选项都写说明', /optionNotes 与 options 一一对应/.test(sysGen));
 
   const planUser = SHT.ROLES.plan.user({ unit: u, bookName: '测试教材', count: 5 });
@@ -76,6 +91,12 @@ async function main() {
   SHT.llm.call = async function (o) {
     calls.push(o);
     if (o.role === 'plan') {
+      // 收到反馈时返回修订后的方案，验证「建议回流方案」这条链路
+      if (/反馈角色对上一条方案的建议/.test(o.user)) {
+        return { ok: true, json: { plans: [
+          { kp: 'classroom 的词义（写清教室场景）', ability: 'vocab', level: '认', angle: '中英匹配' }
+        ] } };
+      }
       // 故意只给 2 条，验证代码补到 5 条
       return { ok: true, json: { plans: [
         { kp: 'classroom 的词义', ability: 'vocab', level: '认', angle: '中英匹配' },
@@ -90,15 +111,16 @@ async function main() {
         analysis: 'classroom 是教室。',
         optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。']
       };
-      if (/反馈角色退回/.test(o.user)) q.analysis = '已按反馈改过：classroom 是教室。';
+      if (/写清教室场景/.test(o.user)) q.analysis = '已按修订方案重出：classroom 是教室。';
       return { ok: true, json: q };
     }
     if (o.role === 'verify') {
-      // 只有第一次检查退回，其余通过
+      // 只有第一次检查不通过，其余通过；打分结果按新模板返回
       const first = calls.filter(function (c) { return c.role === 'verify'; }).length === 1;
       return { ok: true, json: first
-        ? { verdict: 'fail', reason: '题干多了答案没有的信息' }
-        : { verdict: 'pass' } };
+        ? { passed: false, total_score: 72, feedback_to_thinker: '方案的情境描述不够具体，请写清目标词与场景',
+            scores_detail: { intent_consistency: { score: 4, reason: '方案偏空' } } }
+        : { passed: true, total_score: 92, feedback_to_thinker: '', scores_detail: {} } };
     }
     return { ok: false, error: { message: '未知角色' } };
   };
@@ -118,11 +140,20 @@ async function main() {
       }));
     assert('反馈退回的那题重出了至少两次',
       r.questions[0].reviews.length >= 2, JSON.stringify(r.questions[0].reviews));
-    assert('退回原因传给了执行角色',
+    assert('反馈建议回给了方案角色',
       calls.some(function (c) {
-        return c.role === 'generate' && /题干多了答案没有的信息/.test(c.user);
+        return c.role === 'plan' && /方案的情境描述不够具体/.test(c.user);
       }));
-    assert('重出后的解析确实改了', /已按反馈改过/.test(r.questions[0].analysis));
+    assert('方案按建议修订后，执行照新方案重出',
+      calls.some(function (c) {
+        return c.role === 'generate' && /写清教室场景/.test(c.user);
+      }));
+    assert('重出后的解析确实改了', /已按修订方案重出/.test(r.questions[0].analysis));
+    assert('打分结果留在题目上',
+      r.questions[0].score === 92 && r.questions[0].reviews[0].score === 72,
+      JSON.stringify(r.questions[0].reviews));
+    assert('未通过的那一版留着给方案的建议',
+      /情境描述不够具体/.test(r.questions[0].reviews[0].feedback));
     assert('5 题最终都通过反馈', r.questions.every(function (q) { return q.passed === true; }));
     assert('三个角色都被调用过',
       ['plan', 'generate', 'verify'].every(function (role) {

@@ -69,9 +69,10 @@
   }
 
   function statusOf(q) {
-    if (q.passed === true) return '<span class="tag tag-ok">通过</span>';
-    if (q.passed === false) return '<span class="tag tag-fail">反馈未通过</span>';
-    return '<span class="tag tag-unknown">未收到反馈</span>';
+    const score = q.score == null ? '' : ' ' + q.score + ' 分';
+    if (q.passed === true) return '<span class="tag tag-ok">通过' + score + '</span>';
+    if (q.passed === false) return '<span class="tag tag-fail">未通过' + score + '</span>';
+    return '<span class="tag tag-unknown">没收到打分</span>';
   }
 
   function questionHtml(q) {
@@ -86,9 +87,10 @@
         '</div>';
     }).join('');
     const reviews = (q.reviews || []).map(function (r) {
-      return '<div class="review">第 ' + r.attempt + ' 版：' +
-        (r.verdict === 'pass' ? '通过' : r.verdict === 'fail' ? '退回——' + esc(r.reason) : esc(r.reason)) +
-        '</div>';
+      const result = r.passed === true ? '通过' : r.passed === false ? '未通过' : '没收到打分';
+      return '<div class="review">第 ' + r.attempt + ' 版：' + result +
+        (r.score == null ? '' : '（' + r.score + ' 分）') +
+        (r.feedback ? '——给方案的建议：' + esc(r.feedback) : '') + '</div>';
     }).join('');
     return '<article class="card question">' +
       '<div class="q-head"><span class="q-no">第 ' + q.no + ' 题</span>' + statusOf(q) + '</div>' +
