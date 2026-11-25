@@ -1,6 +1,6 @@
 /*
  * 三角色出题的最小回归：node tools/smoke-test.js
- * 只盯这件事：方案定点 → 执行出题 → 反馈检查，不行就退回重出，最后给出题目列表。
+ * 只盯这件事：方案定点 → 执行出题 → 反馈打分，不合格就换下一轮，每轮都留完整题目。
  */
 'use strict';
 
@@ -85,41 +85,41 @@ async function main() {
   assert('补的考点互不重复',
     new Set(filled.map(function (p) { return p.kp; })).size === filled.length);
 
-  console.log('--- 三角色出题全流程（桩模型） ---');
+  console.log('--- 多轮出题：每轮都留完整题目快照 ---');
   const calls = [];
   const originalCall = SHT.llm.call;
+  let verifyCount = 0;
   SHT.llm.call = async function (o) {
     calls.push(o);
     if (o.role === 'plan') {
-      // 收到反馈时返回修订后的方案，验证「建议回流方案」这条链路
+      // 第二轮收到第一轮的反馈，返回修订过的方案
       if (/反馈角色对上一条方案的建议/.test(o.user)) {
-        return { ok: true, json: { plans: [
-          { kp: 'classroom 的词义（写清教室场景）', ability: 'vocab', level: '认', angle: '中英匹配' }
-        ] } };
+        return { ok: true, json: { plans: Array.from({ length: 5 }, function (_, i) {
+          return { kp: '第2轮考点' + (i + 1), ability: 'vocab', level: '认', angle: '中英匹配' };
+        }) } };
       }
-      // 故意只给 2 条，验证代码补到 5 条
       return { ok: true, json: { plans: [
         { kp: 'classroom 的词义', ability: 'vocab', level: '认', angle: '中英匹配' },
         { kp: 'This is our ... 句型', ability: 'sentence', level: '用', angle: '选词填空' }
       ] } };
     }
     if (o.role === 'generate') {
-      const q = {
-        prompt: '选出「教室」的英文。',
+      const second = /第2轮考点/.test(o.user);
+      return { ok: true, json: {
+        prompt: second ? '第二轮：选出「教室」的英文。' : '第一轮：选出「教室」的英文。',
         options: ['classroom', 'playground', 'library'],
         answer: 'classroom',
-        analysis: 'classroom 是教室。',
+        analysis: second ? '修订后：classroom 是教室。' : 'classroom 是教室。',
         optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。']
-      };
-      if (/写清教室场景/.test(o.user)) q.analysis = '已按修订方案重出：classroom 是教室。';
-      return { ok: true, json: q };
+      } };
     }
     if (o.role === 'verify') {
-      // 只有第一次检查不通过，其余通过；打分结果按新模板返回
-      const first = calls.filter(function (c) { return c.role === 'verify'; }).length === 1;
-      return { ok: true, json: first
-        ? { passed: false, total_score: 72, feedback_to_thinker: '方案的情境描述不够具体，请写清目标词与场景',
-            scores_detail: { intent_consistency: { score: 4, reason: '方案偏空' } } }
+      verifyCount += 1;
+      const firstRound = verifyCount <= 5;
+      return { ok: true, json: firstRound
+        ? { passed: false, total_score: 72,
+            feedback_to_thinker: '方案的情境描述不够具体，请写清目标词与场景',
+            scores_detail: { interest_context: { score: 3, reason: '情境偏干' } } }
         : { passed: true, total_score: 92, feedback_to_thinker: '', scores_detail: {} } };
     }
     return { ok: false, error: { message: '未知角色' } };
@@ -131,45 +131,47 @@ async function main() {
       unit: u, bookName: '测试教材', count: 5,
       onEvent: function (e) { events.push(e); }
     });
-    assert('方案只给 2 条仍出满 5 题', r.questions.length === 5, String(r.questions.length));
-    assert('题目编号连续', r.questions.every(function (q, i) { return q.no === i + 1; }));
-    assert('每题带考点、题干、选项、答案、解析、逐项说明',
-      r.questions.every(function (q) {
-        return q.plan && q.prompt && q.options.length === 3 && q.answer &&
-          q.analysis && q.optionNotes.length === 3;
+    assert('产出两轮，第一轮不通过、第二轮通过',
+      r.rounds.length === 2 && r.rounds[0].passed === false && r.rounds[1].passed === true,
+      r.rounds.map(function (x) { return x.no + ':' + x.score + ':' + x.passed; }).join(' / '));
+    assert('每轮都出满 5 题', r.rounds.every(function (x) { return x.questions.length === 5; }));
+    assert('轮次编号连续', r.rounds.every(function (x, i) { return x.no === i + 1; }));
+    assert('每轮题目都是完整快照（题干/选项/答案/解析/选项说明都在）',
+      r.rounds.every(function (x) {
+        return x.questions.every(function (q) {
+          return q.plan && q.prompt && q.options.length === 3 && q.answer &&
+            q.analysis && q.optionNotes.length === 3;
+        });
       }));
-    assert('反馈退回的那题重出了至少两次',
-      r.questions[0].reviews.length >= 2, JSON.stringify(r.questions[0].reviews));
-    assert('反馈建议回给了方案角色',
+    assert('两轮题目内容确实不同（不是同一套留两份）',
+      r.rounds[0].questions[0].prompt !== r.rounds[1].questions[0].prompt &&
+      r.rounds[0].questions[0].analysis !== r.rounds[1].questions[0].analysis);
+    assert('每轮都有总分，第一轮的分数低于第二轮',
+      r.rounds[0].score === 72 && r.rounds[1].score === 92);
+    assert('第一轮的不通过原因留在这轮上',
+      /情境描述不够具体/.test(r.rounds[0].questions[0].feedback));
+    assert('第一轮的反馈给了第二轮的方案',
       calls.some(function (c) {
-        return c.role === 'plan' && /方案的情境描述不够具体/.test(c.user);
+        return c.role === 'plan' && /情境描述不够具体/.test(c.user);
       }));
-    assert('方案按建议修订后，执行照新方案重出',
-      calls.some(function (c) {
-        return c.role === 'generate' && /写清教室场景/.test(c.user);
-      }));
-    assert('重出后的解析确实改了', /已按修订方案重出/.test(r.questions[0].analysis));
-    assert('打分结果留在题目上',
-      r.questions[0].score === 92 && r.questions[0].reviews[0].score === 72,
-      JSON.stringify(r.questions[0].reviews));
-    assert('未通过的那一版留着给方案的建议',
-      /情境描述不够具体/.test(r.questions[0].reviews[0].feedback));
-    assert('5 题最终都通过反馈', r.questions.every(function (q) { return q.passed === true; }));
+    assert('第二轮方案换了，题目也跟着换',
+      calls.some(function (c) { return c.role === 'generate' && /第2轮考点/.test(c.user); }));
+    assert('评分明细留在题目快照里',
+      r.rounds[0].questions[0].scoresDetail &&
+      r.rounds[0].questions[0].scoresDetail.interest_context.score === 3);
     assert('三个角色都被调用过',
       ['plan', 'generate', 'verify'].every(function (role) {
         return calls.some(function (c) { return c.role === role; });
       }));
-    assert('流程事件里有三个角色的进度',
-      ['plan', 'generate', 'verify'].every(function (role) {
-        return events.some(function (e) { return e.role === role; });
-      }));
-    assert('商讨记录逐条可读', r.dialogue.length >= 7 && r.dialogue[0].role === 'plan',
-      String(r.dialogue.length));
+    assert('有整轮完成的事件，前端据此显示进度',
+      events.some(function (e) { return e.role === 'round' && e.roundData && e.roundData.no === 1; }));
+    assert('最多 4 轮写死，不会无限出下去', SHT.pipeline.MAX_ROUNDS === 4);
   } catch (e) {
     assert('出题流程不抛异常', false, e && e.stack ? e.stack : String(e));
   } finally {
     SHT.llm.call = originalCall;
   }
+
 }
 
 main().then(function () {

@@ -1,6 +1,6 @@
 /*
- * 界面：选教材单元 → 三个角色出题 → 题目列表。
- * 只负责展示，不判题、不记分、不留学习记录。
+ * 界面：选教材单元 → 出题 → 按轮次回看题目。
+ * 不展示角色商讨过程，只展示每一轮的题目结果。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
@@ -11,8 +11,8 @@
     count: 5,
     running: false,
     step: '',
-    log: [],
-    result: null,
+    rounds: [],
+    selected: 0,
     error: ''
   };
 
@@ -39,97 +39,146 @@
   }
 
   function formHtml() {
-    return '<section class="card intro">' +
-      '<h1>让三个角色商量着出一份题</h1>' +
-      '<p class="lead">指定方案先定考哪几个点，执行把点写成题，反馈检查题目行不行；不行就退回重出。</p>' +
-      '<div class="fields">' +
+    return '<section class="setup">' +
+      '<h1>三角色出题</h1>' +
+      '<p class="sub">指定方案定考点，执行写成题，反馈打分；不合格就换下一轮，每轮都留着。</p>' +
+      '<div class="setup-grid">' +
         '<label>教材<select data-f="book">' + bookOptions() + '</select></label>' +
         '<label>单元<select data-f="unit">' + unitOptions() + '</select></label>' +
-        '<label>题数<input type="number" min="1" max="12" data-f="count" value="' + state.count + '"></label>' +
+        '<label>每轮题数<input type="number" min="1" max="12" data-f="count" value="' + state.count + '"></label>' +
       '</div>' +
-      (state.error ? '<div class="error">' + esc(state.error) + '</div>' : '') +
-      '<div class="actions"><button type="button" class="btn btn-main" data-act="start">开始出题</button></div>' +
+      (state.error ? '<p class="error">' + esc(state.error) + '</p>' : '') +
+      '<button type="button" class="btn btn-primary" data-act="start">开始出题</button>' +
       '</section>';
-  }
-
-  function logHtml() {
-    if (!state.log.length) return '<div class="muted">三个角色刚开始商量……</div>';
-    return state.log.map(function (x) {
-      return '<div class="log-row"><span class="tag tag-' + esc(x.role) + '">' + esc(x.title) + '</span>' +
-        '<span>' + esc(x.text) + '</span></div>';
-    }).join('');
   }
 
   function runningHtml() {
-    return '<section class="card">' +
-      '<h2>正在出题</h2>' +
-      '<div class="step">' + esc(state.step) + '</div>' +
-      '<div class="log">' + logHtml() + '</div>' +
+    return '<section class="setup">' +
+      '<h1>正在出题</h1>' +
+      '<p class="sub">' + esc(state.step || '正在准备') + '</p>' +
+      '<div class="progress"><span class="progress-bar"></span></div>' +
       '</section>';
   }
 
-  function statusOf(q) {
-    const score = q.score == null ? '' : ' ' + q.score + ' 分';
-    if (q.passed === true) return '<span class="tag tag-ok">通过' + score + '</span>';
-    if (q.passed === false) return '<span class="tag tag-fail">未通过' + score + '</span>';
-    return '<span class="tag tag-unknown">没收到打分</span>';
+  function scoreColor(score) {
+    if (score == null) return 'var(--muted)';
+    if (score >= 85) return 'var(--good)';
+    if (score >= 70) return 'var(--warn)';
+    return 'var(--bad)';
+  }
+
+  function roundItem(r, i) {
+    const active = i === state.selected;
+    const score = r.score == null ? '—' : r.score;
+    return '<button type="button" class="round-item' + (active ? ' is-active' : '') + '"' +
+        ' data-act="round" data-i="' + i + '"' + (active ? ' aria-current="true"' : '') + '>' +
+        '<span class="round-head">' +
+          '<span class="round-no">第 ' + r.no + ' 轮</span>' +
+          '<span class="round-status ' + (r.passed ? 'is-pass' : 'is-fail') + '">' +
+            (r.passed ? '通过' : '未通过') + '</span>' +
+        '</span>' +
+        '<span class="round-score" style="color:' + scoreColor(r.score) + '">' + score + '<small> 分</small></span>' +
+        '<span class="round-track"><span class="round-fill" style="width:' +
+          (r.score == null ? 0 : Math.min(100, Math.max(0, r.score))) + '%;background:' +
+          scoreColor(r.score) + '"></span></span>' +
+        '<span class="round-meta">' + r.questions.length + ' 道题</span>' +
+      '</button>';
+  }
+
+  function optionsHtml(q) {
+    return (q.options || []).map(function (o, i) {
+      const right = o === q.answer;
+      return '<li class="option' + (right ? ' is-answer' : '') + '">' +
+        '<span class="option-key">' + String.fromCharCode(65 + i) + '</span>' +
+        '<span class="option-text">' + esc(o) + '</span>' +
+        (right ? '<span class="option-tag">正确答案</span>' : '') +
+        (q.optionNotes && q.optionNotes[i] ? '<span class="option-note">' + esc(q.optionNotes[i]) + '</span>' : '') +
+        '</li>';
+    }).join('');
+  }
+
+  function scoresHtml(q) {
+    if (!q.scoresDetail || typeof q.scoresDetail !== 'object') return '';
+    const names = {
+      vocab_scope: '词汇范围', grammar_match: '语法匹配', interest_context: '情境趣味',
+      distractor_quality: '干扰项', answer_uniqueness: '答案唯一', no_ambiguity: '无歧义',
+      cognitive_load: '认知负荷', format_compliance: '格式规范',
+      prompt_answer_alignment: '中英对等', intent_consistency: '方案一致'
+    };
+    const maxes = {
+      vocab_scope: 15, grammar_match: 12, interest_context: 8, distractor_quality: 12,
+      answer_uniqueness: 10, no_ambiguity: 8, cognitive_load: 8, format_compliance: 7,
+      prompt_answer_alignment: 10, intent_consistency: 10
+    };
+    const rows = Object.keys(names).filter(function (k) { return q.scoresDetail[k]; }).map(function (k) {
+      const d = q.scoresDetail[k];
+      const s = Number(d.score) || 0;
+      const m = maxes[k] || 10;
+      return '<li class="dim"><span class="dim-name">' + names[k] + '</span>' +
+        '<span class="dim-track"><span class="dim-fill" style="width:' +
+          Math.round(s / m * 100) + '%"></span></span>' +
+        '<span class="dim-value">' + s + '/' + m + '</span></li>';
+    }).join('');
+    return rows ? '<details class="dims"><summary>评分明细</summary><ul class="dim-list">' + rows + '</ul></details>' : '';
   }
 
   function questionHtml(q) {
-    const notes = (q.optionNotes || []).map(function (n, i) {
-      return '<li><b>' + String.fromCharCode(65 + i) + '</b>　' + esc(n) + '</li>';
-    }).join('');
-    const opts = (q.options || []).map(function (o, i) {
-      const right = o === q.answer;
-      return '<div class="opt' + (right ? ' is-right' : '') + '">' +
-        '<span class="opt-no">' + String.fromCharCode(65 + i) + '</span>' +
-        '<span>' + esc(o) + '</span>' + (right ? '<span class="opt-mark">正确答案</span>' : '') +
-        '</div>';
-    }).join('');
-    const reviews = (q.reviews || []).map(function (r) {
-      const result = r.passed === true ? '通过' : r.passed === false ? '未通过' : '没收到打分';
-      return '<div class="review">第 ' + r.attempt + ' 版：' + result +
-        (r.score == null ? '' : '（' + r.score + ' 分）') +
-        (r.feedback ? '——给方案的建议：' + esc(r.feedback) : '') + '</div>';
-    }).join('');
-    return '<article class="card question">' +
-      '<div class="q-head"><span class="q-no">第 ' + q.no + ' 题</span>' + statusOf(q) + '</div>' +
-      '<div class="q-kp">' + esc(q.plan && q.plan.kp || '') +
-        '　<span class="q-meta">' + esc(q.plan && q.plan.ability || '') + ' · ' +
-        esc(q.plan && q.plan.level || '') + ' · ' + esc(q.plan && q.plan.angle || '') + '</span></div>' +
-      '<h3 class="q-prompt">' + esc(q.prompt || '（执行没有给出题干）') + '</h3>' +
-      '<div class="opts">' + (opts || '<div class="muted">（没有选项）</div>') + '</div>' +
-      '<div class="q-block"><h4>这道题考的是</h4><div>' + esc(q.analysis || '（没有解析）') + '</div></div>' +
-      (notes ? '<div class="q-block"><h4>每个选项错在哪</h4><ul class="notes">' + notes + '</ul></div>' : '') +
-      (reviews ? '<div class="q-block"><h4>反馈过程</h4>' + reviews + '</div>' : '') +
+    return '<article class="question">' +
+      '<div class="q-top">' +
+        '<span class="q-no">第 ' + q.no + ' 题</span>' +
+        '<span class="q-kp">' + esc(q.plan && q.plan.kp || '') + '</span>' +
+        '<span class="q-score" style="color:' + scoreColor(q.score) + '">' +
+          (q.score == null ? '未评分' : q.score + ' 分') + '</span>' +
+      '</div>' +
+      '<p class="q-prompt">' + esc(q.prompt || '（没有题干）') + '</p>' +
+      '<ul class="options">' + (optionsHtml(q) || '<li class="muted">没有选项</li>') + '</ul>' +
+      (q.analysis ? '<div class="q-analysis"><b>这道题考的是</b><p>' + esc(q.analysis) + '</p></div>' : '') +
+      (q.feedback ? '<div class="q-feedback"><b>给方案的建议</b><p>' + esc(q.feedback) + '</p></div>' : '') +
+      scoresHtml(q) +
       '</article>';
   }
 
+  function detailHtml() {
+    const r = state.rounds[state.selected];
+    if (!r) return '<section class="detail"><p class="muted">没有可展示的题目。</p></section>';
+    const feedback = (r.feedback || []).length
+      ? '<div class="round-feedback"><b>本轮给下一轮方案的建议</b>' +
+        r.feedback.map(function (f) { return '<p>' + esc(f) + '</p>'; }).join('') + '</div>'
+      : '';
+    return '<section class="detail">' +
+      '<header class="detail-head">' +
+        '<div><h2>第 ' + r.no + ' 轮题目</h2>' +
+          '<p class="sub">' + r.questions.length + ' 道题 · ' +
+            (r.score == null ? '没有分数' : '总分 ' + r.score + ' 分') + '</p></div>' +
+        '<span class="detail-status ' + (r.passed ? 'is-pass' : 'is-fail') + '">' +
+          (r.passed ? '通过' : '未通过') + '</span>' +
+      '</header>' +
+      feedback +
+      '<div class="question-list">' + r.questions.map(questionHtml).join('') + '</div>' +
+      '</section>';
+  }
+
   function resultHtml() {
-    const r = state.result;
-    const dialogue = (r.dialogue || []).map(function (d) {
-      return '<div class="log-row"><span class="tag tag-' + esc(d.role) + '">' + esc(d.title) + '</span>' +
-        '<span>' + esc(d.text) + '</span></div>';
-    }).join('');
-    const errors = (r.errors || []).map(function (e) {
-      return '<div class="error">' + esc(e.role + '（第 ' + (e.no || '-') + ' 题）：' + e.message) + '</div>';
-    }).join('');
-    return '<section class="card result-head">' +
-        '<h1>题目列表</h1>' +
-        '<p class="lead">' + esc(state.bookId + ' · ' + state.unitId + ' · 共 ' + r.questions.length + ' 题') + '</p>' +
-        '<div class="actions"><button type="button" class="btn btn-main" data-act="again">再出一份</button>' +
-        '<button type="button" class="btn btn-ghost" data-act="back">改条件</button></div>' +
+    return '<section class="result-bar">' +
+        '<div><h1>出题结果</h1><p class="sub">点左侧任一轮，右侧显示那一轮的完整题目。</p></div>' +
+        '<div class="actions">' +
+          '<button type="button" class="btn btn-primary" data-act="again">再出一份</button>' +
+          '<button type="button" class="btn" data-act="back">改条件</button>' +
+        '</div>' +
       '</section>' +
-      (errors || '') +
-      '<details class="card dialogue"><summary>三个角色说了什么（' + (r.dialogue || []).length + ' 条）</summary>' +
-        '<div class="log">' + dialogue + '</div></details>' +
-      '<div class="questions">' + (r.questions || []).map(questionHtml).join('') + '</div>';
+      '<div class="workspace">' +
+        '<aside class="rounds">' +
+          '<h2>轮次</h2>' +
+          state.rounds.map(roundItem).join('') +
+        '</aside>' +
+        detailHtml() +
+      '</div>' + (state.error ? '<p class="error">' + esc(state.error) + '</p>' : '');
   }
 
   function render() {
     const el = $('root');
     if (!el) return;
-    el.innerHTML = state.running ? runningHtml() : (state.result ? resultHtml() : formHtml());
+    el.innerHTML = state.running ? runningHtml() : (state.rounds.length ? resultHtml() : formHtml());
   }
 
   function modelFormHtml() {
@@ -138,14 +187,11 @@
       '<label>模型<input data-m="model" value="' + esc(c.model) + '"></label>' +
       '<label>密钥<input data-m="key" type="password" value="' + esc(c.key) + '" placeholder="sk-..."></label>' +
       '<div class="modal-tip" id="modelTip">当前密钥：' + esc(SHT.llm.maskedKey() || '未设置') + '</div>' +
-      '<div class="actions"><button type="button" class="btn btn-main" data-act="save-model">保存</button>' +
-      '<button type="button" class="btn btn-ghost" data-act="test-model">测试连通性</button></div>';
+      '<div class="actions"><button type="button" class="btn btn-primary" data-act="save-model">保存</button>' +
+      '<button type="button" class="btn" data-act="test-model">测试连通性</button></div>';
   }
 
-  function openModel() {
-    $('modelForm').innerHTML = modelFormHtml();
-    $('modelModal').hidden = false;
-  }
+  function openModel() { $('modelForm').innerHTML = modelFormHtml(); $('modelModal').hidden = false; }
   function closeModel() { $('modelModal').hidden = true; }
   function readModelForm() {
     const out = {};
@@ -157,12 +203,7 @@
   async function testModel() {
     SHT.llm.save(readModelForm());
     tip('正在测试……');
-    const res = await SHT.llm.call({
-      role: 'selfcheck',
-      system: '只输出 JSON。',
-      user: '{"ok":true}',
-      maxTokens: 32
-    });
+    const res = await SHT.llm.call({ role: 'selfcheck', system: '只输出 JSON。', user: '{"ok":true}', maxTokens: 32 });
     tip(res.ok ? '连通正常' : ('失败：' + (res.error ? res.error.message : '未知错误')));
   }
 
@@ -170,8 +211,8 @@
     if (!SHT.llm.isReady()) { openModel(); return; }
     state.error = '';
     state.running = true;
-    state.result = null;
-    state.log = [];
+    state.rounds = [];
+    state.selected = 0;
     state.step = '正在准备';
     render();
     try {
@@ -181,17 +222,17 @@
         count: state.count,
         onEvent: function (e) {
           state.step = e.text || '';
-          if (e.role === 'plan' && e.plans) {
-            state.log.push({ role: 'plan', title: '指定方案', text: '定了 ' + e.plans.length + ' 个考点：' +
-              e.plans.map(function (p) { return p.kp; }).join('、') });
-          } else if (e.role === 'verify' && e.question) {
-            state.log.push({ role: 'verify', title: '反馈', text: e.text });
-          }
           render();
         }
       });
-      state.result = r;
-      if (!r.questions.length) state.error = '一道题也没出出来，检查模型设置或重试。';
+      state.rounds = r.rounds || [];
+      // 默认选中最后通过的那一轮；没有通过的就选最后一轮
+      let pick = state.rounds.length - 1;
+      for (let i = state.rounds.length - 1; i >= 0; i -= 1) {
+        if (state.rounds[i].passed) { pick = i; break; }
+      }
+      state.selected = Math.max(0, pick);
+      if (!state.rounds.length) state.error = '一道题也没出出来，检查模型设置或重试。';
     } catch (e) {
       state.error = '出题过程出错：' + (e && e.message ? e.message : '未知错误');
     }
@@ -234,9 +275,11 @@
     el.addEventListener('click', function (e) {
       const a = e.target.closest('[data-act]');
       if (!a) return;
-      if (a.dataset.act === 'start') start();
-      else if (a.dataset.act === 'again') { state.result = null; state.error = ''; render(); }
-      else if (a.dataset.act === 'back') { state.result = null; state.error = ''; render(); }
+      const act = a.dataset.act;
+      if (act === 'start') start();
+      else if (act === 'round') { state.selected = Number(a.dataset.i) || 0; render(); }
+      else if (act === 'again') { state.rounds = []; state.error = ''; render(); }
+      else if (act === 'back') { state.rounds = []; state.error = ''; render(); }
     });
   }
 
