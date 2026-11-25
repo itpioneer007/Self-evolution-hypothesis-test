@@ -3,44 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>英语自适应练习</title>
+<title>三角色出题</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="app">
 
-  <header class="topbar">
-    <div class="brand">
-      <div class="brand-title">英语练习</div>
-      <div class="brand-sub" id="brandSub"></div>
-    </div>
-    <div class="controls">
-      <button type="button" id="modelBtn" class="btn btn-ghost">设置</button>
-    </div>
-  </header>
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-title">三角色出题</div>
+    <div class="brand-sub">指定方案 · 执行 · 反馈</div>
+  </div>
+  <button type="button" id="modelBtn" class="btn btn-ghost">设置</button>
+</header>
 
-  <main class="stage">
-
-    <!--
-      学生端：默认进来的就是这一页。
-      只有四件事：选画像 → 系统出题 → 答题 → 下一轮。
-      出题的角色分工、配额、失败记录全部收进「开发视图」，学生看不到。
-    -->
-    <section class="stage-page is-active" id="page-student">
-      <div id="studentRoot"></div>
-    </section>
-
-  </main>
-
-
-
-</div>
+<main class="stage">
+  <div id="root"></div>
+</main>
 
 <div class="modal-mask" id="modelModal" hidden>
   <div class="modal">
     <div class="modal-head">
-      <h3>设置</h3>
-      <button type="button" class="btn btn-ghost" data-action="close-model">关</button>
+      <h3>模型设置</h3>
+      <button type="button" class="btn btn-ghost" data-act="close-model">关闭</button>
     </div>
     <div class="modal-body" id="modelForm"></div>
   </div>
@@ -48,30 +32,10 @@
 
 <script src="src/data/books.js"></script>
 <script src="src/data/textbook.js"></script>
-<script src="src/data/knowledgePoints.js"></script>
 <script src="src/data/curriculum.js"></script>
-<script src="src/data/wrongCases.js"></script>
-<script src="src/core/enums.js"></script>
-<script src="src/core/fingerprint.js"></script>
-<script src="src/core/checklist.js"></script>
-<script src="src/core/wrongBook.js"></script>
-<script src="src/core/practice.js"></script>
 <script src="src/core/llm.js"></script>
-<script src="src/core/grade.js"></script>
-<script src="src/core/diagnose.js"></script>
 <script src="src/core/agents.js"></script>
-<script src="src/core/validate.js"></script>
-<script src="src/core/quota.js"></script>
-<script src="src/core/bkt.js"></script>
-<script src="src/core/learner.js"></script>
-<script src="src/core/weights.js"></script>
-<script src="src/core/levelTrace.js"></script>
-<script src="src/core/trend.js"></script>
-<script src="src/core/progress.js"></script>
-<script src="src/core/assessment.js"></script>
-<script src="src/core/agentMemory.js"></script>
 <script src="src/core/pipeline.js"></script>
-<script src="src/core/audit.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

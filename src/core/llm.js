@@ -7,7 +7,7 @@
  * 不进导出 JSON。要给别人用或上线时必须换成服务端代理。
  *
  * 这一层只负责「把话发出去、把 JSON 拿回来」，不含任何出题判断。
- * 判断在 agents.js（提示词）/ validate.js（代码闸）/ pipeline.js（编排）。
+ * 判断在 agents.js（三个角色的提示词）/ pipeline.js（编排）。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
