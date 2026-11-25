@@ -1898,72 +1898,6 @@
     toast(res.created ? '已写进 03 错题，下一轮会按这条重新出题' : '这个考点又错一次，错题状态已更新');
   }
 
-  /*
-   * 代码证据不足时，请诊断角色补一次。
-   * 补的那一份是追加，不改写已经冻结的结论：只有当代码原本没给出结论（或置信低于 0.4）
-   * 时才顶上来当主结论。这样「一次判定、落库冻结」的口径不会被模型随手推翻。
-   */
-  async function diagnoseByModel() {
-    const q = currentQuestion();
-    const at = attemptOfQuestion(q);
-    if (!q || !at || !at.diag) { toast('这一题还没作答，没有可诊断的东西'); return; }
-    if (!SHT.llm.isReady()) { openModel(); toast('先在右上角「设置」里填好密钥'); return; }
-    if (state.llmBusy) return;
-    const roundNo = state.round;
-    const base = SHT.diagnose.read(state.diagnoses, q, at, roundNo) || at.diag;
-    state.llmBusy = true;
-    state.llmStep = '诊断角色在看第 ' + q.no + ' 题';
-    renderAll();
-    try {
-      const role = SHT.ROLES.diagnose;
-      const recall = SHT.agentMemory.recallText(state.agentMemory, 'diagnose');
-      const res = await SHT.llm.call({
-        role: 'diagnose',
-        system: role.system(),
-        user: role.user({ question: q, diagnosis: base, picked: at.picked }) + (recall ? '\n\n' + recall : ''),
-        maxTokens: 260,
-        temperature: 0.2
-      });
-      if (!res.ok) { toast('诊断角色没跑成：' + (res.message || '未知原因')); return; }
-      const j = res.json || {};
-      const known = (SHT.ERROR_CAUSES || []).some(function (c) { return c.id === j.cause; });
-      const view = {
-        causeId: known ? j.cause : '',
-        why: String(j.why || '').trim(),
-        confidence: Math.max(0, Math.min(1, Number(j.confidence) || 0))
-      };
-      state.diagnoses = SHT.diagnose.appendModel(state.diagnoses, q, at, roundNo, view);
-      at.diag = SHT.diagnose.read(state.diagnoses, q, at, roundNo);
-      syncDiagToWrong(at);
-      collectTraces();
-      save();
-      toast(known ? '诊断角色补了一条：' + view.causeId : '诊断角色也说证据不足，保持原结论');
-    } catch (err) {
-      toast('诊断出错了：' + (err && err.message ? err.message : err));
-    } finally {
-      state.llmBusy = false;
-      state.llmStep = '';
-      save(); renderAll();
-    }
-  }
-
-  // 模型补诊之后，把 03 错题本里那条的错因一起更新，别让两个面板说两套话
-  function syncDiagToWrong(at) {
-    const idx = (state.wrongCases || []).findIndex(function (c) {
-      return !c.demo && c.knowledgePoint === at.kpLabel && c.studentAnswer === at.picked;
-    });
-    if (idx < 0) return;
-    const prev = state.wrongCases[idx];
-    const next = Object.assign({}, prev, {
-      diagnosis: at.diag,
-      category: (at.diag && at.diag.causeId) || prev.category,
-      causeConfidence: (at.diag && at.diag.confidence) || 0,
-      causeSource: 'model'
-    });
-    state.wrongCases = state.wrongCases.slice();
-    state.wrongCases[idx] = next;
-  }
-
   // 回练结果记到错题本那条上：连对两次才算真会，答错就退回待订正，
   // 下一轮还会再出一次同考点的题——升不升难度由模型的规划决定，不由代码写死。
   function recordProbeResult(q, ev) {
@@ -2567,7 +2501,6 @@
     if (/考点|计划/.test(s)) return '正在挑题';
     if (/验证|质检|检查/.test(s)) return '正在检查题目';
     if (/写题|生成|第\s*\d+\s*题/.test(s)) return '正在写题';
-    if (/诊断/.test(s)) return '正在看看哪里错了';
     return '正在准备';
   }
 
@@ -2971,52 +2904,20 @@
   }
 
   function renderAll() {
-    // 学生端没有页签：只要 view 是 student，就固定显示 page-student
-    const activePage = state.view === 'student' ? 'student' : state.tab;
-    document.querySelectorAll('#tabbar .tab').forEach(function (b) {
-      b.classList.toggle('is-active', b.dataset.tab === state.tab);
-    });
+    /*
+     * 单一界面：只有学生端。开发页签与面板全部移除，
+     * 这里只渲染出题/答题界面，避免去碰已经不存在的 DOM 元素。
+     */
+    state.view = 'student';
     document.querySelectorAll('.stage-page').forEach(function (p) {
-      p.classList.toggle('is-active', p.id === 'page-' + activePage);
+      p.classList.toggle('is-active', p.id === 'page-student');
     });
-    if (document.body && document.body.classList) {
-      document.body.classList.toggle('is-student', state.view === 'student');
-    }
-    const vt = $('viewToggle');
-    if (vt) vt.textContent = state.view === 'student' ? '开发视图' : '学生端';
-    document.querySelectorAll('#roundSwitch button').forEach(function (b) {
-      b.classList.toggle('is-active', Number(b.dataset.round) === state.round);
-    });
-    renderBookSelect();
-    renderUnitSelect();
-    renderAgentRail();
-    renderAgentPanel();
-    renderPractice();
-    renderWrongList();
-    renderAddWrongForm();
-    renderMetrics();
-    renderLog();
-    renderRejectChart();
-    renderUsedCells();
-    renderStop();
-    // 审计台只在选中时才重绘：它要算台账复算与变体对照，代价比别的页签高
-    if (state.tab === 'audit' && SHT.devAudit) SHT.devAudit.render();
-    if (state.tab === 'profile' && SHT.devProfile) SHT.devProfile.render();
-    // 学生端顶栏只留产品名。教材/单元/轮次是内部口径，页面上已有更直白的表达，
-    // 全都堆在副标题里只会让人先读一串编号。
-    $('brandSub').textContent = state.view === 'student' ? '' :
-      (SHT.sampleStudent.id + ' · ' + SHT.curriculum.bookName + ' · ' +
-        SHT.curriculum.id + ' ' + SHT.curriculum.title + ' · 第 ' + state.round + ' 轮');
-    $('footStatus').textContent = 'R' + state.round + ' · ' + SHT.curriculum.hostUnitId +
-      ' · 词 ' + SHT.curriculum.words.length + ' / 句 ' + SHT.curriculum.sentencePatterns.length +
-      ' / 候选 ' + unitKps().length;
-    if ($('footHint')) {
-      const cfg = SHT.llm.config();
-      $('footHint').textContent = cfg.key ? ('模型 ' + cfg.model + ' · 本地保存') : '本地保存 · 模型未配置';
-    }
+    if (document.body && document.body.classList) document.body.classList.add('is-student');
+    const sub = $('brandSub');
+    if (sub) sub.textContent = '';
+    renderStudent();
   }
 
-  /* ---------- 动作 ---------- */
   function startRound2() {
     const exclusion = SHT.buildExclusionList([state.rounds[1]]);
     const cells = generateCells(countFor(2), exclusion);
@@ -3664,61 +3565,44 @@
 
   /* ---------- 事件（全部委托，重渲染不会重复绑定） ---------- */
   function bind() {
-    const bookSel = $('bookSelect');
-    if (bookSel) {
-      bookSel.addEventListener('change', function (e) { switchBook(e.target.value); });
-    }
-    const unitSel = $('unitSelect');
-    if (unitSel) {
-      unitSel.addEventListener('change', function (e) { switchUnit(e.target.value); });
-    }
+    /*
+     * 只绑定当前界面上真实存在的元素。开发视图的页签、面板、导出/重置等
+     * 已经从页面移除，这里不再给它们绑事件——避免去碰不存在的 DOM 报错。
+     */
     const modelBtn = $('modelBtn');
     if (modelBtn) modelBtn.addEventListener('click', openModel);
 
-    // 学生端 ↔ 开发视图。学生端是主入口，开发视图留给验收与排查。
-    const viewToggle = $('viewToggle');
-    if (viewToggle) {
-      viewToggle.addEventListener('click', function () {
-        state.view = state.view === 'student' ? 'dev' : 'student';
-        save(); renderAll();
+    const root = $('studentRoot');
+    if (root) {
+      root.addEventListener('click', function (e) {
+        const b = e.target.closest('[data-st-action]');
+        if (!b) return;
+        const a = b.dataset.stAction;
+        if (a === 'book') {
+          const bk = SHT.BOOKS.get(b.dataset.id);
+          if (bk) applyProfile(bk.meta.id, bk.units[0].id);
+        } else if (a === 'unit') applyProfile(state.bookId, b.dataset.id);
+        else if (a === 'level') {
+          noteProfile('level', state.learningLayer, b.dataset.id);
+          state.learningLayer = b.dataset.id;
+          save(); renderAll();
+        } else if (a === 'start') stStart();
+        else if (a === 'pick') pickOption(Number(b.dataset.index));
+        else if (a === 'submit') submitAnswer();
+        else if (a === 'next') practiceNext();
+        else if (a === 'next-round') stNextRound();
+        else if (a === 'regroup') stRegroup();
+        else if (a === 'restart') stRestart();
+      });
+      root.addEventListener('input', function (e) {
+        const el = e.target.closest('[data-st-draft]');
+        if (!el) return;
+        practiceOf().draft = el.value;
+        const dq = activePracticeQuestion();
+        if (dq) emitEvent('draft', dq, { len: String(el.value).length });
       });
     }
 
-    $('studentRoot').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-st-action]');
-      if (!b) return;
-      const a = b.dataset.stAction;
-      if (a === 'book') {
-        const bk = SHT.BOOKS.get(b.dataset.id);
-        if (bk) applyProfile(bk.meta.id, bk.units[0].id);
-        return;
-      }
-      if (a === 'unit') { applyProfile(state.bookId, b.dataset.id); return; }
-      if (a === 'level') {
-        noteProfile('level', state.learningLayer, b.dataset.id);
-        state.learningLayer = b.dataset.id;
-        save(); renderAll();
-        return;
-      }
-      if (a === 'start') { stStart(); return; }
-      if (a === 'pick') { pickOption(Number(b.dataset.index)); return; }
-      if (a === 'submit') { submitAnswer(); return; }
-      if (a === 'next') { practiceNext(); return; }
-      if (a === 'next-round') { stNextRound(); return; }
-      if (a === 'regroup') { stRegroup(); return; }
-      if (a === 'restart') { stRestart(); return; }
-    });
-
-    // 开放题的输入：和 02 页共用 p.draft，切换视图不会丢草稿
-    $('studentRoot').addEventListener('input', function (e) {
-      const el = e.target.closest('[data-st-draft]');
-      if (!el) return;
-      practiceOf().draft = el.value;
-      // 开放题的打字过程也是轨迹，但只记长度、不记原文：输入内容属于学生隐私，
-      // 和 traces 不落提示词原文是同一条约定。
-      const dq = activePracticeQuestion();
-      if (dq) emitEvent('draft', dq, { len: String(el.value).length });
-    });
     const modal = $('modelModal');
     if (modal) {
       modal.addEventListener('click', function (e) {
@@ -3728,227 +3612,8 @@
         if (act.dataset.action === 'close-model') closeModel();
         else if (act.dataset.action === 'save-model') saveModelFromForm();
         else if (act.dataset.action === 'test-model') testModel();
-        else if (act.dataset.action === 'open-dev') {
-          closeModel();
-          state.view = 'dev';
-          save();
-          renderAll();
-        }
       });
     }
-
-    $('tabbar').addEventListener('click', function (e) {
-      const b = e.target.closest('button[data-tab]');
-      if (!b) return;
-      state.tab = b.dataset.tab; save(); renderAll();
-    });
-
-    $('roundSwitch').addEventListener('click', function (e) {
-      const b = e.target.closest('button[data-round]');
-      if (!b) return;
-      const target = Number(b.dataset.round);
-      if (target === 2 && !state.rounds[2].questions.length) { startRound2(); return; }
-      state.round = target; state.activeNo = 1; save(); renderAll();
-    });
-
-    $('agentRail').addEventListener('click', function (e) {
-      const b = e.target.closest('button[data-role]');
-      if (!b) return;
-      state.agent = b.dataset.role; save(); renderAll();
-    });
-
-    $('agentPanel').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-action]');
-      if (b) {
-        const action = b.dataset.action;
-        if (action === 'model-round') { runModelRound(false); return; }
-        if (action === 'stop-model') { runToken += 1; state.llmBusy = false; save(); renderAll(); toast('已停止后续步骤，已经发出去的请求不会收回'); return; }
-        if (action === 'goto-log') { state.tab = 'loop'; save(); renderAll(); return; }
-        if (action === 'toggle-day') {
-          // 一天一组：点组头只切这一天，别的天不动
-          const key = b.dataset.day || '';
-          state.logOpenDays = state.logOpenDays || {};
-          const firstKey = (function () {
-            const any = [1, 2].map(function (rn) { return (state.rounds[rn] || {}).startedAt; }).filter(Boolean).sort().pop() || '';
-            return dayKey(any);
-          })();
-          const nowOpen = isDayOpen(key, firstKey);
-          state.logOpenDays[key] = !nowOpen;
-          save();
-          renderLog();
-          return;
-        }
-        if (action === 'auto-quota') { autoQuota(); return; }
-        if (action === 'quota-inc') { bumpQuota(b.dataset.ability, 1); return; }
-        if (action === 'quota-dec') { bumpQuota(b.dataset.ability, -1); return; }
-        if (action === 'quota-recalc') { recalcQuota(); return; }
-        if (action === 'fill-weakness') { fillWeakness(); return; }
-        if (action === 'pick-kp') { applyKnowledgePoint(b.dataset.id, state.activeNo, true); return; }
-        if (action === 'toggle-scope') { toggleScope(b.dataset.id); return; }
-        if (action === 'clear-scope') { state.kpScope = []; save(); renderAll(); toast('本轮不限知识点范围'); return; }
-        if (action === 'q-nav') { state.activeNo = Number(b.dataset.no); save(); renderAll(); return; }
-        if (action === 'diagnose-model') { diagnoseByModel(); return; }
-        if (action === 'save-changes') { save(); renderAll(); toast('已保存本页修改'); return; }
-        if (action === 'layer') { state.checkLayer = Number(b.dataset.index); save(); renderAll(); return; }
-        if (action === 'check') {
-          const q = currentQuestion();
-          if (!q) return;
-          const id = b.dataset.check, v = b.dataset.verdict;
-          if (q.checks[id] === v) delete q.checks[id]; else q.checks[id] = v;
-          save(); renderAll(); return;
-        }
-        if (action === 'copy-word') {
-          const word = b.dataset.word;
-          try { navigator.clipboard.writeText(word); toast('已复制：' + word); }
-          catch (err) { toast(word); }
-          return;
-        }
-      }
-      const row = e.target.closest('.plan-row');
-      if (row && !e.target.matches('input,select')) {
-        state.activeNo = Number(row.dataset.no); save(); renderAll();
-      }
-    });
-
-    $('agentPanel').addEventListener('change', function (e) {
-      const el = e.target;
-      const field = el.dataset.field;
-      if (!field) return;
-      if (field === 'questionCount') {
-        const rn = el.dataset.round;
-        if (!rn) return;
-        state.questionCounts[rn] = clampCount(el.value);
-        el.value = state.questionCounts[rn];
-        resizeQuestions(state.rounds[rn], state.questionCounts[rn]);
-        if (state.activeNo > state.rounds[rn].questions.length) state.activeNo = state.rounds[rn].questions.length || 1;
-        // 题量变了，配额要跟着重新分；人手工调过的配额不动
-        if (Number(rn) === state.round && state.quota && state.quota.source !== 'manual') {
-          state.quota = SHT.quota.auto({
-            scope: kpScopePayload(), kps: unitKps(), total: quotaLimit()
-          });
-        }
-        save(); renderAll();
-        return;
-      }
-      // 课程角色计划表（带 data-no）：即时保存
-      if (el.dataset.no) {
-        const q = currentRound().questions[Number(el.dataset.no) - 1];
-        if (!q) return;
-        if (field === 'knowledgePoint') q[field] = el.value;
-        else if (q.cell) q.cell[field] = el.value;
-        save(); renderAll();
-        return;
-      }
-      // 生成角色九字段（不带 data-no）：只写内存，等「保存修改」按钮
-      const q = currentQuestion();
-      if (!q) return;
-      if (field === 'answerMode') {
-        // 作答方式决定判分走哪条链路：选一个答案走选项，自己写走输入框。
-        // 这一项改了要立刻生效，不能等「保存修改」——否则 02 页还是旧形态。
-        q.open = el.value === 'open';
-        save(); renderAll(); return;
-      }
-      if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
-      else q[field] = el.value;
-    });
-
-    $('agentPanel').addEventListener('input', function (e) {
-      const el = e.target;
-      const field = el.dataset.field;
-      if (!field || el.dataset.no || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return;
-      const q = currentQuestion();
-      if (!q) return;
-      if (field === 'option') q.options[Number(el.dataset.index)] = el.value;
-      else q[field] = el.value;
-    });
-
-    $('wrongList').addEventListener('click', function (e) {
-      const seedBtn = e.target.closest('[data-action="seed-demo-wrong"]');
-      if (seedBtn) { seedDemoWrong(); return; }
-      const delBtn = e.target.closest('[data-action="remove-wrong"]');
-      if (delBtn) { removeWrongCase(Number(delBtn.dataset.index)); return; }
-      const applyBtn = e.target.closest('[data-action="apply-weak"]');
-      if (applyBtn) { applyWeak(applyBtn.dataset.key, Number(applyBtn.dataset.index)); return; }
-      const b = e.target.closest('[data-action="record-attempt"]');
-      if (!b) return;
-      const idx = Number(b.dataset.index);
-      const sel = document.querySelector('[data-attempt-field="next"][data-index="' + idx + '"]');
-      recordAttempt(idx, sel ? sel.value : '');
-    });
-
-    $('practiceCard').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-action]');
-      if (!b) return;
-      const action = b.dataset.action;
-      if (action === 'pick-option') { pickOption(Number(b.dataset.index)); return; }
-      if (action === 'use-hint') { useHint(); return; }
-      if (action === 'submit-answer') { submitAnswer(); return; }
-      if (action === 'flip-grade') { flipGrade(); return; }
-      if (action === 'next-step') { practiceNext(); return; }
-      if (action === 'restart-practice') { restartPractice(); return; }
-      if (action === 'goto-wrongbook') { state.tab = 'wrongbook'; save(); renderAll(); return; }
-      if (action === 'goto-round2') { startRound2(); return; }
-    });
-
-    // 开放题的输入。只存草稿、不重渲染——重渲染会把光标顶到末尾，写到一半的人会疯。
-    $('practiceCard').addEventListener('input', function (e) {
-      const el = e.target;
-      if (!el || el.dataset.role !== 'open-input') return;
-      practiceOf().draft = el.value;
-      save();
-    });
-
-    $('addWrongForm').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-action="add-wrong"]');
-      if (b) addWrongCase();
-    });
-
-    $('stopPanel').addEventListener('change', function (e) {
-      const el = e.target;
-      if (!el.dataset.stop) return;
-      const list = currentRound().stopSignals;
-      const at = list.indexOf(el.dataset.stop);
-      if (el.checked && at < 0) list.push(el.dataset.stop);
-      if (!el.checked && at >= 0) list.splice(at, 1);
-      save(); renderMetrics();
-    });
-
-    $('stopPanel').addEventListener('input', function (e) {
-      if (!e.target.dataset.stopReason && e.target.dataset.stopReason !== '') return;
-      currentRound().endReason = e.target.value;
-      save(); renderMetrics();
-    });
-
-    $('stopPanel').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-action="next-round"]');
-      if (!b) return;
-      if (state.round === 1) {
-        if (!window.confirm('第 1 轮做完了吗？开始第 2 轮会先避开第 1 轮用过的出题角度。')) return;
-        state.rounds[1].closed = true;
-        startRound2();
-        toast('第 2 轮已避开上轮的出题角度；知识点保留，题目要按新角度重写');
-      } else {
-        const overlap = overlapCount();
-        const r1 = countFailed(state.rounds[1]);
-        const r2 = countFailed(state.rounds[2]);
-        toast('两轮结果：出题角度重复 ' + (overlap === null ? '—' : overlap + '/' + countFor(2)) +
-          '，被退回的题 ' + (r1 === null ? '—' : r1) + ' → ' + (r2 === null ? '—' : r2) +
-          '。样本小，只够看方向。');
-      }
-    });
-
-    $('exportBtn').addEventListener('click', exportJSON);
-
-    $('resetBtn').addEventListener('click', function () {
-      if (!window.confirm('清空两轮题目、错题和停止记录？不能撤销。')) return;
-      try { localStorage.removeItem(STORAGE_KEY); } catch (err) { /* ignore */ }
-      const keepUnit = state.unitId;
-      SHT.setUnit(keepUnit);
-      state = defaultState();
-      state.rounds[1].questions = cloneSample(keepUnit);
-      save(); renderAll();
-      toast('已恢复成 ' + keepUnit + ' 的初始示例');
-    });
   }
 
   // 配额先定下来再渲染：首屏就该看到「词汇 2 / 语法 1」这样的分配，

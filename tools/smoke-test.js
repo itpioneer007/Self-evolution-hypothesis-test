@@ -560,7 +560,7 @@ console.log('--- 权重接线（加载 app.js） ---');
     /这一轮做完了/.test(summary) && /答对 \d+ 题/.test(summary), summary.slice(0, 180));
   assert('学生端不出现表现分、比例、掌握概率这些开发口径',
     !/表现分|掌握概率|预计答对率|难度档|独立答对|看提示后答对|自己答对/.test(summary));
-  assert('学生端不出现难度变化提示（已搬到开发视图）',
+  assert('学生端不出现难度变化提示（判定只留在导出）',
     !/下一轮会难一点|下一轮先出简单一点|保持这个节奏/.test(summary));
   assert('结果页仍给下一步按钮（流程不中断）',
     /data-st-action="(next-round|regroup|restart)"/.test(summary));
@@ -568,8 +568,6 @@ console.log('--- 权重接线（加载 app.js） ---');
   const roundWithReport = SHT2.devAudit.state().rounds[SHT2.devAudit.state().round];
   assert('评价报告仍落盘在 round.report（只是不展示）',
     !!(roundWithReport && roundWithReport.report && roundWithReport.report.dimensions));
-  assert('开发视图注册了「本轮评价」页签，统计有地方看',
-    SHT2.devAudit.panes.some(function (p) { return p.id === 'report'; }));
   const exported = SHT2.devAudit.exportPayload();
   assert('导出里带走了评价报告与难度台账',
     !!(exported.report && exported.report.dimensions) && Array.isArray(exported.levelTrace),

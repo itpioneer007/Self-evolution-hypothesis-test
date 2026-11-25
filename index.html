@@ -15,27 +15,9 @@
       <div class="brand-sub" id="brandSub"></div>
     </div>
     <div class="controls">
-      <select id="bookSelect" class="unit-select" title="教材版本"></select>
-      <select id="unitSelect" class="unit-select" title="教材单元"></select>
-      <div class="round-switch" id="roundSwitch">
-        <button type="button" data-round="1" class="is-active">R1</button>
-        <button type="button" data-round="2">R2</button>
-      </div>
       <button type="button" id="modelBtn" class="btn btn-ghost">设置</button>
-      <button type="button" id="exportBtn" class="btn btn-ghost">导出</button>
-      <button type="button" id="resetBtn" class="btn btn-ghost">重置</button>
-      <button type="button" id="viewToggle" class="btn btn-ghost">开发视图</button>
     </div>
   </header>
-
-  <nav class="tabbar" id="tabbar">
-    <button type="button" data-tab="agents" class="tab is-active"><span class="tab-no">01</span>出题</button>
-    <button type="button" data-tab="practice" class="tab"><span class="tab-no">02</span>答题</button>
-    <button type="button" data-tab="wrongbook" class="tab"><span class="tab-no">03</span>错题</button>
-    <button type="button" data-tab="loop" class="tab"><span class="tab-no">04</span>日志</button>
-    <button type="button" data-tab="audit" class="tab"><span class="tab-no">05</span>审计台</button>
-    <button type="button" data-tab="profile" class="tab"><span class="tab-no">06</span>用户画像</button>
-  </nav>
 
   <main class="stage">
 
@@ -48,79 +30,9 @@
       <div id="studentRoot"></div>
     </section>
 
-    <section class="stage-page" id="page-agents">
-      <aside class="agent-rail" id="agentRail"></aside>
-      <div class="agent-work" id="agentPanel"></div>
-    </section>
-
-    <section class="stage-page" id="page-practice">
-      <div class="practice-work" id="practiceCard"></div>
-      <aside class="practice-rail" id="practiceRail"></aside>
-    </section>
-
-    <section class="stage-page" id="page-wrongbook">
-      <div class="list-head">
-        <h2>学生错题</h2>
-        <span id="wrongSummary" class="list-count"></span>
-      </div>
-      <div id="wrongList" class="wrong-list"></div>
-      <details class="fold" id="addWrongFold">
-        <summary>新增错题</summary>
-        <div id="addWrongForm" class="add-form"></div>
-      </details>
-    </section>
-
-    <section class="stage-page" id="page-loop">
-      <div class="kpi-row" id="metrics"></div>
-
-      <div class="log-layout">
-        <div class="card log-card">
-          <div class="card-head"><h3>出题日志</h3><span id="logCount"></span></div>
-          <div id="logFeed" class="log-feed"></div>
-        </div>
-        <div class="card chart-card">
-          <div class="card-head"><h3>被退回的原因</h3><span>按检查项统计</span></div>
-          <div id="rejectChart" class="chart"></div>
-          <div class="card-head is-sub"><h3>已经出过的角度</h3><span id="usedCount"></span></div>
-          <div id="usedCells" class="used-cells"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h3>没出成的题</h3><span>按考点分组 · 第几次、卡在哪一步、一句原因</span></div>
-        <div id="failDetail" class="fail-detail"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h3>判分台账</h3><span>模型判过一次就冻结 · 下游只读这条</span></div>
-        <div id="gradeLedger" class="grade-ledger"></div>
-      </div>
-
-      <div class="card stop-card">
-        <div class="card-head"><h3>停止决策</h3><span>勾选并填写依据</span></div>
-        <div id="stopPanel" class="stop-inline"></div>
-      </div>
-    </section>
-
-    <!--
-      05 审计台：给开发者与评审看角色流水用的，不是给学生用。
-      内容由 src/dev/audit.js 渲染（左侧导航 + 右侧详情），
-      样式在 styles.css 末尾的「05 审计台」区块，与上面四个浅色页签同一套变量。
-    -->
-    <section class="stage-page" id="page-profile">
-      <div class="profile-root" id="profileRoot"></div>
-    </section>
-
-    <section class="stage-page" id="page-audit">
-      <div class="audit-root" id="auditRoot"></div>
-    </section>
-
   </main>
 
-  <footer class="footbar">
-    <span id="footStatus"></span>
-    <span class="foot-hint" id="footHint">本地保存</span>
-  </footer>
+
 
 </div>
 
@@ -160,8 +72,6 @@
 <script src="src/core/agentMemory.js"></script>
 <script src="src/core/pipeline.js"></script>
 <script src="src/core/audit.js"></script>
-<script src="src/dev/audit.js"></script>
-<script src="src/dev/profile.js"></script>
 <script src="src/app.js"></script>
 </body>
 </html>

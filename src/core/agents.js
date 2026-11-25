@@ -1,20 +1,18 @@
 /*
- * 四个角色 = 同一个模型的四套配置（提示词 / 记忆 / 上下文）
+ * 三个角色 = 同一个模型的三套配置（提示词 / 记忆 / 上下文）
  *
  * 说法要严谨：这里没有「智能体」。模型不会自己去做事——它没有工具、不会读文件、
  * 不会在两次调用之间记住任何东西。每一轮都是代码把上下文拼好、调一次、拿回一段
- * JSON。所以它们只是同一底模在不同位置上的四个角色，记忆由代码搬运。
+ * JSON。所以它们只是同一底模在不同位置上的三个角色，记忆由代码搬运。
  *
  *   plan     课程：决定这一轮考哪几个点、往哪个方向出      看得到学情（诊断 / 作答 / 掌握概率）
  *   generate 生成：把课程给的方向落成一道题                看不到学情，防手软
  *   verify   验证：只针对题目本身判能不能进这一轮          看不到学情，防同情
- *   diagnose 诊断：解释他为什么选了这个、为什么排掉那些    只在作答之后跑，不参与命题
  *
  * 权限边界（这条是整套设计的地基）：
  *   - 验证只有否决权，通过权在代码闸 validate.js 手里。
  *   - 生成不能自己改方向：考点、层次、题型、干扰项类型都由课程定，代码落格。
  *   - 课程不写题、不判对错；层次由 progress.js 的阶梯与上限按住，模型只能在其内选。
- *   - 诊断不改判定结果，也不改题；它只给「为什么」，而且代码先算，模型只能补。
  *
  * 为什么生成看不到学情：让它知道「这学生弱」就会不自觉把题出简单，难度该由
  * 课程的 level 决定，不该由出题者临时心软。
@@ -443,55 +441,10 @@
      * 哪些选项被排掉、花了多少秒），提示词明确要求不许推翻，只能引用。
      * 这样模型即使想编，也编不出一个和证据相反的说法。
      */
-    diagnose: {
-      id: 'diagnose',
-      name: '诊断',
-      memoryLabel: '代码证据 · 固定的错因编号',
-      skillLabel: '只解释为什么，不判对错',
-      system: function () {
-        return [
-          '你是学情诊断者。你不写题、不改题、不判对错，只解释一次作答为什么会这样。',
-          '',
-          '系统已经先把能算的都算过了：错选与正确答案差几个字母、读音是否接近、是不是只差一个词形后缀、',
-          '另外两个选项为什么被他排掉、他花了多少秒、有没有用提示。这些是证据，不许推翻，只许引用。',
-          '',
-          '输出必须是 JSON：{"cause":"","why":"","confidence":0.0}',
-          '',
-          '约束：',
-          '1. cause 只能取这些编号之一：' + (SHT.ERROR_CAUSES || []).map(function (c) { return c.id; }).join(' / ') + '。',
-          '   不许自己发明说法，也不许写「基础不牢」「掌握不牢」这种放之四海皆准的话。',
-          '2. why 一句话，不超过 30 个字，说清「他拿什么当成了什么」，例：把 nears 当成 near 的复数。',
-          '3. confidence 取 0 到 1。证据不足以判断时给 0.2 以下，不要硬编一个听上去合理的说法。',
-          '4. 只能引用给你的证据。证据里没有的东西，不要写。',
-          '5. 只输出 JSON。'
-        ].join('\n');
-      },
-      user: function (ctx) {
-        const q = ctx.question;
-        const d = ctx.diagnosis || {};
-        const lines = [];
-        lines.push('这道题：' + JSON.stringify(q.prompt));
-        lines.push('正确答案：' + q.answer);
-        if ((q.options || []).filter(Boolean).length) lines.push('选项：' + JSON.stringify(q.options));
-        lines.push('他答的：' + JSON.stringify(ctx.picked || ''));
-        lines.push('');
-        lines.push('代码算出来的证据：');
-        if (!(d.signals || []).length) lines.push('- （没有可用的硬证据）');
-        (d.signals || []).forEach(function (s) { lines.push('- ' + s.text); });
-        lines.push('- 耗时：' + Math.round((d.timing && d.timing.ms || 0) / 1000) + ' 秒' +
-          (d.timing && d.timing.note ? '（' + d.timing.note + '）' : ''));
-        lines.push('');
-        lines.push('请判断他为什么会这样答。只输出 JSON。');
-        return lines.join('\n');
-      },
-      memory: function () {
-        return { causes: (SHT.ERROR_CAUSES || []).length };
-      }
-    }
   };
 
-  // 界面四张卡直接读这里，保证卡片上的四行与真实提示词同源
-  SHT.ROLE_LIST = ['plan', 'generate', 'verify', 'diagnose'].map(function (id) {
+  // 界面三张卡直接读这里，保证卡片上的三行与真实提示词同源
+  SHT.ROLE_LIST = ['plan', 'generate', 'verify'].map(function (id) {
     const a = SHT.ROLES[id];
     return { id: a.id, name: a.name, memory: a.memoryLabel, skill: a.skillLabel };
   });
