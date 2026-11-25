@@ -65,6 +65,19 @@ node tools/smoke-test.js
 
 35 条断言，盯的是这条最小链路：角色只有三个、三份提示词约束齐全、十维度合计 100 分、方案少给能补满、反馈建议能退回方案、每一轮都留完整题目快照且内容确实不同、轮次分数与建议保留、最多 4 轮。
 
+## 界面设计技能
+
+项目已装 [UI/UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)：全局 CLI `uipro` 2.15.0，技能文件在 `.codebuddy/skills/`（7 个技能，含 `ui-ux-pro-max` 主技能）。**重启 AI 助手后**它会对 UI 类需求自动激活。
+
+手动查设计建议（Windows 用 `python`，不用 `python3`）：
+
+```
+python .codebuddy/skills/ui-ux-pro-max/scripts/search.py "education assessment tool desktop" --design-system -p "三角色出题"
+python .codebuddy/skills/ui-ux-pro-max/scripts/search.py "focus visible keyboard navigation" --domain ux
+```
+
+当前界面已经应用了它给的这些规则：极简瑞士风格（网格 / 留白 / 高对比）、语义化颜色 token（保留本项目绿色主题）、每个控件有可见键盘焦点、徽章不换行截断且含义不只靠颜色、动效统一 200ms 并尊重系统的「减少动态效果」。它推荐的落地页 Hero+CTA 模式不适合工具界面，没有采用。
+
 ## 回退
 
 动手前建了 `backup-before-minimal` 分支，里面是重构前的完整版本（含答题、判分、错题本、审计台等），随时可以退回去。
