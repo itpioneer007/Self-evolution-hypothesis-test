@@ -1,1224 +1,212 @@
 /*
- * 出题流水线：课程 → 分格 → 生成 → 代码闸 → 验证 → 退回重出 → （作答后）诊断
+ * 出题流水线：指定方案 → 执行 → 反馈，按「整轮」迭代。
  *
- * 几次调用都是同一个模型（SHT.llm），靠 SHT.ROLES 里的几套配置区分角色。
- * 这一层只做编排与记录，判断全在下面两处：
- *   - SHT.validateQuestion（代码闸，有通过权）
- *   - SHT.ROLES.verify 的返回（模型验证，只有否决权）
- *
- * 失败不吞：每一次不采纳都进 failures，带 stage / 条款号 / 一句话原因，
- * 界面拿它显示「为什么这次没成」，下一轮课程角色读它决定换什么说法重试。
+ * 一轮 = 一整套题 + 这一套的分。反馈不通过就把建议交给方案角色，
+ * 由它修订整套方案后再出下一轮；每一轮的题目原文都完整留存，供界面按轮回看。
+ * 前端不参与这个过程，它只拿到 rounds 数组。
  */
 (function (root) {
   const SHT = (root.SHT = root.SHT || {});
 
-  const MAX_ATTEMPTS = 3;
-  /*
-   * 预留条数：设定几道就必须出满几道，所以规划要一次多要一批当替补。
-   * 按正取的 80% 估算（模型退题率大致三到五成），最少 3 条、最多 8 条。
-   * 以前固定 2 条：5 道里退 3 道就补不上，最后只出 4 道，
-   * 而界面上写的是「5 道」——数量和承诺对不上。
-   */
-  const BENCH_MIN = 3;
-  const BENCH_MAX = 8;
-  const BENCH_RATE = 0.8;
-  function benchSizeOf(want) {
-    return Math.max(BENCH_MIN, Math.min(BENCH_MAX, Math.ceil(Number(want || 0) * BENCH_RATE)));
-  }
-  // 「干扰项造不出来」这一族：V3 选项不合规 / V3b 干扰项太好排除 / V3c 干扰拼写不像错拼。
-  // 连着卡在这几条上，说明不是题写坏了，是这个考点在这个单元里造不出可信的诱饵。
-  const DISTRACTOR_CODES = ['V3', 'V3b', 'V3c'];
+  const MAX_ROUNDS = 4;
+  const PASS_LINE = 85;
 
-  function kpTokens(s) {
-    return String(s || '').toLowerCase()
-      .replace(/[·・．.\/、，,；;：:（）()「」【】"'’—-]/g, ' ')
-      .split(/\s+/)
-      .filter(function (w) { return !!w; });
+  /* 查重指纹：题干+选项+答案 归一化后拼串，只拦「整套照搬」，不碰正常同考点不同题。 */
+  function normalize(s) {
+    return String(s == null ? '' : s).toLowerCase()
+      .replace(/[\s\u3000]/g, '')
+      .replace(/[，。！？、；：""''（）()《》\[\]{}.,!?;:'"\/\\-]/g, '');
+  }
+  function fingerprint(q) {
+    const opts = (Array.isArray(q.options) ? q.options : []).map(normalize).sort().join('|');
+    return normalize(q.prompt) + '###' + opts + '###' + normalize(q.answer);
+  }
+  function isRepeat(q, seen) {
+    const fp = fingerprint(q);
+    return (seen || []).some(function (s) { return fingerprint(s) === fp; });
+  }
+  function seenLine(q) {
+    return '题干：' + (q.prompt || '') + '；选项：' + (q.options || []).join(' / ') +
+      '；答案：' + (q.answer || '');
   }
 
-  // 两个考点「近不近」：只看字面重合的词有几个。同一个语音组、同一个句型、
-  // 同一个话题的词会重合，跨话题的不会。不做语义相似度——那要调模型，
-  // 而这一步必须在退题当下就决定，等不起一次调用。
-  function kpAffinity(a, b) {
-    const A = kpTokens(a);
-    const B = kpTokens(b);
-    let n = 0;
-    A.forEach(function (x) { if (B.indexOf(x) >= 0) n += 1; });
-    return n;
-  }
-
-  /**
-   * llm.call 失败时返回的是扁平结构 { ok:false, errorType, message }，
-   * 不是 { error:{ type, message } }。以前整条链路都按后者读，
-   * 于是任何接口层失败（key 无效 / 超时 / 限流 / 返回非 JSON）都会在这里
-   * 抛 TypeError，被上层 catch 吞成一句「出错了」，连通性测试更是永远停在
-   * 「正在测试…」——真实错误全被一个字段名挡住了。这两个函数是唯一的读法。
-   */
-  function shtErrType(r) {
-    if (!r) return 'unknown';
-    return r.errorType || (r.error && r.error.type) || 'unknown';
-  }
-  function shtErrMsg(r) {
-    if (!r) return '未知错误';
-    return r.message || (r.error && r.error.message) || '未知错误';
-  }
-
-  function now() { return new Date().toISOString(); }
-
-  function cellList() {
-    return (SHT.QUESTION_TYPES || []).map(function (t) { return t.id; });
-  }
-
-  // 能力 → 偏好题型（生成的题必须落在这个范围里，否则知识点与题型对不上）
-  const TYPE_BY_ABILITY = {
-    vocab: ['中英匹配', '听音选义', '拼写补全'],
-    spelling: ['拼写补全', '听写'],
-    listening: ['听音选义', '听写'],
-    phonics: ['字母组合辨音', '听音选义'],
-    sentence: ['选词填空', '句子判断', '对话补全'],
-    grammar: ['选词填空', '句子判断'],
-    speaking: ['看图说词']
-  };
-
-  function sceneOf(unit) {
-    const map = SHT.SCENE_OF_DOMAIN || {};
-    return map[unit.topicDomain] || '学校';
-  }
-
-  function defaultLevel(plan) {
-    if (SHT.LEVELS.indexOf(plan.level) >= 0) return plan.level;
-    const byAbility = { spelling: '辨', phonics: '辨', listening: '认', speaking: '表达', grammar: '用', sentence: '用', vocab: '认' };
-    return byAbility[plan.ability] || '用';
-  }
-
-  function distractorFor(plan, i) {
-    // 学习者模型给这条计划指定了干扰项类型时优先用它：这是有证据的决策，
-    // 比按「题号取模」或按模型自己写的 cause 猜更靠谱。
-    if (plan && plan.cellDistractor && SHT.DISTRACTORS.indexOf(plan.cellDistractor) >= 0) {
-      return plan.cellDistractor;
-    }
-    const causes = SHT.ERROR_TO_CELL || [];
-    const hit = causes.filter(function (c) {
-      return plan.cause && String(plan.cause).indexOf(c.pattern) >= 0;
-    })[0];
-    if (hit) return hit.distractor;
-    return SHT.DISTRACTORS[i % SHT.DISTRACTORS.length];
-  }
-
-  /**
-   * 为一行计划分配格子。模型不参与这一步：
-   * 让它自己分，5 道题会收敛到最省力的那一格，而且它说的「不一样」没法验证。
-   */
-  SHT.pickCell = function (plan, used, unit, index) {
-    const scene = sceneOf(unit);
-    const level = defaultLevel(plan);
-    const prefer = TYPE_BY_ABILITY[plan.ability] || cellList();
-    const alt = cellList().filter(function (t) { return prefer.indexOf(t) < 0; });
-    const types = prefer.concat(alt);
-    const distractor = distractorFor(plan, index);
-    const distractorOrder = [distractor].concat(SHT.DISTRACTORS.filter(function (d) { return d !== distractor; }));
-    const levelOrder = [level].concat(SHT.LEVELS.filter(function (l) { return l !== level; }));
-    const sceneOrder = [scene].concat(SHT.SCENES.filter(function (s) { return s !== scene; }));
-
-    for (let ti = 0; ti < types.length; ti += 1) {
-      for (let di = 0; di < distractorOrder.length; di += 1) {
-        for (let li = 0; li < levelOrder.length; li += 1) {
-          for (let si = 0; si < sceneOrder.length; si += 1) {
-            const cell = { type: types[ti], scene: sceneOrder[si], level: levelOrder[li], distractor: distractorOrder[di] };
-            const key = SHT.cellKey(cell);
-            const dup = used.some(function (u) { return SHT.cellKey(u) === key; });
-            if (!dup) return cell;
-          }
-        }
-      }
-    }
-    return { type: types[0], scene: scene, level: level, distractor: distractor };
-  };
-
-  /**
-   * 把错题与作答记录压成下一轮的 brief。这是「下一轮根据错题记录判断怎么出」的落点。
-   */
-  SHT.pipeline = SHT.pipeline || {};
-
-  /*
-   * 按册内 id（U1）拿单元对象。
-   * 注意：不能直接用 root.SHT_BOOK ——那是 textbook.js 里的旧单册数据集（只有人教），
-   * 它的 getUnit('U1') 永远返回人教四上 U1，多册并存时会取错册。
-   * 正确的入口是 SHT.BOOKS.current()，它跟着 SHT.setBook 走。
-   */
-  function unitOf(unitId) {
-    const B = root.SHT && root.SHT.BOOKS;
-    const cur = B && B.current ? B.current() : null;
-    if (cur && cur.getUnit) {
-      const u = cur.getUnit(unitId);
-      if (u) return u;
-    }
-    return (root.SHT_BOOK && root.SHT_BOOK.getUnit) ? root.SHT_BOOK.getUnit(unitId) : null;
-  }
-
-  /*
-   * 规划条数补齐（纯函数）：说 5 道就必须有 5 格。
-   *
-   * 根因：模型常只给 4 条计划——配额分了 vocab2/sentence1/phonics1/grammar1，
-   * 它少给一条照样返回成功。出题循环以前按 plans.length 走，规划少一条就少出一题；
-   * 出题阶段的替补/候选补位只在「已有格子」里打转，救不了根本不存在的那一格。
-   *
-   * 这里在规划层补齐：先补配额里没给够的能力，再补任意没用过的考点。
-   * 补的是「本还想考、模型漏了」的目标，不是假题——后面照样过生成和代码闸，
-   * 出不成仍由替补顶上，只是格子数从一开始就是 want。
-   *
-   * @returns {{plans:Array, added:Array}} 新数组，不改入参
-   */
-  SHT.pipeline.fillPlanSlots = function (plans, want, opts) {
-    const o = opts || {};
-    const pool = o.kpPool || [];
-    const retired = o.retired || [];
-    const short = o.short || [];
-    const cap = o.cap || '';
-    const out = (plans || []).slice();
-    const used = Object.create(null);
-    out.forEach(function (p) { used[normKpText(p.kp)] = true; });
-    const added = [];
-    if (out.length >= want) return { plans: out, added: added };
-
-    const need = [];
-    short.forEach(function (s) {
-      for (let n = 0; n < Math.max(0, (s.want || 0) - (s.got || 0)) && need.length < want - out.length; n += 1) {
-        need.push(s.ability);
-      }
+  function call(role, ctx) {
+    const r = SHT.ROLES[role];
+    return SHT.llm.call({
+      role: role,
+      system: r.system(),
+      user: r.user(ctx),
+      seen: ctx.seen || [],
+      temperature: 0.6,
+      maxTokens: role === 'generate' ? 1200 : 1600
     });
-    while (need.length < want - out.length) need.push('');
-    need.forEach(function (ability) {
-      if (out.length >= want) return;
-      const open = pool.filter(function (k) {
-        const n = normKpText(k.kp);
-        return n && !used[n] && retired.indexOf(k.kp) < 0;
-      });
-      const pick = (ability && open.filter(function (k) { return k.ability === ability; })[0]) || open[0];
-      if (!pick) return;
-      used[normKpText(pick.kp)] = true;
-      const lv = defaultLevel({ ability: pick.ability, level: cap });
-      const p = {
-        kp: pick.kp, ability: pick.ability,
-        cause: '', whyThisOne: '规划少给了一条，从本单元还没排的考点补上',
-        nextIfWrong: '', level: lv, fromPool: true
-      };
-      out.push(p);
-      added.push(p);
-    });
-    out.forEach(function (p, i) { p.no = i + 1; });
-    return { plans: out, added: added };
-  };
+  }
 
-  SHT.pipeline.buildBrief = function (opts) {
-    const o = opts || {};
-    const unitId = o.unitId || (SHT.curriculum && SHT.curriculum.id);
-    const rounds = o.rounds || [];
-    /*
-     * 错题里存的是教材单元 id（G4-上-U1 / HEB4-上-U1），这里传进来的是册内 id（U1）。
-     * 以前只比 unitId，一条都命中不了 —— 结果课程角色永远读不到「他上次错在哪」，
-     * 「错题 → 下一轮」这条闭环是断的，而界面上看不出来（错题本照常显示）。
-     */
-    const unit = unitOf(unitId);
-    const hostIds = [];
-    if (unit && unit.hostUnitId) hostIds.push(unit.hostUnitId);
-    // 有些调用方直接传教材单元 id（审计台的复用段就是这么传的），那条路径由 unitId 自己命中
-    if (SHT.curriculum && SHT.curriculum.id === unitId && SHT.curriculum.hostUnitId) {
-      hostIds.push(SHT.curriculum.hostUnitId);
-    }
-    const wrongCases = (o.wrongCases || []).filter(function (c) {
-      return !c.unitId || c.unitId === unitId || hostIds.indexOf(c.unitId) >= 0;
-    });
-    const proj = SHT.projectWeaknesses(wrongCases, SHT.curriculum && SHT.curriculum.topicDomain);
-
-    const priority = (proj.queue || []).slice(0, 3).map(function (i) {
-      return {
-        kp: i.label,
-        kpId: i.kpId || '',
-        missCount: i.errorCount,
-        ability: i.ability,
-        cause: i.topCause,
-        stage: i.errorCount >= 2 ? 'variant-failed' : '',
-        cell: i.suggestedCell || null,
-        // 上一轮那道原题。生成时当反例用：同一考点、换题面，但别照着这一版改字。
-        prevPrompt: i.snapshot || '',
-        // 上一轮那道题的 id：变体题要挂上它，审计时才能画出「谁从谁演化来」
-        prevQid: i.qid || '',
-        // 以下四项是「作答证据」，不是「出题意图」：
-        //   诊断角色说他错在哪一维、上次选了什么、花了多久、有没有用提示
-        // 课程角色要据此决定下一轮往哪个方向压，而不是只看「错了几次」。
-        diag: i.diag || null,
-        pKnown: i.pKnown,
-        lastPicked: i.lastPicked || '',
-        lastAnswer: i.lastAnswer || '',
-        lastMs: i.lastMs || 0,
-        lastHint: i.lastHint || 0
-      };
-    });
-
-    const byKp = {};
-    rounds.forEach(function (r) {
-      const attempts = (r.practice && r.practice.attempts) || [];
-      attempts.forEach(function (a) {
-        if (!a.kpLabel) return;
-        (byKp[a.kpLabel] = byKp[a.kpLabel] || []).push(a);
-      });
-    });
-    const masteredInRound = Object.keys(byKp).filter(function (k) {
-      return SHT.judgePoint(byKp[k]).state === 'mastered';
-    });
-    // 一轮里只答一枪，「真会」现在主要落在错题本上：错过、下一轮回练连对两次才算。
-    // 只看轮内作答的话，这份清单永远空，规划就不知道哪些考点不用再出。
-    const masteredInCases = wrongCases.filter(function (c) {
-      return c.masteryState === 'mastered';
-    }).map(function (c) { return c.knowledgePoint; });
-    const mastered = masteredInRound.concat(masteredInCases.filter(function (k) {
-      return masteredInRound.indexOf(k) < 0;
-    }));
-
-    const blockedCells = [];
-    rounds.forEach(function (r) {
-      (r.questions || []).forEach(function (q) {
-        if (q && q.cell) blockedCells.push(q.cell);
-      });
-    });
-
-    const tested = Object.keys(byKp).length;
-    const masteredCount = mastered.length;
-    let levelHint = '持平';
-    if (tested >= 3 && masteredCount === 0) levelHint = '整体降一档';
-    else if (tested >= 3 && masteredCount / tested >= 0.8) levelHint = '升一档';
-
-    /*
-     * 验证角色的输出要进课程的输入：不是整道题，是「哪个考点、卡在哪几条、几次」。
-     * 课程据此换一个能落地的说法重排，而不是把上一轮的计划原样再写一遍。
-     */
-    const byKpFail = {};
-    // 只汇总最近这一小段：失败记录是跨轮累积的，越早的越不代表「这一轮为什么没过」。
-    // 数组是最新的在前，取前 40 条足够覆盖上一轮。
-    (o.failures || []).slice(0, 40).forEach(function (f) {
-      if (!f || !f.planKp) return;
-      const codes = f.codes || [];
-      if (codes.indexOf('PLAN_RETIRED') >= 0) return;
-      const e = byKpFail[f.planKp] = byKpFail[f.planKp] || { kp: f.planKp, codes: [], times: 0 };
-      e.times += 1;
-      codes.forEach(function (c) { if (e.codes.indexOf(c) < 0) e.codes.push(c); });
-    });
-    const rejects = Object.keys(byKpFail).map(function (k) {
-      const e = byKpFail[k];
-      return {
-        kp: e.kp, times: e.times, codes: e.codes,
-        text: e.codes.map(function (c) { return SHT.codeLabel(c); }).join('；')
-      };
-    }).sort(function (a, b) { return b.times - a.times; }).slice(0, 4);
-
+  function normalizePlan(p) {
     return {
-      unitId: unitId,
-      priority: priority,
-      mastered: mastered,
-      blockedCells: blockedCells,
-      levelHint: levelHint,
-      testedCount: tested,
-      rejects: rejects,
-      note: priority.length ? '上一轮错过的考点优先' : '无历史错题，按单元难点排'
+      kp: String((p && p.kp) || ''),
+      ability: String((p && p.ability) || 'vocab'),
+      level: String((p && p.level) || '认'),
+      angle: String((p && p.angle) || '')
     };
-  };
-
-  // 考点串的归一：去空白、去分隔点、小写。全局一份，避免两处实现慢慢漂开。
-  function normKpText(s) {
-    return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[·・.]/g, '');
   }
 
-  /*
-   * 考点串 → 英文实词集合。
-   * "vocab · parents / uncle / aunt / cousin · 家庭成员称呼混淆" → {parents, uncle, aunt, cousin}
-   * 中文那半段是给人看的说明，决定「考哪些词」的是英文；能力词本身不算内容。
-   */
-  const ABILITY_WORDS = ['vocab', 'spelling', 'grammar', 'sentence', 'listening', 'speaking', 'phonics'];
-  SHT.pipeline.kpWords = function (kp, ability) {
-    const out = new Set();
-    const skip = ability ? String(ability).toLowerCase() : '';
-    String(kp || '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).forEach(function (w) {
-      if (w.length < 2 || w === skip || ABILITY_WORDS.indexOf(w) >= 0) return;
-      out.add(w);
+  /* 方案少给时从本单元词表补，保证「说几道就出几道」。 */
+  function fillPlans(plans, count, unit) {
+    const out = plans.slice(0, count).map(normalizePlan);
+    const used = out.map(function (p) { return p.kp; }).join(' ');
+    (unit.words || []).forEach(function (w) {
+      if (out.length >= count) return;
+      if (used.indexOf(w.en) >= 0) return;
+      out.push({ kp: w.en + '（' + w.zh + '）的词义', ability: 'vocab', level: '认', angle: '中英匹配' });
     });
+    while (out.length < count) {
+      out.push({ kp: '本单元句型运用 ' + (out.length + 1), ability: 'sentence', level: '用', angle: '选词填空' });
+    }
     return out;
-  };
-
-  /*
-   * 计划里的考点 ↔ 错题画像里的考点，判它们是不是同一条。
-   *
-   * 为什么要分三层：模型几乎不照抄考点文本。实测一轮 5 条计划，考点串 5 条全是它自己
-   * 重写的（候选清单原文一条没抄）。只做字符串相等/包含，probe 会大量漏挂——
-   * 而漏挂的后果是「错题明明在错题本里，第二轮却当没有」，界面上一点异常都看不出来。
-   *
-   * 第三层用英文实词重合度（Jaccard ≥ 0.6 且同能力），结果标 match:'near'，
-   * 意思是「挂上了，但按近似挂的」，审计与导出都能看出差别，不冒充逐字命中。
-   */
-  SHT.pipeline.matchPriority = function (plan, prio) {
-    const list = prio || [];
-    if (!plan || !list.length) return null;
-    const n = normKpText(plan.kp);
-    if (!n) return null;
-
-    for (let i = 0; i < list.length; i += 1) {
-      if (normKpText(list[i].kp) === n) return { item: list[i], match: 'exact', score: 1 };
-    }
-    for (let i = 0; i < list.length; i += 1) {
-      const a = normKpText(list[i].kp);
-      if (a && (a.indexOf(n) >= 0 || n.indexOf(a) >= 0)) return { item: list[i], match: 'contain', score: 1 };
-    }
-
-    const words = SHT.pipeline.kpWords;
-    const mine = words(plan.kp, plan.ability);
-    if (!mine.size) return null;
-    let best = null;
-    list.forEach(function (x) {
-      if (plan.ability && x.ability && plan.ability !== x.ability) return;
-      const theirs = words(x.kp, x.ability);
-      if (!theirs.size) return;
-      let common = 0;
-      mine.forEach(function (w) { if (theirs.has(w)) common += 1; });
-      const jac = common / (mine.size + theirs.size - common);
-      if (jac >= 0.6 && (!best || jac > best.score)) best = { item: x, match: 'near', score: jac };
-    });
-    return best;
-  };
-
-  /*
-   * 失败记录带轮次。以前不带，界面只能拿「全部失败记录」当「这一轮的」，
-   * 第二轮一跑就显示「这一轮有 78 条没出成」——那其实是两轮累计。
-   * 轮次从 runRound 的 opts.round 传进来（app 知道当前是第几轮），
-   * 没有就记 0，界面按时间兜底。
-   */
-  function failEntry(base, roundNo) {
-    return Object.assign({ at: now(), round: roundNo || 0 }, base);
   }
 
-  function codesOf(fails) {
-    return (fails || []).map(function (f) { return f.id; });
+  function snapshot(raw, plan, no) {
+    const q = raw || {};
+    const opts = Array.isArray(q.options) ? q.options.filter(function (x) { return x != null && String(x).trim(); }) : [];
+    const notes = Array.isArray(q.optionNotes) ? q.optionNotes.map(function (x) { return String(x || ''); }) : [];
+    return {
+      no: no,
+      plan: plan,
+      prompt: String(q.prompt || ''),
+      options: opts.map(function (x) { return String(x); }),
+      answer: String(q.answer || ''),
+      analysis: String(q.analysis || ''),
+      optionNotes: notes,
+      score: null,
+      passed: null,
+      scoresDetail: null,
+      feedback: ''
+    };
   }
 
-  function failsText(fails) {
-    return (fails || []).map(function (f) { return f.id + '：' + f.detail; }).join('；');
+  function avgScore(questions) {
+    const vals = questions.map(function (q) { return q.score; })
+      .filter(function (s) { return typeof s === 'number' && isFinite(s); });
+    if (!vals.length) return null;
+    return Math.round(vals.reduce(function (a, b) { return a + b; }, 0) / vals.length);
   }
 
   /**
-   * 跑一轮。
-   * @param {object} opts {
-   *   unit, count, brief, existing, onEvent, maxAttempts,
-   *   planOnly
-   * }
+   * 跑完整的多轮出题。
+   * @param {object} o { unit, bookName, count, onEvent }
+   * @returns {Promise<{rounds:Array, errors:Array}>}
+   *          rounds[].questions 是这一轮的完整题目，界面直接按轮展示。
    */
-  SHT.pipeline.runRound = async function (opts) {
-    const o = opts || {};
-    const unit = o.unit || SHT.curriculum;
-    const count = o.count || 5;
-    const book = SHT.BOOKS.current();
-    const ctxBase = {
-      bookName: book.meta.shortName,
-      bookMeta: book.meta,
-      unit: unit
-    };
-    const failures = [];
-    // 本轮编号：失败记录都带它，界面才分得清「这一轮的」和「两轮累计的」
-    const ROUND_NO = o.round || 0;
-    const fail = function (base) { return failEntry(base, ROUND_NO); };
+  async function runRound(o) {
+    const unit = o.unit;
+    const bookName = o.bookName || '';
+    const count = Math.max(1, Math.floor(Number(o.count) || 5));
     const onEvent = typeof o.onEvent === 'function' ? o.onEvent : function () {};
-    // 本轮要考察的知识点范围（[{label, ability, cell}]）。空 = 不限制，由模型现场提。
-    const scope = (o.scope || []).filter(function (s) { return s && s.label; });
-    // 四个角色各自的记忆：由代码在调用之间搬运，下一轮各自读回
-    const memory = (o.memory && o.memory.plan) ? o.memory : SHT.agentMemory.blank();
-    const recall = function (id) { return SHT.agentMemory.recallText(memory, id); };
+    const rounds = [];
+    const errors = [];
+    const bookMeta = (root.SHT && root.SHT.BOOKS && SHT.BOOKS.current().meta) || {};
+    let planFeedback = [];
+    const seen = [];
 
-    // 考点推进：会过的考点退役、升层的考点带上目标层次、学生分层给层次上限
-    const progress = (o.progress && o.progress.points) ? o.progress : SHT.progress.blank();
-    const hint = SHT.progress.planHint(progress, { layer: (o.stage && o.stage.layer) || 'B', scope: scope });
-    /*
-     * 层次上限改由学习者模型给：planHint 的 cap 是画像页选的固定 A/B/C，
-     * 学生连对几轮也不会变。levelCap 由真实作答轨迹算，会按表现升/降一档。
-     */
-    if (o.levelCap && o.levelCap.cap && SHT.LEVELS.indexOf(o.levelCap.cap) >= 0) {
-      hint.cap = o.levelCap.cap;
-      hint.levelCapSource = 'learner';
-    }
+    for (let roundNo = 1; roundNo <= MAX_ROUNDS; roundNo += 1) {
+      // 上一轮及更早的题目，用来在本轮出完之后做确定性查重兜底
+      const beforeRound = seen.slice();
+      onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：正在指定方案', round: roundNo });
 
-    // 跨轮去重：以前 buildExclusionList / contentFingerprint 都写好了却没接进来，
-    // used 只装当前轮已有的题，模型把上一轮的题干照抄一遍也照样过闸。
-    const history = (o.history || []).filter(function (q) { return q && q.prompt; });
-    const historyFps = Object.create(null);
-    history.forEach(function (q) { historyFps[SHT.contentFingerprint(q)] = true; });
-    const usedFps = Object.create(null);
-    const decisions = o.decisions || (o.brief && o.brief.decisions) || [];
-    const scopeAlive = scope.filter(function (s) { return hint.retired.indexOf(s.label) < 0; });
-    hint.retiredInScope.forEach(function (kp) {
-      failures.push(fail({
-        stage: 'plan', attempt: 1, planKp: kp, codes: ['PLAN_RETIRED'],
-        reason: '这个考点他已经真会到顶了，本轮从范围里移出', detail: ''
-      }));
-    });
-    const normKp = normKpText;
-
-    // 能力配额：给了就用给的（人改过的优先），没给就按「范围 → 错题 → 本册」自动算。
-    // 题量不是「出 5 题」，是「词汇 2 / 语法 2 / 听力 1」这张小表。
-    const quota = (o.quota && SHT.quota.sum(o.quota) > 0)
-      ? SHT.quota.normalize(o.quota)
-      : SHT.quota.auto({ scope: scopeAlive, brief: o.brief, kps: (unit.kps || SHT.kpsOf(unit.id) || []), total: count });
-    const quotaSum = SHT.quota.sum(quota);
-    let quotaReport = null;
-
-    // ---------- 环节 1：规划 ----------
-    const want = scopeAlive.length ? Math.min(quotaSum, scopeAlive.length) : quotaSum;
-    // 正取 want 条，另外多要一批当替补：某一格实在出不成时由它顶上。
-    // 题量是硬约束（说 5 道就 5 道），所以预留量按退题率估，不再是固定 2 条。
-    const wantBench = benchSizeOf(want);
-    onEvent({
-      phase: 'plan',
-      text: '规划中：' + want + ' 条考点' + (scopeAlive.length ? '（范围 ' + scopeAlive.length + ' 个）' : '') +
-        '　替补 ' + wantBench + ' 条' +
-        (hint.layer ? '　' + hint.layer + ' 层上限 ' + hint.cap : '') + '　配额 ' + SHT.quota.text(quota)
-    });
-    let plans = null;
-    let spare = [];
-    const planAgent = SHT.ROLES.plan;
-    for (let i = 0; i < 2 && !plans; i += 1) {
-      const res = await SHT.llm.call({
-        role: 'plan',
-        system: planAgent.system(),
-        user: planAgent.user(Object.assign({}, ctxBase, {
-          brief: o.brief, blockedCells: (o.brief && o.brief.blockedCells) || [],
-          count: want + wantBench, bench: wantBench, want: want,
-          scope: scopeAlive, stage: hint, quota: quota
-        })) + (recall('plan') ? '\n\n' + recall('plan') : ''),
-        maxTokens: 1600
+      const planRes = await call('plan', {
+        unit: unit, bookName: bookName, count: count,
+        feedback: planFeedback.slice(), seen: seen.map(seenLine)
       });
-      if (res.ok && res.json && Array.isArray(res.json.plans) && res.json.plans.length) {
-        plans = res.json.plans.map(function (p, idx) {
-          return {
-            kp: String(p.kp || p.knowledgePoint || '').trim(),
-            ability: (SHT.SKILL_CATEGORIES.indexOf(p.ability) >= 0) ? p.ability : 'vocab',
-            cause: String(p.cause || '').trim(),
-            whyThisOne: String(p.whyThisOne || '').trim(),
-            nextIfWrong: String(p.nextIfWrong || '').trim(),
-            level: SHT.LEVELS.indexOf(p.level) >= 0 ? p.level : '',
-            no: idx + 1
-          };
-        }).filter(function (p) { return p.kp; });
-        // 范围的硬校验：说好只考这几个，就得真落在这几个上。
-        // 提示词里写「必须照抄」不管用，模型会顺手把它改得更漂亮。
-        if (scopeAlive.length) {
-          const pool = scopeAlive.map(function (s) { return normKp(s.label); });
-          const kept = [];
-          plans.forEach(function (p) {
-            const n = normKp(p.kp);
-            const hit = pool.some(function (x) { return x === n || x.indexOf(n) >= 0 || n.indexOf(x) >= 0; });
-            if (hit) { kept.push(p); return; }
-            failures.push(fail({
-              stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_SCOPE'],
-              reason: '考点不在本轮选定范围内，这一条不排题：「' + p.kp + '」', detail: ''
-            }));
-          });
-          plans = kept;
+      if (!planRes.ok) {
+        errors.push({ round: roundNo, role: 'plan', message: planRes.error ? planRes.error.message : '方案没返回' });
+        break;
+      }
+      const rawPlans = Array.isArray(planRes.json && planRes.json.plans) ? planRes.json.plans : [];
+      const plans = fillPlans(rawPlans, count, unit);
+      const questions = [];
+      const feedbacks = [];
+      onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：定了 ' + plans.length + ' 个考点', round: roundNo });
+
+      for (let i = 0; i < plans.length; i += 1) {
+        const plan = plans[i];
+        const no = i + 1;
+        onEvent({ role: 'generate', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在写', round: roundNo, no: no });
+        const gen = await call('generate', {
+          unit: unit, bookName: bookName, plan: plan, seen: seen.map(seenLine)
+        });
+        if (!gen.ok) {
+          errors.push({ round: roundNo, no: no, role: 'generate',
+            message: gen.error ? gen.error.message : '没出题' });
+          continue;
         }
-        // 层次上限：C 层不给「用」，B 层不给「表达」。模型爱往高考，代码按住。
-        plans.forEach(function (p) {
-          if (SHT.LEVELS.indexOf(p.level) < 0) { p.level = hint.cap; return; }
-          const over = SHT.LEVELS.indexOf(p.level) > SHT.LEVELS.indexOf(hint.cap);
-          if (over) {
-            failures.push(fail({
-              stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_LEVEL_CAP'],
-              reason: '层次「' + p.level + '」超过 ' + hint.layer + ' 层的上限「' + hint.cap + '」，已降到上限', detail: ''
-            }));
-            p.level = hint.cap;
-          }
-        });
-        // 退役考点再出现（模型从记忆里抄回来的），直接剔掉
-        plans = plans.filter(function (p) {
-          if (hint.retired.indexOf(p.kp) < 0) return true;
-          failures.push(fail({
-            stage: 'plan', attempt: i + 1, planKp: p.kp, codes: ['PLAN_RETIRED'],
-            reason: '这个考点已经真会到顶，不再排题', detail: ''
-          }));
-          return false;
-        });
+        const q = snapshot(gen.json, plan, no);
+        if (!q.prompt || q.options.length < 2) {
+          q.passed = false;
+          q.feedback = '题目字段不全';
+          questions.push(q);
+          continue;
+        }
 
-        // 能力配额：模型爱把一整轮都写成 vocab（最容易出题），代码按住。
-        // 先按配额裁，再截总条数——反过来会把靠后能力的题当超额砍掉。
-        const applied = SHT.quota.apply(plans, quota);
-        applied.over.forEach(function (x) {
-          failures.push(fail({
-            stage: 'plan', attempt: i + 1, planKp: x.kp, codes: ['QUOTA_OVER'],
-            reason: '「' + x.ability + '」这一轮只排 ' + quota.byAbility[x.ability] + ' 条，这条不当正取（留作替补）', detail: ''
-          }));
+        onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在打分', round: roundNo, no: no });
+        const ver = await call('verify', {
+          unit: unit, bookName: bookName, bookMeta: bookMeta, plan: plan,
+          question: q, seen: seen.map(seenLine)
         });
-        // 配额外的能力没被剔掉（名额还空着就收下），只留一笔在报告里，不算失败
-        applied.report.short.forEach(function (x) {
-          failures.push(fail({
-            stage: 'plan', attempt: i + 1, codes: ['QUOTA_SHORT'],
-            reason: '「' + x.ability + '」配额 ' + x.want + ' 条，规划只给了 ' + x.got + ' 条', detail: ''
-          }));
-        });
-        /*
-         * 替补从「没当上正取」的那些里挑：被配额挤出来的、以及超出总条数的。
-         * 不另开一次模型调用——正取没排上的考点本来就是最合适的替补，
-         * 它们和这一轮的方向最近，顶上去不像外来的题。
-         */
-        spare = applied.over.map(function (x) {
-          return plans.filter(function (p) { return p.kp === x.kp; })[0];
-        }).filter(Boolean)
-          .concat(applied.plans.slice(want))
-          .slice(0, wantBench);
-        plans = applied.plans.slice(0, want);
-        plans.forEach(function (p, idx) { p.no = idx + 1; });
-        quotaReport = applied.report;
-        if (!plans.length) plans = null;
+        if (!ver.ok) {
+          q.passed = null;
+          q.feedback = '没收到打分';
+          errors.push({ round: roundNo, no: no, role: 'verify',
+            message: ver.error ? ver.error.message : '没给分数' });
+        } else {
+          const v = ver.json || {};
+          const score = Number(v.total_score);
+          q.score = isFinite(score) ? score : null;
+          q.passed = v.passed === true;
+          q.scoresDetail = v.scores_detail || null;
+          q.feedback = String(v.feedback_to_thinker || '');
+        }
+        // 确定性兜底：整题和之前某轮一模一样，模型漏判也直接打回
+        if (isRepeat(q, beforeRound)) {
+          q.passed = false;
+          q.score = q.score == null ? null : Math.max(0, q.score - 20);
+          q.feedback = '这道题和之前出过的题一样，必须改变句式结构或情境。';
+        }
+        if (!q.passed && q.feedback) feedbacks.push(q.feedback);
+        if (q.prompt) seen.push(q);
+        questions.push(q);
+        onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：' +
+          (q.passed ? '通过' : '未通过'), round: roundNo, no: no, question: q });
       }
-      if (!plans) {
-        failures.push(fail({
-          stage: 'plan', attempt: i + 1, codes: res.ok ? ['PLAN_EMPTY'] : [shtErrType(res)],
-          reason: res.ok ? '返回里没有可用的 plans' : shtErrMsg(res),
-          detail: res.text ? String(res.text).slice(0, 300) : ''
-        }));
-        onEvent({ phase: 'retry', text: '规划没成，重试一次' });
-      }
-    }
-    if (!plans) {
-      onEvent({ phase: 'done', text: '规划失败，本轮没有出题' });
-      return { ok: false, plans: [], questions: [], failures: failures, stage: 'plan',
-        quota: quota, quotaReport: null };
-    }
 
-    // 考点去重：模型偶尔把同一个考点换个说法给两条，出出来就是两道同考点的题。
-    // 宁可这一轮少一道，也不出两道重复的；被去掉的写进失败记录，不静默吞掉。
-    const seenKp = Object.create(null);
-    const deduped = [];
-    plans.forEach(function (p) {
-      const k = p.kp.toLowerCase().replace(/\s+/g, ' ');
-      if (seenKp[k]) {
-        failures.push(fail({
-          stage: 'plan', attempt: 1, planKp: p.kp, codes: ['PLAN_DUP'],
-          reason: '考点与前面重复：「' + p.kp + '」，这一条不排题', detail: ''
-        }));
-        return;
-      }
-      seenKp[k] = true;
-      deduped.push(p);
-    });
-    if (deduped.length !== plans.length) {
-      plans = deduped;
-      plans.forEach(function (p, i) { p.no = i + 1; });
-      onEvent({ phase: 'planned', plans: plans, text: '考点去重后剩 ' + plans.length + ' 条' });
-    }
-
-    /*
-     * 规划条数补齐：说 5 道就必须有 5 格。
-     * 模型经常只给 4 条计划（配额分了 vocab2/sentence1/phonics1/grammar1，
-     * 它少给一条也照样返回），以前出题循环按 plans.length 走， Planning 少一条
-     * 就少出一题，替补与候选补位都只在「已有的格子」里打转，救不了缺失的那一格。
-     * 这里在规划层就把格子补齐：优先补配额里没给够的能力，其次补任意没用过的考点。
-     * 补的是「这一轮还想过但模型漏了」的目标，不是硬凑假题——后面照样过生成与代码闸，
-     * 出不成仍然由替补/候选顶上，只是格子数从一开始就是 want。
-     */
-    if (plans.length < want) {
-      const filled = SHT.pipeline.fillPlanSlots(plans, want, {
-        kpPool: kpPool, retired: hint.retired,
-        short: (quotaReport && quotaReport.short) || [], cap: hint.cap
-      });
-      plans = filled.plans;
-      filled.added.forEach(function (p) {
-        failures.push(fail({
-          stage: 'plan', attempt: 1, planKp: p.kp, codes: ['PLAN_FILL'],
-          reason: '模型给的计划不够 ' + want + ' 条，从本单元未排考点补一条：' + p.kp, detail: ''
-        }));
-      });
-      onEvent({ phase: 'planned', plans: plans, text: '规划补齐到 ' + plans.length + ' 条（目标 ' + want + '）' });
-    }
-
-    /*
-     * 替补：正取之外多要的那几条。不占配额、不占格子、不进 plans，
-     * 只有某一格连续退不成时才顶上（顶上那一刻才分配格子）。
-     * 和正取撞同一个考点的直接剔掉——替补的意义是换一条路，不是把正取再写一遍。
-     */
-    const bench = spare.filter(function (p) {
-      const n = normKp(p.kp);
-      return !!n && !plans.some(function (x) { return normKp(x.kp) === n; });
-    }).map(function (p) { return Object.assign({}, p, { bench: true }); });
-
-    // 上一轮错的考点：这一轮请模型换题面重出，标记成 probe。
-    // 这一枪和上一轮的首答配成一对，才判得出是真会还是只记住那道题。
-    // 用代码标记而不是让模型自己声明：模型会把「我觉得相关」也算进去。
-    const prio = (o.brief && o.brief.priority) || [];
-    const markProbe = function (p) {
-      const hit = SHT.pipeline.matchPriority(p, prio);
-      if (!hit || !hit.item) return;
-      const near = hit.item;
-      p.probe = {
-        kpId: near.kpId || '',
-        // 变体挂在错题本里那道原题的 id 上（不是题干）。审计台靠它回答
-        // 「第二轮的这道题，是不是从第一轮那道错题演化来的」。
-        parentQid: near.prevQid || '',
-        prevPrompt: near.prevPrompt || '',
-        missCount: near.missCount || 1,
-        // 'exact' 逐字/'contain' 包含；'near' 是按词面重合近似挂的，人工值得看一眼。
-        // 留这个字段是因为「挂上了」和「挂对了」不是一回事。
-        match: hit.match
+      const total = avgScore(questions);
+      const passed = questions.length > 0 && questions.every(function (q) { return q.passed === true; }) &&
+        total != null && total >= PASS_LINE;
+      const round = {
+        no: roundNo,
+        score: total,
+        passed: passed,
+        feedback: feedbacks.slice(0, 6),
+        questions: questions
       };
-    };
-    plans.forEach(markProbe);
-    // 替补顶上来时同样要对上那一枪，否则「他到底是不是真会了」配不成对
-    bench.forEach(markProbe);
+      rounds.push(round);
+      onEvent({ role: 'round', text: '第 ' + roundNo + ' 轮完成：' +
+        (total == null ? '没有分数' : total + ' 分') + (passed ? '，通过' : '，继续下一轮'),
+        round: roundNo, roundData: round });
 
-    /*
-     * 代码决策覆盖模型的「凭感觉」：层次与干扰项类型由学习者模型按轨迹算出来，
-     * 挂到 plan 上，生成时会一并写进题里。模型仍负责写题面，但不再决定考多难。
-     * matchPriority 的三层对齐（exact / contain / near）复用错题挂接那套，
-     * 模型把考点措辞改了也还能对上；对不上就保留模型给的值，不硬套。
-     */
-    const applyDecision = function (p) {
-      if (!decisions.length) return;
-      const hit = SHT.pipeline.matchPriority(p, decisions);
-      if (!hit || !hit.item) return;
-      const d = hit.item;
-      if (SHT.LEVELS.indexOf(d.level) >= 0) p.level = d.level;
-      if (SHT.DISTRACTORS.indexOf(d.distractor) >= 0) p.cellDistractor = d.distractor;
-      /*
-       * 考点名一律换成课程原文。
-       * 题上的 knowledgePoint 会被写进每一条答题事件，而答题事件又是学习者模型的键。
-       * 模型把「vocab · classroom · 教室物品」写成「教室物品」时，键就对不上课程清单，
-       * 下一轮 decide 按课程标签查不到这个考点，学生会表现为「明明答对过，却像没学过」。
-       * 原名留在 kpRaw 里，导出能看出模型当时写的是什么。
-       */
-      if (d.kp && d.kp !== p.kp) {
-        p.kpRaw = p.kp;
-        p.kp = d.kp;
-        p.kpAligned = hit.match;
-      }
-      p.decision = {
-        kp: d.kp, rule: d.rule, ruleText: d.ruleText, action: d.action,
-        evidence: d.evidence, reason: d.reason, match: hit.match
-      };
-    };
-    plans.forEach(applyDecision);
-    bench.forEach(applyDecision);
-
-    /*
-     * 决策单没覆盖到的计划（被配额挤出、模型自由发挥），再用本单元候选对一次。
-     * 只对齐「挂上决策」的那几条不够：替补顶上来的、换出来的题同样会带改写名，
-     * 它们一样会写进答题事件。
-     */
-    const kpPool = (unit.kps || SHT.kpsOf(unit.id) || []).map(function (k) {
-      return { kp: k.label, ability: k.ability, id: k.id };
-    });
-    const alignKp = function (p) {
-      if (p.kpAligned || !p.kp) return;
-      const hit = SHT.pipeline.matchPriority(p, kpPool);
-      if (!hit || !hit.item) { p.kpAligned = 'none'; return; }
-      p.kpRaw = p.kp;
-      p.kp = hit.item.kp;
-      p.kpAligned = hit.match;
-    };
-    plans.forEach(alignKp);
-    bench.forEach(alignKp);
-
-    // ---------- 分格（代码，不让模型碰） ----------
-    // 已用格子 = 本轮已有题 + 历史所有轮。历史格子进 used，跨轮换格子才真的生效。
-    const used = (o.existing || []).map(function (q) { return q.cell; }).filter(Boolean)
-      .concat(history.map(function (q) { return q.cell; }).filter(Boolean));
-    plans.forEach(function (p, i) {
-      p.cell = SHT.pickCell(p, used, unit, i);
-      used.push(p.cell);
-    });
-    onEvent({ phase: 'planned', plans: plans, text: '规划完成：' + plans.length + ' 条' });
-
-    if (o.planOnly) {
-      return { ok: true, plans: plans, bench: bench, questions: [], failures: failures, stage: 'plan',
-        quota: quota, quotaReport: quotaReport,
-        memoryNext: SHT.agentMemory.commit(memory, {
-          questions: [], failures: failures,
-          attempts: o.attempts || [], priorAttempts: o.priorAttempts || []
-        }) };
+      if (passed) break;
+      planFeedback = feedbacks.length ? feedbacks.slice(0, 6) :
+        ['上一轮题目质量不足，请写清目标词汇、情境和切入点后重做方案'];
     }
 
-    // ---------- 环节 2 / 闸 / 环节 3 ----------
-    const questions = [];
-    const maxAttempts = o.maxAttempts || MAX_ATTEMPTS;
+    return { rounds: rounds, errors: errors };
+  }
 
-    // 本轮已经排上的考点（含换出来、顶上来的），防止两格撞同一个点
-    const takenKp = Object.create(null);
-    plans.forEach(function (p) { takenKp[normKp(p.kp)] = true; });
-
-    /*
-     * 换相近考点：只在「这个考点的诱饵造不出来」的时候用。
-     * 候选池只取这一轮真能考的：给了范围就只用范围里剩下的，没给就用本单元候选清单。
-     * 挑法不调模型——同能力优先，其次字面重合的词多。这一步要在退题的当下就决定，
-     * 等一次模型调用会把「这一个考点造不出诱饵」拖成整轮的等待。
-     */
-    function nearKpFor(from, stage, scopeList) {
-      const pool = [];
-      if ((scopeList || []).length) {
-        scopeList.forEach(function (s) { pool.push({ kp: s.label, ability: s.ability || '' }); });
-      } else {
-        (SHT.kpsOf(unit.id) || []).forEach(function (k) { pool.push({ kp: k.label, ability: k.ability || '' }); });
-      }
-      let best = null;
-      let bestScore = -1;
-      pool.forEach(function (c) {
-        const n = normKp(c.kp);
-        if (!n || takenKp[n]) return;
-        if ((stage.retired || []).indexOf(c.kp) >= 0) return;
-        let score = (c.ability && c.ability === from.ability) ? 2 : 0;
-        score += kpAffinity(c.kp, from.kp);
-        if (score > bestScore) { bestScore = score; best = c; }
-      });
-      if (!best) return null;
-      const ability = best.ability || from.ability;
-      const lv = defaultLevel({ ability: ability, level: from.level });
-      return {
-        kp: best.kp,
-        ability: ability,
-        cause: from.cause,
-        whyThisOne: from.whyThisOne,
-        nextIfWrong: from.nextIfWrong,
-        level: SHT.LEVELS.indexOf(lv) > SHT.LEVELS.indexOf(stage.cap) ? stage.cap : lv,
-        probe: null,
-        switchedFrom: from.kp
-      };
-    }
-
-    // 替补顶上：优先同能力的那条（顶上去仍保持在原来那类能力的配比上），没有就用第一条。
-    const benchLeft = bench.slice();
-    function nextBench(from) {
-      // 换考点可能已经用掉了替补里的某一条，顶上时不能重复排同一个考点
-      const open = benchLeft.filter(function (b) { return !takenKp[normKp(b.kp)]; });
-      if (!open.length) return null;
-      const sameAbility = open.filter(function (b) { return b.ability === from.ability; })[0];
-      const picked = sameAbility || open[0];
-      benchLeft.splice(benchLeft.indexOf(picked), 1);
-      const lv = defaultLevel({ ability: picked.ability, level: picked.level || from.level });
-      return {
-        kp: picked.kp,
-        ability: picked.ability,
-        cause: picked.cause || from.cause,
-        whyThisOne: picked.whyThisOne || from.whyThisOne,
-        nextIfWrong: picked.nextIfWrong || from.nextIfWrong,
-        level: SHT.LEVELS.indexOf(lv) > SHT.LEVELS.indexOf(hint.cap) ? hint.cap : lv,
-        probe: picked.probe || null,
-        fromBench: true
-      };
-    }
-
-    /*
-     * 最后一道保险：替补池也空了，就从本单元还没考过的考点里取一条同能力的。
-     * 题量是硬约束——说 5 道就得 5 道，所以宁可换一个没考过的考点再试，
-     * 也不直接留空。不调规划模型：这一步要在退题的当下就决定，
-     * 等一次模型调用会把「这一格出不来」拖成整轮的等待。
-     */
-    function nextPoolKp(from) {
-      const open = kpPool.filter(function (k) {
-        const n = normKp(k.kp);
-        return n && !takenKp[n] && hint.retired.indexOf(k.kp) < 0;
-      });
-      const same = open.filter(function (k) { return k.ability === from.ability; })[0] || open[0];
-      if (!same) return null;
-      const lv = defaultLevel({ ability: same.ability, level: from.level });
-      return {
-        kp: same.kp,
-        ability: same.ability,
-        cause: from.cause,
-        whyThisOne: from.whyThisOne,
-        nextIfWrong: from.nextIfWrong,
-        level: SHT.LEVELS.indexOf(lv) > SHT.LEVELS.indexOf(hint.cap) ? hint.cap : lv,
-        probe: null,
-        fromPool: true
-      };
-    }
-
-    for (let i = 0; i < plans.length; i += 1) {
-      let plan = plans[i];
-      let adopted = null;
-      let feedback = '';
-      let attempt = 0;
-      // 这一格历次被退回的条款号：用来判断「是不是诱饵造不出来」，而不是题写坏了
-      let slotCodes = [];
-      let switched = false;   // 换考点最多一次，再换就成了瞎试
-      let benchUsed = 0;      // 这一格最多换两次替补：一次不够时还有退路，又不会把整池吃光
-      let poolTried = 0;      // 替补也没了时，从没考过的考点里再试两条
-
-      while (!adopted) {
-        let moved = null;
-        /*
-         * 诱饵造不出来：连着两次卡在同一条「选项 / 干扰项」条款上，就不再耗第三次。
-         * 那不是题写坏了，是这个考点在这个单元里造不出可信的诱饵——
-         * 再退回一次也只会得到同样一堆废选项，换一个相近考点才有意义。
-         */
-        const stuckTimes = slotCodes.filter(function (c) {
-          return DISTRACTOR_CODES.indexOf(c) >= 0;
-        }).length;
-        if (stuckTimes >= 2 && !switched) {
-          const alt = nearKpFor(plan, hint, scopeAlive);
-          if (alt) {
-            moved = {
-              plan: alt,
-              why: '诱饵造不出来（连着 ' + stuckTimes + ' 次），换到相近的「' + alt.kp + '」重出'
-            };
-            failures.push(fail({
-              stage: 'plan', planKp: plan.kp, attempt: attempt,
-              codes: ['PLAN_SWITCH_KP'],
-              reason: '这个考点连着 ' + stuckTimes + ' 次都造不出可信的干扰项，换相近考点重出：' +
-                plan.kp + ' → ' + alt.kp,
-              detail: ''
-            }));
-          }
-        }
-
-        // 次数用满了（或者没得换）：替补顶上
-        if (!moved && attempt >= maxAttempts && benchUsed < 2) {
-          const b = nextBench(plan);
-          if (b) {
-            benchUsed += 1;
-            moved = { plan: b, why: '这一格没出成，替补顶上：「' + b.kp + '」' };
-            failures.push(fail({
-              stage: 'plan', planKp: plan.kp, attempt: attempt,
-              codes: ['BENCH_UP'],
-              reason: '这一格（' + plan.kp + '）没出成，由替补「' + b.kp + '」顶上',
-              detail: ''
-            }));
-          }
-        }
-
-        /*
-         * 替补用完了、或者这一轮根本没留替补（模型规划刚好只给了正取数），
-         * 再从「本单元还没考过的考点」补一条。
-         * 这是保证「说 5 道就出 5 道」的最后一道保险：宁可换一个同能力的考点再试两次，
-         * 也不在这一格留空。每格最多这样补两次，避免整轮都在追一个出不了的考点。
-         */
-        if (!moved && attempt >= maxAttempts && poolTried < 2) {
-          const alt = nextPoolKp(plan);
-          if (alt) {
-            poolTried += 1;
-            moved = { plan: alt, why: '这一格和替补都没出成，改从还没考过的「' + alt.kp + '」补一道' };
-            failures.push(fail({
-              stage: 'plan', planKp: plan.kp, attempt: attempt,
-              codes: ['PLAN_POOL_FILL'],
-              reason: '这一格出不成，从没考过的考点里补一条：' + alt.kp, detail: ''
-            }));
-          }
-        }
-
-        if (moved) {
-          plan = moved.plan;
-          plan.no = i + 1;
-          // 换出来的这一格要重新分格：原格子已经被上一版占住了
-          plan.cell = SHT.pickCell(plan, used, unit, i);
-          used.push(plan.cell);
-          takenKp[normKp(plan.kp)] = true;
-          attempt = 0;
-          slotCodes = [];
-          feedback = moved.why;
-          onEvent({ phase: 'switch', index: i, text: '第 ' + (i + 1) + ' 题：' + moved.why });
-          continue;
-        }
-        if (attempt >= maxAttempts) break;   // 真放弃
-
-        attempt += 1;
-        onEvent({ phase: 'generate', index: i, attempt: attempt, text: '第 ' + (i + 1) + ' 题生成中（第 ' + attempt + ' 次）' });
-
-        const genAgent = SHT.ROLES.generate;
-        const generated = await SHT.llm.call({
-          role: 'generate',
-          system: genAgent.system(),
-          user: genAgent.user(Object.assign({}, ctxBase, { plan: plan })) +
-            (recall('generate') ? '\n\n' + recall('generate') : '') +
-            (feedback ? '\n\n上一版被退回，原因是：\n' + feedback + '\n这次必须避开这些问题。' : ''),
-          maxTokens: 900
-        });
-
-        if (!generated.ok) {
-          failures.push(fail({
-            stage: 'generate', planKp: plan.kp, attempt: attempt,
-            codes: [shtErrType(generated)], reason: shtErrMsg(generated),
-            detail: generated.text ? String(generated.text).slice(0, 300) : ''
-          }));
-          feedback = '接口层面失败：' + shtErrMsg(generated) + '（保持 JSON 合法、字段齐全）';
-          continue;
-        }
-
-        const raw = generated.json;
-        const question = {
-          // 稳定 id：判分台账拿它做键的一半。重新生成的题即使题号相同，
-          // 题面也变了，必须被当成另一道题——所以这里按生成时刻发号，不复用题号。
-          qid: 'g' + Date.now().toString(36) + '-' + (i + 1),
-          no: i + 1,
-          knowledgePoint: plan.kp,
-          // 模型原来写的考点名（对齐前）。对齐方式留在 kpAligned：
-          // exact 逐字 / contain 包含 / near 按词面近似 / none 没对上（这条要人工看）。
-          kpRaw: plan.kpRaw || '',
-          kpAligned: plan.kpAligned || '',
-          ability: plan.ability,
-          cell: plan.cell,
-          prompt: String(raw.prompt || '').trim(),
-          audioText: String(raw.audioText || '').trim(),
-          options: (Array.isArray(raw.options) ? raw.options : []).slice(0, 3).map(function (x) { return String(x == null ? '' : x).trim(); }),
-          answer: String(raw.answer == null ? '' : raw.answer).trim(),
-          // 同一个答案的其它正确写法。判分第 2 段用，命中就不调模型。
-          acceptable: (Array.isArray(raw.acceptable) ? raw.acceptable : [])
-            .map(function (x) { return String(x == null ? '' : x).trim(); })
-            .filter(Boolean).slice(0, 6),
-          // 开放题：答案是一句话而不是三个选项之一。看图说词天然是这种。
-          open: plan.cell.type === '看图说词' || raw.open === true,
-          analysis: String(raw.analysis || '').trim(),
-          // 首答错误后给学生的针对性提示；为空时前端自动划掉一个错误选项。
-          hint: String(raw.hint || '').trim(),
-          // 逐项说明：与 options 一一对应，答错时前端按「他选的 / 正确答案 / 另一项」展示。
-          // 缺了不废题（老数据也没有），界面会退回一句解析。
-          optionNotes: (Array.isArray(raw.optionNotes) ? raw.optionNotes : [])
-            .slice(0, 3).map(function (x) { return String(x == null ? '' : x).trim(); }),
-          nextIfWrong: plan.nextIfWrong,
-          keyword: String(raw.keyword || '').trim(),
-          // 上一轮错过、这一轮重出的题：作答时和上一轮首答配一对
-          probe: plan.probe || null,
-          // 审计用：这道题从第一轮哪道错题演化来。空 = 不是变体（广度探索那一轮）
-          parentQid: (plan.probe && plan.probe.parentQid) || '',
-          // 凭什么出这道题：命中的规则、参与计算的数值、原始事件 seq。
-          // 导出与审计台靠它把「题目 → 决策 → 轨迹」串成一条可回查的证据链。
-          decision: plan.decision || null,
-          // 日志要显示「什么时候出的这道题」，生成时刻在这里落下
-          createdAt: now(),
-          checks: {},
-          source: 'model'
-        };
-        while (question.options.length < 3) question.options.push('');
-
-        // 听力题的兜底：模型十次有四五次忘记填 audioText，题目本身却没问题。
-        // 只给「真要听」的题补：题型是听音选义 / 听写，或题干里写了听 / 录音。
-        // 书面辨音题（选出与 cake 中 a 同音的词）不需要朗读，硬补反而音文不一，验证会否。
-        const LISTENING = ['听音选义', '字母组合辨音', '听写'];
-        const needsAudio = question.cell.type === '听音选义' || question.cell.type === '听写' ||
-          /听|录音/.test(question.prompt);
-        if (needsAudio && !question.audioText && /^[A-Za-z'’\- ]+$/.test(question.answer)) {
-          question.audioText = question.answer;
-          question.checks.__audioFilled = 'auto';
-        }
-
-        // 内容指纹闸：题干 + 选项 + 答案全同就是「上一轮那道题又来一遍」。
-        // 格子不同但题面照抄也拦得住 —— 只靠 usedCells 管不住这种重复。
-        const fp = SHT.contentFingerprint(question);
-        if (historyFps[fp] || usedFps[fp]) {
-          failures.push(fail({
-            stage: 'validate', planKp: plan.kp, attempt: attempt,
-            codes: ['V_DUP'], reason: '与之前出过的题内容完全相同，退回重出',
-            detail: JSON.stringify({ prompt: question.prompt, options: question.options, answer: question.answer })
-          }));
-          feedback = '这道题和之前出过的一模一样（题干 / 选项 / 答案全同）。必须换题面、换选项或换答案，不能只调整顺序。';
-          slotCodes.push('V_DUP');
-          onEvent({ phase: 'reject', index: i, codes: ['V_DUP'], text: '第 ' + (i + 1) + ' 题与历史题重复，退回重出' });
-          continue;
-        }
-
-        /*
-         * 知识点归因检查：对不上本单元任何考点的题，答题记录没法算到哪个知识点上，
-         * 出了也只是让学生白答一次。这类直接退回重出，而不是带病入库。
-         * 能对上（exact / contain / near）的已经在前面被改写成课程原文了。
-         */
-        if (plan.kpAligned === 'none') {
-          failures.push(fail({
-            stage: 'validate', planKp: plan.kp, attempt: attempt,
-            codes: ['KP_UNMATCHED'],
-            reason: '知识点「' + plan.kp + '」对不上本单元任何考点，答题记录无法归因，退回重出',
-            detail: ''
-          }));
-          feedback = '知识点必须从本轮给的候选清单里原样照抄，不要改写；对不上的题一律不收。';
-          slotCodes = slotCodes.concat(['KP_UNMATCHED']);
-          onEvent({
-            phase: 'reject', index: i, codes: ['KP_UNMATCHED'],
-            text: '第 ' + (i + 1) + ' 题的知识点对不上课程清单，退回'
-          });
-          continue;
-        }
-
-        // 代码闸：有通过权
-        const gate = SHT.validateQuestion(question, unit, { others: questions });
-        if (!gate.pass) {
-          failures.push(fail({
-            stage: 'validate', planKp: plan.kp, attempt: attempt,
-            codes: codesOf(gate.fails), reason: failsText(gate.fails),
-            detail: JSON.stringify({ prompt: question.prompt, options: question.options, answer: question.answer, analysis: question.analysis })
-          }));
-          feedback = failsText(gate.fails);
-          slotCodes = slotCodes.concat(codesOf(gate.fails));
-          onEvent({ phase: 'reject', index: i, codes: codesOf(gate.fails), text: '第 ' + (i + 1) + ' 题被代码闸退回：' + codesOf(gate.fails).join('、') });
-          continue;
-        }
-
-        // 模型验证：只有否决权
-        onEvent({ phase: 'verify', index: i, text: '第 ' + (i + 1) + ' 题验证中' });
-        const verifyAgent = SHT.ROLES.verify;
-        const verdict = await SHT.llm.call({
-          role: 'verify',
-          system: verifyAgent.system(),
-          user: verifyAgent.user(Object.assign({}, ctxBase, { question: question })) +
-            (recall('verify') ? '\n\n' + recall('verify') : ''),
-          maxTokens: 700,
-          temperature: 0.1
-        });
-
-        if (!verdict.ok) {
-          // 验证本身失败不能把题废掉：记一笔，按「仅代码闸通过」采纳，界面标未复核
-          failures.push(fail({
-            stage: 'verify', planKp: plan.kp, attempt: attempt,
-            codes: [shtErrType(verdict)], reason: '验证没跑成，按代码闸通过采纳：' + shtErrMsg(verdict),
-            detail: ''
-          }));
-          question.modelVerdict = 'unverified';
-          question.checks.__verify = 'skipped';
-          adopted = question;
-          break;
-        }
-
-        const vj = verdict.json || {};
-        const rawFails = Array.isArray(vj.fails)
-          ? vj.fails.filter(function (f) { return f && f.id; })
-          : [];
-        /*
-         * 验证角色只该判它拿得到信息的条款。判了「需要同轮其它题」或「需要学生画像」
-         * 的条目，说明它在猜——那种否决不采纳，但记一笔，让它自己的记忆看得见。
-         * 这一步把「验证越权」从一句话变成可统计的失败条目。
-         */
-        const needOf = {};
-        (SHT.OUT_OF_SCOPE_CHECKS || []).forEach(function (c) { needOf[c.id] = c; });
-        const outScope = rawFails.filter(function (f) { return !!needOf[f.id]; });
-        const vfails = rawFails.filter(function (f) { return !needOf[f.id]; });
-        if (outScope.length) {
-          failures.push(fail({
-            stage: 'verify', planKp: plan.kp, attempt: attempt,
-            codes: ['VERIFY_OUT_OF_SCOPE'].concat(outScope.map(function (f) { return f.id; })),
-            reason: '判了它看不到信息的条款（' + outScope.map(function (f) { return f.id; }).join('、') +
-              '），这些否决不算数',
-            detail: outScope.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；').slice(0, 200)
-          }));
-        }
-        // 软否决：所有理由都指向「解析写得不够细」时，不重出、直接采纳并标 weak。
-        // 理由：解析限 30 字，逐项罗列本来就写不下；为解析把整道题丢掉，代价远大于收益，
-        // 而且题面本身是合规的（代码闸已经过了）。解析留给人再润一句就行。
-        const softOnly = vj.verdict === 'fail' && vfails.length > 0 &&
-          vfails.every(function (f) { return /解析/.test(String(f.reason || '')); });
-        if (softOnly) {
-          failures.push(fail({
-            stage: 'verify', planKp: plan.kp, attempt: attempt,
-            codes: ['VERIFY_SOFT'].concat(vfails.map(function (f) { return f.id; })),
-            reason: '验证只嫌解析写得不够细，题面没过错，采纳并标待润色',
-            detail: vfails.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；').slice(0, 200)
-          }));
-          question.modelVerdict = 'pass';
-          question.checks.__verify = 'soft';
-          question.checks.__analysis = 'needs-polish';
-          adopted = question;
-          break;
-        }
-        if (vj.verdict === 'fail') {
-          if (!vfails.length) {
-            /*
-             * 说挂但没给条款号，先看它说的是什么。
-             * 如果说的是「答案不唯一 / 两个都成立」，那就是 C3 的口语版，
-             * 不能按「无条款号 = 无效否决」放过去——这是会把错题写进错题本、
-             * 再喂给诊断和下一轮出题的最严重的一类错误，宁可退回去重出。
-             */
-            const said = String(vj.note || '') + ' ' +
-              (Array.isArray(vj.fails) ? vj.fails.map(function (f) { return f && f.reason || ''; }).join(' ') : '');
-            if (/不唯一|都成立|两个?都对|也(都)?可以|都行|均正确|也能选/.test(said)) {
-              vfails.push({ id: 'C3', reason: String(vj.note || '它认为答案不唯一').slice(0, 40) });
-            }
-          }
-          if (!vfails.length) {
-            // 说挂却给不出它有权判的条款号 = 无效否决，不采纳但记下来
-            failures.push(fail({
-              stage: 'verify', planKp: plan.kp, attempt: attempt,
-              codes: ['VERIFY_NO_CODE'],
-              reason: outScope.length
-                ? '只给了它看不到信息的条款，按无效否决处理'
-                : '判 fail 但没给条款号，按无效否决处理',
-              detail: String(vj.note || '').slice(0, 200)
-            }));
-            question.modelVerdict = 'pass';
-            question.checks.__verify = 'weak';
-            adopted = question;
-            break;
-          }
-          vfails.forEach(function (f) { question.checks[f.id] = 'fail'; });
-          failures.push(fail({
-            stage: 'verify', planKp: plan.kp, attempt: attempt,
-            codes: vfails.map(function (f) { return f.id; }),
-            reason: vfails.map(function (f) { return f.id + '：' + (f.reason || ''); }).join('；'),
-            detail: JSON.stringify({ prompt: question.prompt, options: question.options, answer: question.answer })
-          }));
-          feedback = vfails.map(function (f) { return f.id + '（' + (SHT.ALL_CHECKS.filter(function (c) { return c.id === f.id; })[0] || {}).text + '）：' + f.reason; }).join('；');
-          slotCodes = slotCodes.concat(vfails.map(function (f) { return f.id; }));
-          onEvent({ phase: 'reject', index: i, codes: vfails.map(function (f) { return f.id; }), text: '第 ' + (i + 1) + ' 题被验证退回' });
-          continue;
-        }
-
-        question.modelVerdict = 'pass';
-        question.checks.__verify = 'pass';
-        adopted = question;
-      }
-
-      if (adopted) {
-        // 换过考点或替补顶上来的，plans 里那一格要跟着换，否则下游按 plan.kp 记账会对不上
-        plans[i] = plan;
-        questions.push(adopted);
-        usedFps[SHT.contentFingerprint(adopted)] = true;
-        onEvent({ phase: 'adopted', index: i, text: '第 ' + (i + 1) + ' 题通过' });
-      } else {
-        const tried = (switched ? '换过相近考点、' : '') + (benchUsed || plan.fromBench ? '替补也顶上过，' : '');
-        failures.push(fail({
-          stage: 'giveup', planKp: plan.kp, attempt: maxAttempts,
-          codes: ['GIVE_UP'],
-          reason: tried + '连续 ' + maxAttempts + ' 次都没过闸，这一格留空，不硬塞',
-          detail: ''
-        }));
-        onEvent({ phase: 'dropped', index: i, text: '第 ' + (i + 1) + ' 题放弃（' + maxAttempts + ' 次都没过）' });
-      }
-    }
-
-    onEvent({ phase: 'done', text: '本轮完成：' + questions.length + ' / ' + plans.length + ' 题' +
-      (bench.length ? '（替补 ' + (bench.length - benchLeft.length) + ' / ' + bench.length + ' 用上）' : '') });
-    return {
-      ok: questions.length > 0,
-      plans: plans,
-      /*
-       * 题量硬约束：这一轮想要 want 道、实际出 questions.length 道。
-       * shortfall > 0 说明确实凑不满（模型或闸门的原因），界面与日志要明说缺几道，
-       * 不能让它悄悄变成「本来就说好 3 道」。
-       */
-      wanted: want,
-      shortfall: Math.max(0, want - questions.length),
-      // 替补：这次用了哪几条、还剩几条。界面据此说清「本来还能顶上几条」
-      bench: bench,
-      benchUsed: bench.length - benchLeft.length,
-      questions: questions,
-      failures: failures,
-      stage: 'done',
-      memoryNext: SHT.agentMemory.commit(memory, { questions: questions, failures: failures, attempts: o.attempts || [], priorAttempts: o.priorAttempts || [] }),
-      // 推进状态与自动停止建议：界面据此把停止条自动勾上，并把已会的考点从下一轮范围里去掉
-      progressNext: SHT.progress.commit(progress, { questions: questions, attempts: o.attempts || [], priorAttempts: o.priorAttempts || [] }),
-      stageHint: hint,
-      stop: SHT.progress.stopJudge({ questions: questions, attempts: o.attempts || [], failures: failures }),
-      // 这一轮实际用的配额与达成情况，界面回写后下一轮才看得见偏差
-      quota: quota, quotaReport: quotaReport,
-      stats: SHT.llm.stats()
-    };
-  };
-
-  // 连通性自检：一条极短的调用，只验证 key / 网络 / JSON 三件事
-  SHT.pipeline.selfCheck = async function () {
-    const res = await SHT.llm.call({
-      role: 'selfcheck',
-      system: '你是一个自检端点。只输出 JSON：{"ok":true}',
-      user: '返回 {"ok":true}',
-      maxTokens: 40,
-      temperature: 0
-    });
-    if (!res.ok) return { ok: false, message: shtErrMsg(res), type: shtErrType(res) };
-    return { ok: true, ms: res.ms, model: SHT.llm.config().model, tokens: res.tokens };
+  SHT.pipeline = {
+    runRound: runRound,
+    fillPlans: fillPlans,
+    isRepeat: isRepeat,
+    MAX_ROUNDS: MAX_ROUNDS,
+    PASS_LINE: PASS_LINE
   };
 })(window);
