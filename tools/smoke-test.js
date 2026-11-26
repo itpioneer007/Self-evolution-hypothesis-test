@@ -123,10 +123,10 @@ async function main() {
       const second = /第2轮考点/.test(o.user);
       return { ok: true, json: {
         prompt: second ? '第二轮：选出「教室」的英文。' : '第一轮：选出「教室」的英文。',
-        options: ['classroom', 'playground', 'library'],
+        options: ['classroom', 'playground', 'library', 'blackboard'],
         answer: 'classroom',
         analysis: second ? '修订后：classroom 是教室。' : 'classroom 是教室。',
-        optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。']
+        optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。', 'blackboard 是黑板。']
       } };
     }
     if (o.role === 'verify') {
@@ -155,8 +155,8 @@ async function main() {
     assert('每轮题目都是完整快照（题干/选项/答案/解析/选项说明都在）',
       r.rounds.every(function (x) {
         return x.questions.every(function (q) {
-          return q.plan && q.prompt && q.options.length === 3 && q.answer &&
-            q.analysis && q.optionNotes.length === 3;
+          return q.plan && q.prompt && q.options.length === 4 && q.answer &&
+            q.analysis && q.optionNotes.length === 4;
         });
       }));
     assert('两轮题目内容确实不同（不是同一套留两份）',
@@ -205,9 +205,9 @@ async function main() {
     if (o.role === 'generate') {
       // 每轮都出同一道题，故意制造重复
       return { ok: true, json: {
-        prompt: '选出「教室」的英文。', options: ['classroom', 'playground', 'library'],
+        prompt: '选出「教室」的英文。', options: ['classroom', 'playground', 'library', 'blackboard'],
         answer: 'classroom', analysis: 'classroom 是教室。',
-        optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。']
+        optionNotes: ['classroom 是教室。', 'playground 是操场。', 'library 是图书馆。', 'blackboard 是黑板。']
       } };
     }
     if (o.role === 'verify') {

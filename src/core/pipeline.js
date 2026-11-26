@@ -141,7 +141,7 @@
           continue;
         }
         const q = snapshot(gen.json, plan, no);
-        if (!q.prompt || q.options.length < 2) {
+        if (!q.prompt || q.options.length < 4) {
           q.passed = false;
           q.feedback = '题目字段不全';
           questions.push(q);
