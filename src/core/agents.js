@@ -47,13 +47,17 @@
           '硬约束：',
           '1. 数量恰好等于用户给的本轮题数，一条不多、一条不少。少一条就少一道题。',
           '2. 每个考点必须能在给定词表、句型或语音点里落地，不许考不在其中的内容。',
-          '3. kp 写清具体考哪个词、哪个句型、哪组发音，例：classroom 的词义 / This is our ... 句型 / lion 与 line 的 l 发音。不许写「词汇」「语法」这种空话。',
-          '4. ability 只能取：vocab / spelling / sentence / phonics / grammar。',
-          '5. level 只能取：认 / 辨 / 用 / 表达。',
-          '6. angle 写这一题打算怎么切入，例：中英匹配 / 选词填空 / 字母组合辨音；不超过 12 个字。',
-          '7. 几条考点互不重复；相邻两条尽量同话题，便于互相呼应。',
-          '8. 如果被要求按反馈修订方案，只改方案本身（考点描述、情境、切入点），让它更具体、更好执行，不写题目。',
-          '9. 只输出 JSON，不要输出题目内容。'
+          '3. 每道题考查点唯一：一条只针对一个词、一个句型或一组发音，不把时态、冠词、介词、生词堆在一条里，避免连锁失分。',
+          '4. kp 写清具体考哪个词、哪个句型、哪组发音，例：classroom 的词义 / This is our ... 句型 / lion 与 line 的 l 发音。不许写「词汇」「语法」这种空话。',
+          '5. ability 只能取：vocab / spelling / sentence / phonics / grammar。',
+          '6. level 只能取：认 / 辨 / 用 / 表达。',
+          '7. 认知层次必须匹配学段：小学低年级以「认 / 辨」（记忆·理解）为主，小学高年级以「辨 / 用」（理解·应用）为主，初中以「用 / 表达」（应用·分析）为主。一份方案不得通吃所有年级，层次分布要贴合当前教材年级，不许全部堆在最高层，也不许全部是最低层。',
+          '8. 当前执行环节只出选择题，选择题主考「认 / 辨 / 用」这类记忆·理解·低层应用；「表达」这类高层次考点只能少量出现，不得让高层次目标全部落在选择题上。',
+          '9. angle 写这一题打算怎么切入，例：中英匹配 / 选词填空 / 字母组合辨音；不超过 12 个字。',
+          '10. 情境与素材适龄：贴近学习、家庭、校园、兴趣等真实情境；无暴力恐怖、成人化、宗教政治敏感、商业诱导与攀比；人物用中性化名；不得出现或索取学生真实姓名、学校、住址、照片、联系方式等个人信息。',
+          '11. 几条考点互不重复；相邻两条尽量同话题，便于互相呼应。',
+          '12. 如果被要求按反馈修订方案，只改方案本身（考点描述、情境、切入点），让它更具体、更好执行，不写题目；已通过的考点原样保留，未通过的考点只能修正描述，不得换成别的考点。',
+          '13. 只输出 JSON，不要输出题目内容。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -69,15 +73,22 @@
           '语音点：' + phonicsText(u),
           ''
         ];
-        if (ctx.feedback && ctx.feedback.length) {
+        if (ctx.prevPlans && ctx.prevPlans.length) {
+          lines.push('上一轮已经出过方案，请据此修订，不要另起新考点：');
+          ctx.prevPlans.forEach(function (p, i) {
+            lines.push((i + 1) + '. [' + (p.passed ? '已通过·保持' : '未通过·修正') + '] ' +
+              p.kp + ' / ' + p.ability + ' / ' + p.level + ' / ' + p.angle);
+          });
+          lines.push('已通过的考点原样保留；未通过的考点只能在原考点上修正描述、让它更具体可执行，不得换成别的考点。');
+          if (ctx.feedback && ctx.feedback.length) {
+            lines.push('反馈角色对未通过方案的具体建议：');
+            ctx.feedback.forEach(function (f, i) { lines.push((i + 1) + '. ' + f); });
+          }
+          lines.push('');
+        } else if (ctx.feedback && ctx.feedback.length) {
           lines.push('反馈角色对上一条方案的建议：');
           ctx.feedback.forEach(function (f, i) { lines.push((i + 1) + '. ' + f); });
-          lines.push('请据此修订这一条方案，让它更具体、更好执行，不要照旧，也不要写题目。');
-          lines.push('');
-        }
-        if (ctx.seen && ctx.seen.length) {
-          lines.push('前面几轮已经考过这些题，考点、句式、情境都要换新的，不许只换名词重出一遍：');
-          ctx.seen.slice(-12).forEach(function (s, i) { lines.push((i + 1) + '. ' + s); });
+          lines.push('请据此修订这一条方案，只改描述不改考点，也不要写题目。');
           lines.push('');
         }
         lines.push('请指定 ' + ctx.count + ' 个考点。只输出 JSON。');
@@ -148,15 +159,10 @@
           ''
         ];
         if (ctx.feedback && ctx.feedback.length) {
-          lines.push('反馈角色退回了这个考点的上一版，原因如下。重出时必须改掉：');
+          lines.push('反馈角色指出这道题的问题如下，重出时必须逐条改掉：');
           ctx.feedback.forEach(function (f, i) {
             lines.push((i + 1) + '. ' + f);
           });
-          lines.push('');
-        }
-        if (ctx.seen && ctx.seen.length) {
-          lines.push('前面轮次已经出过这些题。不许只换主语或名词重出一遍，要改句式结构或情境：');
-          ctx.seen.slice(-12).forEach(function (s, i) { lines.push((i + 1) + '. ' + s); });
           lines.push('');
         }
         lines.push('可用词表：' + wordsText(u));
@@ -198,18 +204,12 @@
           '9. 中英对等 prompt_answer_alignment（10分）：中文题干必须是英文答案的逐点翻译。答案里有几个人、哪个地点、哪些东西，题干就写几样；答案里没有的一个字不许添。反例：答案 There is a library. 题干写「我们学校有一个图书馆」，多了「我们学校」而答案没有 in our school——此项0分，总分压到85分以下。',
           '10. 方案意图一致性 intent_consistency（10分）：核心检查。将执行题目与出题方案对比：方案要求 monkey，题目是不是变成了别的？方案要求考三单，题目是不是变成了现在进行时？偏离方案直接扣光此项。',
           '',
-          '# 查重与新意检查（先于十个维度）',
-          '你会同时收到一份【已出过的题目列表】。先把当前题目和列表逐条对比：',
-          '1. 如果只是把主语或名词换掉，句式和情境都没变（例：The monkey eats 变成 The elephant eats），判为「高度重复」：额外扣 20 分，passed 必须为 false。',
-          '2. 题干结构、选项排列、解题思路和列表里某一题一样，哪怕换了词，也算高度重复，同样额外扣 20 分、passed=false。',
-          '3. 判为高度重复时，feedback_to_thinker 必须写明「必须改变句式结构或情境」，并指出哪些句式或情境已经用过、该换成什么方向。',
-          '4. 没有重复才按下面十个维度正常打分；重复题即使其他维度都满分，也一律不通过。',
-          '',
           '# 输出要求',
           '你必须且只能输出纯 JSON，不要包含任何 markdown 语法（如 ```json），不要有任何解释性文字：',
           '{',
           '"passed": false,',
           '"total_score": 78,',
+          '"issue_type": "generate",',
           '"scores_detail": {',
           '"vocab_scope": {"score": 15, "reason": "全部在已学范围内"},',
           '"grammar_match": {"score": 12, "reason": "正确考察了目标用法"},',
@@ -222,18 +222,22 @@
           '"prompt_answer_alignment": {"score": 10, "reason": "中英逐点对等"},',
           '"intent_consistency": {"score": 10, "reason": "忠实执行方案"}',
           '},',
-          '"feedback_to_thinker": "方案的情境描述不够具体，建议写明用哪个动作和场景，便于执行者落地。"',
+          '"feedback_to_thinker": "方案的情境描述不够具体，建议写明用哪个动作和场景，便于执行者落地。",',
+          '"feedback_to_executor": "选项 B 和 C 都能代回题干成立，请改掉其中一个干扰项，只保留唯一答案。"',
           '}',
           '',
           '每个 reason 控制在20个字以内，只写「哪儿不对」，指出具体词或选项，不复述题目、不写空话。',
-          'feedback_to_thinker 必须是针对【出题方案】的建议，不许直接去改题目文本。',
+          'issue_type 只能取 "plan" / "generate" / "both"，用来判断这题没通过是谁的问题：方案本身描述不清、考点/层次/切入角度选错 → "plan"；方案没问题、纯粹是题目文本（选项、答案、解析、用词、格式）出错 → "generate"；两者都有 → "both"。',
+          'feedback_to_thinker 必须是针对【出题方案】的建议，不许直接去改题目文本；feedback_to_executor 必须是针对【题目文本】的具体修改要求，指出哪一项、哪个词、怎么改。',
           '',
           '# 核心约束（必须遵守）',
-          '1. feedback_to_thinker 必须是针对出题方案的改进建议，而不是改题目文本。',
-          '2. total_score 低于85分时 passed 必须为 false；85分及以上 passed 必须为 true。',
-          '3. intent_consistency 低于5分时，feedback_to_thinker 必须以这句话开头并严厉警告：「请策划重新审视方案，是不是你的方案描述不够具体，导致执行者无法准确执行？」',
-          '4. 存在知识性错误、答案不唯一、中英不对等任一项，总分必须压到85分以下。',
-          '5. 只输出 JSON。'
+          '1. 判题时必须先判定 issue_type：方案本身描述不清、考点/层次/切入角度选错 → "plan"；方案没问题、纯粹是题目文本（选项、答案、解析、用词、格式）出错 → "generate"；两者都有 → "both"。',
+          '2. feedback_to_thinker 必须是针对出题方案的改进建议，而不是改题目文本。',
+          '3. feedback_to_executor 必须是针对这道题文本的具体修改要求，指出哪一项、哪个词、怎么改；issue_type 为 "plan" 时可为空字符串。',
+          '4. total_score 低于85分时 passed 必须为 false；85分及以上 passed 必须为 true。',
+          '5. intent_consistency 低于5分时，issue_type 必须含 "plan"，feedback_to_thinker 必须以这句话开头并严厉警告：「请策划重新审视方案，是不是你的方案描述不够具体，导致执行者无法准确执行？」',
+          '6. 存在知识性错误、答案不唯一、中英不对等任一项，总分必须压到85分以下。',
+          '7. 只输出 JSON。'
         ].join('\n');
       },
       user: function (ctx) {
@@ -254,11 +258,6 @@
           '- 能力：' + (p.ability || ''),
           '- 层次：' + (p.level || ''),
           '- 切入角度：' + (p.angle || ''),
-          '',
-          '# 已出过的题目列表（查重用）',
-          (ctx.seen && ctx.seen.length)
-            ? ctx.seen.map(function (s, i) { return (i + 1) + '. ' + s; }).join('\n')
-            : '暂无，这是第一题。',
           '',
           '# 执行题目',
           '- 题干：' + JSON.stringify(q.prompt || ''),

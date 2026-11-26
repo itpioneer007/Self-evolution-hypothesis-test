@@ -1,8 +1,9 @@
 /*
  * 出题流水线：指定方案 → 执行 → 反馈，按「整轮」迭代。
  *
- * 一轮 = 一整套题 + 这一套的分。反馈不通过就把建议交给方案角色，
- * 由它修订整套方案后再出下一轮；每一轮的题目原文都完整留存，供界面按轮回看。
+ * 一轮 = 一整套题 + 这一套的分。反馈不通过时先判断是谁的问题：
+ * 方案问题 → 重新指定方案；题目内容问题 → 复用方案。无论哪种，已通过的题
+ * 都跨轮保留、不再重新生成，只重出没通过的那道题。每一轮题目原文完整留存。
  * 前端不参与这个过程，它只拿到 rounds 数组。
  */
 (function (root) {
@@ -81,7 +82,9 @@
       score: null,
       passed: null,
       scoresDetail: null,
-      feedback: ''
+      feedback: '',
+      issueType: null,
+      feedbackToExecutor: ''
     };
   }
 
@@ -106,34 +109,64 @@
     const rounds = [];
     const errors = [];
     const bookMeta = (root.SHT && root.SHT.BOOKS && SHT.BOOKS.current().meta) || {};
-    let planFeedback = [];
-    const seen = [];
+    let plans = null;            // 本轮要用的方案；null = 本轮重新指定
+    let genFeedback = [];        // 长度 count：每道题执行层退回的原因，跨轮带下去
+    let prevQuestions = null;    // 上一轮题目快照，已通过的题跨轮保留、不重新生成
+    let planFeedback = [];       // 方案层退回的原因，跨轮带下去
 
     for (let roundNo = 1; roundNo <= MAX_ROUNDS; roundNo += 1) {
-      // 上一轮及更早的题目，用来在本轮出完之后做确定性查重兜底
-      const beforeRound = seen.slice();
-      onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：正在指定方案', round: roundNo });
+      const reuse = !!plans;
 
-      const planRes = await call('plan', {
-        unit: unit, bookName: bookName, count: count,
-        feedback: planFeedback.slice(), seen: seen.map(seenLine)
-      });
-      if (!planRes.ok) {
-        errors.push({ round: roundNo, role: 'plan', message: planRes.error ? planRes.error.message : '方案没返回' });
-        break;
+      if (!reuse) {
+        onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：正在指定方案', round: roundNo });
+        const prevPlans = prevQuestions ? prevQuestions.map(function (q) {
+          const pl = q.plan || {};
+          return {
+            kp: String(pl.kp || ''),
+            ability: String(pl.ability || 'vocab'),
+            level: String(pl.level || '认'),
+            angle: String(pl.angle || ''),
+            passed: q.passed === true
+          };
+        }) : null;
+        const planRes = await call('plan', {
+          unit: unit, bookName: bookName, count: count,
+          feedback: planFeedback.slice(),
+          prevPlans: prevPlans
+        });
+        if (!planRes.ok) {
+          errors.push({ round: roundNo, role: 'plan', message: planRes.error ? planRes.error.message : '方案没返回' });
+          break;
+        }
+        const rawPlans = Array.isArray(planRes.json && planRes.json.plans) ? planRes.json.plans : [];
+        plans = fillPlans(rawPlans, count, unit);
+        genFeedback = [];
+      } else {
+        onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：复用上轮方案，只重出未通过的题', round: roundNo });
       }
-      const rawPlans = Array.isArray(planRes.json && planRes.json.plans) ? planRes.json.plans : [];
-      const plans = fillPlans(rawPlans, count, unit);
+
       const questions = [];
       const feedbacks = [];
+      const roundFeedbacks = [];
       onEvent({ role: 'plan', text: '第 ' + roundNo + ' 轮：定了 ' + plans.length + ' 个考点', round: roundNo });
 
       for (let i = 0; i < plans.length; i += 1) {
         const plan = plans[i];
         const no = i + 1;
+
+        // 已通过的题直接沿用上一轮快照，不再重出、不再重打分（无论方案是否重做）
+        if (prevQuestions && prevQuestions[i] && prevQuestions[i].passed === true) {
+          const kept = Object.assign({}, prevQuestions[i]);
+          kept.no = no;
+          questions.push(kept);
+          onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：沿用上轮已通过', round: roundNo, no: no, question: kept });
+          continue;
+        }
+
         onEvent({ role: 'generate', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在写', round: roundNo, no: no });
+        const fb = genFeedback[i] ? [genFeedback[i]] : [];
         const gen = await call('generate', {
-          unit: unit, bookName: bookName, plan: plan, seen: seen.map(seenLine)
+          unit: unit, bookName: bookName, plan: plan, feedback: fb
         });
         if (!gen.ok) {
           errors.push({ round: roundNo, no: no, role: 'generate',
@@ -144,6 +177,7 @@
         if (!q.prompt || q.options.length < 4) {
           q.passed = false;
           q.feedback = '题目字段不全';
+          q.issueType = 'generate';
           questions.push(q);
           continue;
         }
@@ -151,11 +185,12 @@
         onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在打分', round: roundNo, no: no });
         const ver = await call('verify', {
           unit: unit, bookName: bookName, bookMeta: bookMeta, plan: plan,
-          question: q, seen: seen.map(seenLine)
+          question: q
         });
         if (!ver.ok) {
           q.passed = null;
           q.feedback = '没收到打分';
+          q.issueType = 'plan';
           errors.push({ round: roundNo, no: no, role: 'verify',
             message: ver.error ? ver.error.message : '没给分数' });
         } else {
@@ -165,15 +200,14 @@
           q.passed = v.passed === true;
           q.scoresDetail = v.scores_detail || null;
           q.feedback = String(v.feedback_to_thinker || '');
+          q.feedbackToExecutor = String(v.feedback_to_executor || '');
+          const rawIssue = String(v.issue_type || '');
+          q.issueType = (rawIssue === 'plan' || rawIssue === 'generate' || rawIssue === 'both') ? rawIssue : 'plan';
         }
-        // 确定性兜底：整题和之前某轮一模一样，模型漏判也直接打回
-        if (isRepeat(q, beforeRound)) {
-          q.passed = false;
-          q.score = q.score == null ? null : Math.max(0, q.score - 20);
-          q.feedback = '这道题和之前出过的题一样，必须改变句式结构或情境。';
+        if (!q.passed) {
+          if (q.feedback) feedbacks.push(q.feedback);
+          roundFeedbacks.push(q.feedback || q.feedbackToExecutor || '');
         }
-        if (!q.passed && q.feedback) feedbacks.push(q.feedback);
-        if (q.prompt) seen.push(q);
         questions.push(q);
         onEvent({ role: 'verify', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：' +
           (q.passed ? '通过' : '未通过'), round: roundNo, no: no, question: q });
@@ -186,7 +220,7 @@
         no: roundNo,
         score: total,
         passed: passed,
-        feedback: feedbacks.slice(0, 6),
+        feedback: roundFeedbacks.slice(0, 6),
         questions: questions
       };
       rounds.push(round);
@@ -195,8 +229,24 @@
         round: roundNo, roundData: round });
 
       if (passed) break;
-      planFeedback = feedbacks.length ? feedbacks.slice(0, 6) :
-        ['上一轮题目质量不足，请写清目标词汇、情境和切入点后重做方案'];
+
+      // 已通过的题跨轮保留，不重新生成
+      prevQuestions = questions;
+
+      // 这一轮没通过是谁的问题：方案问题 → 重新指定方案；题目内容问题 → 复用方案
+      const hasPlanIssue = questions.some(function (q) {
+        return q.passed !== true && (q.issueType === 'plan' || q.issueType === 'both');
+      });
+      if (hasPlanIssue) {
+        plans = null;
+        planFeedback = feedbacks.length ? feedbacks.slice(0, 6) :
+          ['上一轮题目质量不足，请写清目标词汇、情境和切入点后重做方案'];
+      } else {
+        genFeedback = questions.map(function (q) {
+          return q.passed === true ? '' : (q.feedbackToExecutor || '');
+        });
+        planFeedback = [];
+      }
     }
 
     return { rounds: rounds, errors: errors };
