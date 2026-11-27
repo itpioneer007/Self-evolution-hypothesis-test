@@ -12,6 +12,7 @@
     running: false,
     step: '',
     rounds: [],
+    seen: [],
     selected: 0,
     error: ''
   };
@@ -223,6 +224,7 @@
     state.error = '';
     state.running = true;
     state.rounds = [];
+    state.seen = [];
     state.selected = 0;
     state.step = '正在准备';
     render();
@@ -237,6 +239,7 @@
         }
       });
       state.rounds = r.rounds || [];
+      state.seen = r.seen || [];
       // 默认选中最后通过的那一轮；没有通过的就选最后一轮
       let pick = state.rounds.length - 1;
       for (let i = state.rounds.length - 1; i >= 0; i -= 1) {
@@ -283,8 +286,8 @@
       const act = a.dataset.act;
       if (act === 'start') start();
       else if (act === 'round') { state.selected = Number(a.dataset.i) || 0; render(); }
-      else if (act === 'again') { state.rounds = []; state.error = ''; render(); }
-      else if (act === 'back') { state.rounds = []; state.error = ''; render(); }
+      else if (act === 'again') { state.rounds = []; state.seen = []; state.error = ''; render(); }
+      else if (act === 'back') { state.rounds = []; state.seen = []; state.error = ''; render(); }
     });
   }
 

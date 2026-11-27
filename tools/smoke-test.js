@@ -242,6 +242,17 @@ async function main() {
       r2.rounds[1].questions[1].prompt.indexOf('B（重出）') >= 0 &&
       calls2.some(function (c) { return c.role === 'generate' && /B2 和 B3/.test(c.user); }));
     assert('题目内容问题：第二轮题量仍是 3 题', r2.rounds[1].questions.length === 3);
+    const bRedoCall = calls2.filter(function (c) {
+      return c.role === 'generate' && /B2 和 B3/.test(c.user);
+    })[0];
+    assert('查重只记已达标的题：重出时看到 A、C 的题面',
+      bRedoCall && /A（初版）/.test(bRedoCall.user) && /C（初版）/.test(bRedoCall.user));
+    assert('查重不记未达标的题：重出时看不到之前失败的 B 题面',
+      bRedoCall && !/B（初版）/.test(bRedoCall.user));
+    assert('查重记录可从返回值读出，且只含达标题（A、C、重出的 B 共三条）',
+      r2.seen && r2.seen.length === 3 &&
+      r2.seen.every(function (q) { return q.passed === true; }),
+      r2.seen ? String(r2.seen.length) : 'undefined');
   } catch (e) {
     assert('题目内容问题回溯流程不抛异常', false, e && e.stack ? e.stack : String(e));
   } finally {

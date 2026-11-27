@@ -30,6 +30,7 @@
     return '题干：' + (q.prompt || '') + '；选项：' + (q.options || []).join(' / ') +
       '；答案：' + (q.answer || '');
   }
+  /* 查重记录只收已达标的题：未达标的不进 seen，重出时不会拿它当「别重复」的依据。 */
 
   function call(role, ctx) {
     const r = SHT.ROLES[role];
@@ -113,6 +114,7 @@
     let genFeedback = [];        // 长度 count：每道题执行层退回的原因，跨轮带下去
     let prevQuestions = null;    // 上一轮题目快照，已通过的题跨轮保留、不重新生成
     let planFeedback = [];       // 方案层退回的原因，跨轮带下去
+    const seen = [];             // 查重记录：只收已达标（passed）的题，未达标的不记
 
     for (let roundNo = 1; roundNo <= MAX_ROUNDS; roundNo += 1) {
       const reuse = !!plans;
@@ -166,7 +168,8 @@
         onEvent({ role: 'generate', text: '第 ' + roundNo + ' 轮 · 第 ' + no + ' 题：正在写', round: roundNo, no: no });
         const fb = genFeedback[i] ? [genFeedback[i]] : [];
         const gen = await call('generate', {
-          unit: unit, bookName: bookName, plan: plan, feedback: fb
+          unit: unit, bookName: bookName, plan: plan, feedback: fb,
+          seen: seen.map(seenLine)
         });
         if (!gen.ok) {
           errors.push({ round: roundNo, no: no, role: 'generate',
@@ -204,7 +207,9 @@
           const rawIssue = String(v.issue_type || '');
           q.issueType = (rawIssue === 'plan' || rawIssue === 'generate' || rawIssue === 'both') ? rawIssue : 'plan';
         }
-        if (!q.passed) {
+        if (q.passed) {
+          seen.push(q);
+        } else {
           if (q.feedback) feedbacks.push(q.feedback);
           roundFeedbacks.push(q.feedback || q.feedbackToExecutor || '');
         }
@@ -249,7 +254,7 @@
       }
     }
 
-    return { rounds: rounds, errors: errors };
+    return { rounds: rounds, errors: errors, seen: seen };
   }
 
   SHT.pipeline = {

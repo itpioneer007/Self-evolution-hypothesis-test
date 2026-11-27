@@ -158,6 +158,11 @@
           '- 切入角度：' + p.angle,
           ''
         ];
+        if (ctx.seen && ctx.seen.length) {
+          lines.push('以下题目已经达标，不要重复出（换题面、换考法）：');
+          ctx.seen.forEach(function (s) { lines.push('- ' + s); });
+          lines.push('');
+        }
         if (ctx.feedback && ctx.feedback.length) {
           lines.push('反馈角色指出这道题的问题如下，重出时必须逐条改掉：');
           ctx.feedback.forEach(function (f, i) {
